@@ -2,6 +2,80 @@
 
 Cross-platform Codex account tooling focused on a lightweight Python CLI and a local web UI.
 
+## Setup & Quick Guide
+
+### Requirements
+
+- Python `3.11+`
+- Codex CLI installed and available as `codex` in your `PATH`
+- Optional for advanced commands: `npx` (used to run `@loongphy/codex-auth`)
+
+### Install / Run
+
+From project root:
+
+```bash
+chmod +x bin/codex-account
+./bin/codex-account --help
+```
+
+Optional global command:
+
+- macOS / Linux:
+
+```bash
+sudo ln -sf "$(pwd)/bin/codex-account" /usr/local/bin/codex-account
+codex-account --help
+```
+
+- Windows (PowerShell):
+
+```powershell
+py .\bin\codex-account --help
+```
+
+### First-Time Usage
+
+1. Save your currently logged-in Codex auth as a profile:
+
+```bash
+codex-account save work
+```
+
+2. List profiles:
+
+```bash
+codex-account list --json
+```
+
+3. Switch active profile:
+
+```bash
+codex-account switch work
+```
+
+4. Start the local web UI:
+
+```bash
+codex-account ui
+```
+
+Open `http://127.0.0.1:4673` in your browser if it does not auto-open.
+
+### Advanced Mode Quick Start
+
+```bash
+codex-account status --json
+codex-account login --device-auth
+codex-account list-adv --debug
+```
+
+### Troubleshooting
+
+- `Could not find 'codex' CLI`: install Codex CLI or add it to your `PATH`.
+- Port `4673` busy: run `codex-account ui --port 7788`.
+- Browser not opening automatically: run with `--no-open` and open URL manually.
+
 ## Local Mode Commands
 
 | Command | What It Does | Common Flags | Copy Template |
