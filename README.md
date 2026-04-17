@@ -1,0 +1,188 @@
+# Codex Account Manager
+
+Cross-platform Codex account tooling focused on a lightweight Python CLI and a local web UI.
+
+## Local Mode Commands
+
+| Command | What It Does | Common Flags | Copy Template |
+|---|---|---|---|
+| `save` | Save current `~/.codex/auth.json` as a named local profile | `--force` | `codex-account save <name>` |
+| `add` | Login in isolated temp `CODEX_HOME` and save profile | `--device-auth`, `--timeout`, `--force` | `codex-account add <name> --device-auth` |
+| `list` | List saved local profiles | `--json` | `codex-account list --json` |
+| `current` | Show active account hint | `--json` | `codex-account current --json` |
+| `switch` | Switch active auth to a local profile | `--no-restart` | `codex-account switch <name>` |
+| `rename` | Rename a saved local profile | `--force` | `codex-account rename <old> <new>` |
+| `run` | Run command with isolated profile home | `--` passthrough | `codex-account run <name> -- codex` |
+| `ui` | Run local lightweight web UI (detached by default) | `--host`, `--port`, `--no-open`, `--interval`, `--idle-timeout`, `--foreground` | `codex-account ui` |
+| `ui-service` | Control background UI process | `start`, `stop`, `restart`, `status` | `codex-account ui-service status` |
+| `ui-autostart` | Manage OS login/startup integration | `install`, `uninstall`, `status` | `codex-account ui-autostart status` |
+| `autoswitch` | Manage server auto-switch behavior | `status`, `enable`, `disable`, `run-once` | `codex-account autoswitch status` |
+| `notify` | Notification helper commands | `test` | `codex-account notify test` |
+| `remove` | Remove local profile | none | `codex-account remove <name>` |
+| `usage-local` | Show usage per local profile (no dedupe) | `--watch`, `--interval`, `--timeout`, `--json` | `codex-account usage-local --watch --interval 3` |
+| `usage` | Alias wrapper for usage commands | `local`, `--watch`, `--json` | `codex-account usage local --watch --interval 3` |
+
+<details>
+<summary>Copy-ready local templates</summary>
+
+```bash
+codex-account save work
+```
+
+```bash
+codex-account add work --device-auth
+```
+
+```bash
+codex-account list --json
+```
+
+```bash
+codex-account current --json
+```
+
+```bash
+codex-account switch work
+```
+
+```bash
+codex-account rename work personal
+```
+
+```bash
+codex-account run work -- codex
+```
+
+```bash
+codex-account ui
+```
+
+```bash
+codex-account ui --no-open --port 7788
+```
+
+```bash
+codex-account remove work
+```
+
+```bash
+codex-account usage-local --watch --interval 3
+```
+
+</details>
+
+## Advanced Mode Commands (`codex-auth` wrappers)
+
+| Command | What It Does | Common Flags | Copy Template |
+|---|---|---|---|
+| `status` | Show advanced service/usage/account mode state | `--json` | `codex-account status --json` |
+| `login` | Run advanced login flow | `--device-auth` | `codex-account login --device-auth` |
+| `list-adv` | Advanced managed account list | `--debug` | `codex-account list-adv --debug` |
+| `switch-adv` | Advanced interactive/fuzzy switch | optional query | `codex-account switch-adv work` |
+| `import` | Import auth files into advanced registry | `--alias`, `--cpa`, `--purge` | `codex-account import /path/to/auth.json --alias personal` |
+| `remove-adv` | Remove advanced managed accounts | `--all` or query | `codex-account remove-adv --all` |
+| `config` | Configure auto-switch/API mode | `auto`, `api`, `--5h`, `--weekly` | `codex-account config auto --5h 12 --weekly 8` |
+| `daemon` | Run advanced daemon | `--watch` or `--once` | `codex-account daemon --watch` |
+| `clean` | Cleanup advanced stale files | none | `codex-account clean` |
+| `auth` | Raw passthrough to codex-auth | `--` passthrough | `codex-account auth -- list --debug` |
+
+## Local Web UI
+
+`codex-account ui` starts a local HTTP server in background and opens your browser.
+
+- Default bind: `127.0.0.1`
+- Default port: `4673` (stable bookmark URL)
+- Default mode: detached (terminal is free immediately)
+- Default persistence: service stays up after terminals close (`--idle-timeout 0`)
+- Optional auto-stop: set `--idle-timeout <seconds>`
+- No Rust, Node, npm, cargo, or Tauri required
+- UI includes Local + Advanced action panels and can execute all CLI workflows from browser:
+  - Local: `save`, `add`, `list`, `current`, `switch`, `rename`, `remove`, `run`, `usage-local`
+  - Advanced: `status`, `login`, `list-adv`, `switch-adv`, `import`, `remove-adv`, `config`, `daemon`, `clean`, raw `auth`
+  - Automation: notifications + auto-switch rules and account eligibility
+
+Examples:
+
+```bash
+codex-account ui
+```
+
+```bash
+codex-account ui --no-open --port 7788
+```
+
+```bash
+codex-account ui --host 127.0.0.1 --interval 3
+```
+
+```bash
+codex-account ui --idle-timeout 30
+```
+
+```bash
+codex-account ui --foreground
+```
+
+```bash
+codex-account ui-service restart --no-open
+```
+
+```bash
+codex-account ui-autostart install
+```
+
+### UI Highlights
+
+- Theme modes: `Dark`, `Light`, `Auto` (follows system).
+- Guarded UI boot path with inline fatal banner (prevents blank-screen failure mode).
+- Advanced mode + auto refresh are switch controls.
+- Interval uses stepper controls (`- number +`).
+- Current account row is pinned first with a green check icon.
+- Sorting supported from table headers.
+- Usage reset columns show `5H Reset At` and `Weekly Reset At`.
+- Row actions: inline `Switch` + 3-dot menu (`Rename`, `Remove`).
+- Auto-switch eligibility checkbox per row (`Auto` column).
+- Top actions include quick `Add Account` and `Export Data` (JSON snapshot).
+- Notifications panel supports warning thresholds and test notifications.
+- Auto-switch rules panel supports delay/cooldown/thresholds/ranking mode.
+- Event timeline panel shows warnings, cancels, switches, and errors.
+- Section tooltips and collapsible `Guide & Help` are included.
+
+### New API Endpoints
+
+- `GET /api/ui-config`
+- `POST /api/ui-config`
+- `GET /api/auto-switch/state`
+- `POST /api/auto-switch/enable`
+- `POST /api/auto-switch/run-once`
+- `POST /api/auto-switch/account-eligibility`
+- `GET /api/events`
+- `POST /api/notifications/test`
+
+## Live Usage
+
+Use real-time usage refresh with 4 color bands:
+
+- `0-24`: red
+- `25-49`: orange
+- `50-74`: yellow
+- `75-100`: green
+
+```bash
+codex-account usage-local --watch --interval 3
+```
+
+`--interval 3` means refresh every 3 seconds.
+
+## JSON Interfaces
+
+- `codex-account usage-local --json`
+- `codex-account list --json`
+- `codex-account current --json`
+- `codex-account status --json`
+
+## Known Limits
+
+- Local profile switch and advanced identity model are different concepts.
+- If multiple profiles map to the same principal/account context, switching between them may not change effective backend identity.
+- Embedded Codex terminal may keep session state; external terminal or `run` mode is often more reliable.
