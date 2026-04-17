@@ -1457,8 +1457,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
       --text:#ffffff; --text-soft:#adaaaa; --line:rgba(72,72,71,.15);
       --primary:#3fff8b; --primary-container:#13ea79; --on-primary:#005d2c;
       --ok:#3fff8b; --warn:#ffd16c; --danger:#ff716c;
-      --ambient:0 12px 36px rgba(255,255,255,.05);
-      --bg-grad:radial-gradient(1000px 500px at 82% -20%, rgba(63,255,139,.08), transparent 65%), radial-gradient(900px 420px at 10% 0%, rgba(255,209,108,.05), transparent 70%);
+      --ambient:none;
+      --bg-grad:none;
     }
     [data-theme=\"light\"]{
       --surface:#f2f4f6; --surface-low:#ffffff; --surface-card:#f8fafb; --surface-high:#f0f3f5; --surface-highest:#e8ecef; --surface-black:#fff;
@@ -1667,53 +1667,33 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .auto-switch-countdown.active{display:inline-flex}
     #autoSwitchRulesSection.auto-switch-armed{
       border-color:var(--switch-urgency-border, rgba(63,255,139,.35));
-      box-shadow:
-        0 0 0 1px var(--switch-urgency-inset, rgba(63,255,139,.12)) inset,
-        0 14px 36px var(--switch-urgency-shadow, rgba(63,255,139,.09));
-      animation:autoSwitchPulse var(--switch-urgency-pulse, 1.1s) ease-in-out infinite;
-      background:
-        radial-gradient(650px 180px at 10% 0%, var(--switch-urgency-glow, rgba(63,255,139,.08)), transparent 70%),
-        var(--surface-low);
+      box-shadow:0 0 0 1px var(--switch-urgency-inset, rgba(63,255,139,.12)) inset;
+      animation:none;
+      background:var(--surface-low);
     }
     #autoSwitchRulesSection.auto-switch-armed.switch-urgency-green{
       --switch-urgency-border:rgba(63,255,139,.35);
       --switch-urgency-inset:rgba(63,255,139,.12);
-      --switch-urgency-shadow:rgba(63,255,139,.10);
-      --switch-urgency-glow:rgba(63,255,139,.10);
       --switch-urgency-text:var(--primary);
       --switch-urgency-bg:rgba(63,255,139,.09);
-      --switch-urgency-pulse:1.15s;
     }
     #autoSwitchRulesSection.auto-switch-armed.switch-urgency-yellow{
       --switch-urgency-border:rgba(255,209,108,.40);
       --switch-urgency-inset:rgba(255,209,108,.14);
-      --switch-urgency-shadow:rgba(255,209,108,.12);
-      --switch-urgency-glow:rgba(255,209,108,.12);
       --switch-urgency-text:#ffd16c;
       --switch-urgency-bg:rgba(255,209,108,.11);
-      --switch-urgency-pulse:1.0s;
     }
     #autoSwitchRulesSection.auto-switch-armed.switch-urgency-orange{
       --switch-urgency-border:rgba(255,159,67,.45);
       --switch-urgency-inset:rgba(255,159,67,.16);
-      --switch-urgency-shadow:rgba(255,159,67,.14);
-      --switch-urgency-glow:rgba(255,159,67,.14);
       --switch-urgency-text:#ff9f43;
       --switch-urgency-bg:rgba(255,159,67,.12);
-      --switch-urgency-pulse:.9s;
     }
     #autoSwitchRulesSection.auto-switch-armed.switch-urgency-red{
       --switch-urgency-border:rgba(255,113,108,.5);
       --switch-urgency-inset:rgba(255,113,108,.2);
-      --switch-urgency-shadow:rgba(255,113,108,.18);
-      --switch-urgency-glow:rgba(255,113,108,.18);
       --switch-urgency-text:#ff8a8a;
       --switch-urgency-bg:rgba(255,113,108,.14);
-      --switch-urgency-pulse:.72s;
-    }
-    @keyframes autoSwitchPulse{
-      0%,100%{filter:brightness(1)}
-      50%{filter:brightness(1.06)}
     }
     .status-row{background:var(--surface-low);border-radius:var(--radius);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:14px}
     .status-row .v{font-size:15px;font-family:\"JetBrains Mono\",monospace;color:var(--text)}
@@ -1971,6 +1951,30 @@ def render_ui_html(default_interval: float, token: str) -> str:
       line-height:1.4;
     }
     .guide-block li{margin:0}
+    .panel-footer{
+      margin-top:var(--gap);
+      padding:12px 14px;
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      background:var(--surface-low);
+      color:var(--text-soft);
+      font-size:12px;
+      line-height:1.5;
+    }
+    .panel-footer strong{color:var(--text)}
+    .panel-footer a{
+      color:var(--primary);
+      text-decoration:none;
+      font-weight:600;
+    }
+    .panel-footer a:hover{text-decoration:underline}
+    .panel-footer-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px 16px;
+      align-items:center;
+      margin-top:6px;
+    }
     @media (max-width:900px){
       .guide-grid{grid-template-columns:1fr}
     }
@@ -2191,6 +2195,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
         </div>
       </div>
     </details>
+    <footer class=\"panel-footer\" aria-label=\"Project footer\">
+      <div><strong>MIT License</strong> | Copyright (c) 2026 Codex Account Manager contributors</div>
+      <div class=\"panel-footer-row\">
+        <span>Project:</span>
+        <a href=\"https://github.com/alisinaee/Codex-Account-Manager\" target=\"_blank\" rel=\"noopener noreferrer\">github.com/alisinaee/Codex-Account-Manager</a>
+      </div>
+      <div style=\"margin-top:6px;\">If you like this product, feel free to star the GitHub repository.</div>
+    </footer>
   </main>
 
   <div id=\"modalBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\">

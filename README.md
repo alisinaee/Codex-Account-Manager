@@ -76,6 +76,38 @@ codex-account list-adv --debug
 - Port `4673` busy: run `codex-account ui --port 7788`.
 - Browser not opening automatically: run with `--no-open` and open URL manually.
 
+## Homebrew
+
+Install directly from this repository formula:
+
+```bash
+brew install --formula https://raw.githubusercontent.com/alisinaee/Codex-Account-Manager/main/Formula/codex-account-manager.rb
+```
+
+Upgrade later:
+
+```bash
+brew update
+brew upgrade codex-account-manager
+```
+
+### Homebrew Release Update Steps (Maintainer)
+
+For each new app release:
+
+1. Bump app version and create GitHub release tag (for example `v0.0.2`).
+2. Compute tarball checksum:
+
+```bash
+curl -L -s https://github.com/alisinaee/Codex-Account-Manager/archive/refs/tags/v0.0.2.tar.gz | shasum -a 256
+```
+
+3. Update [`Formula/codex-account-manager.rb`](Formula/codex-account-manager.rb):
+   - `url` with new tag
+   - `sha256` with new checksum
+4. Commit and push formula update.
+5. Users run `brew upgrade codex-account-manager`.
+
 ## Local Mode Commands
 
 | Command | What It Does | Common Flags | Copy Template |
@@ -260,3 +292,27 @@ codex-account usage-local --watch --interval 3
 - Local profile switch and advanced identity model are different concepts.
 - If multiple profiles map to the same principal/account context, switching between them may not change effective backend identity.
 - Embedded Codex terminal may keep session state; external terminal or `run` mode is often more reliable.
+
+## License
+
+MIT License
+
+Copyright (c) 2026 drnoobmaster
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
