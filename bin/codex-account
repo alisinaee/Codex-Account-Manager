@@ -47,6 +47,7 @@ APP_CANDIDATES = [
 ]
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
 DEFAULT_APP_VERSION = "0.0.1-alpha-test"
+AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
 def load_app_version() -> str:
@@ -113,6 +114,7 @@ DEFAULT_CAM_CONFIG = {
 
 
 ADD_LOGIN_LOCK = threading.Lock()
+CAM_CONFIG_LOCK = threading.RLock()
 ADD_LOGIN_SESSIONS: dict[str, dict] = {}
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
@@ -472,7 +474,7 @@ def sanitize_cam_config(raw: dict) -> dict:
     auto["candidate_policy"] = "only_selected"
     auto["same_principal_policy"] = "skip" if auto.get("same_principal_policy") != "allow" else "allow"
     auto["cooldown_sec"] = clamp_int(auto.get("cooldown_sec"), 60, minimum=0, maximum=3600)
-    auto["ranking_mode"] = auto.get("ranking_mode") if auto.get("ranking_mode") in ("balanced", "max_5h", "max_weekly", "custom_weights") else "balanced"
+    auto["ranking_mode"] = auto.get("ranking_mode") if auto.get("ranking_mode") in ("balanced", "max_5h", "max_weekly", "manual") else "balanced"
     w = auto.get("weights", {})
     rem5h = clamp_float(w.get("rem5h"), 0.40, minimum=0.0, maximum=1.0)
     remw = clamp_float(w.get("remWeekly"), 0.35, minimum=0.0, maximum=1.0)
@@ -517,31 +519,34 @@ def sanitize_cam_config(raw: dict) -> dict:
 
 
 def load_cam_config() -> dict:
-    ensure_dirs()
-    if not CAM_CONFIG_FILE.exists():
-        cfg = sanitize_cam_config({})
-        atomic_write_json(CAM_CONFIG_FILE, cfg)
+    with CAM_CONFIG_LOCK:
+        ensure_dirs()
+        if not CAM_CONFIG_FILE.exists():
+            cfg = sanitize_cam_config({})
+            atomic_write_json(CAM_CONFIG_FILE, cfg)
+            return cfg
+        try:
+            raw = load_json(CAM_CONFIG_FILE)
+        except Exception:
+            raw = {}
+        cfg = sanitize_cam_config(raw if isinstance(raw, dict) else {})
         return cfg
-    try:
-        raw = load_json(CAM_CONFIG_FILE)
-    except Exception:
-        raw = {}
-    cfg = sanitize_cam_config(raw if isinstance(raw, dict) else {})
-    return cfg
 
 
 def save_cam_config(cfg: dict) -> dict:
-    norm = sanitize_cam_config(cfg if isinstance(cfg, dict) else {})
-    atomic_write_json(CAM_CONFIG_FILE, norm)
-    return norm
+    with CAM_CONFIG_LOCK:
+        norm = sanitize_cam_config(cfg if isinstance(cfg, dict) else {})
+        atomic_write_json(CAM_CONFIG_FILE, norm)
+        return norm
 
 
 def update_cam_config(patch: dict) -> dict:
-    cfg = load_cam_config()
-    if not isinstance(patch, dict):
-        return cfg
-    deep_merge(cfg, patch)
-    return save_cam_config(cfg)
+    with CAM_CONFIG_LOCK:
+        cfg = load_cam_config()
+        if not isinstance(patch, dict):
+            return cfg
+        deep_merge(cfg, patch)
+        return save_cam_config(cfg)
 
 
 def decode_jwt_payload(token: str):
@@ -1478,6 +1483,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
       margin-bottom:12px;
       padding:2px 2px 6px;
     }
+    .app-title-wrap{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-width:0;
+    }
     .app-title{
       font-family:Inter,"Segoe UI",-apple-system,sans-serif;
       font-size:18px;
@@ -1491,6 +1502,34 @@ def render_ui_html(default_interval: float, token: str) -> str:
       color:var(--text-soft);
       letter-spacing:.08em;
       text-transform:uppercase;
+    }
+    .save-spinner{
+      display:none;
+      width:15px;
+      height:15px;
+      border-radius:999px;
+      border:2px solid rgba(72,72,71,.35);
+      border-top-color:var(--primary);
+      border-right-color:rgba(63,255,139,.72);
+      animation:spin .8s linear infinite;
+      flex:0 0 auto;
+    }
+    .save-spinner.active{display:inline-block}
+    .save-dot{
+      width:7px;
+      height:7px;
+      border-radius:999px;
+      background:var(--primary);
+      box-shadow:0 0 10px rgba(63,255,139,.45);
+      animation:savePulse .9s ease-in-out infinite;
+    }
+    @keyframes savePulse{
+      0%,100%{transform:scale(.88);opacity:.7}
+      50%{transform:scale(1.1);opacity:1}
+    }
+    @keyframes spin{
+      from{transform:rotate(0deg)}
+      to{transform:rotate(360deg)}
     }
     .app-header-right{
       margin-left:auto;
@@ -1578,6 +1617,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .setting-row.metric .stepper{margin-left:auto}
     .btn-block{width:100%;display:flex;align-items:center;justify-content:center}
     .settings-footer-btn{margin-top:auto}
+    .exec-actions{
+      margin-top:auto;
+      display:grid;
+      grid-template-columns:1fr 1fr 1fr 1fr;
+      gap:8px;
+      width:100%;
+    }
+    .exec-actions .settings-footer-btn{
+      margin-top:0;
+      min-width:0;
+    }
     .setting-field select{width:100%}
     .inset-row{
       background:var(--surface-black);
@@ -1591,6 +1641,80 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .field-block{display:inline-flex;align-items:center;gap:8px}
     .label{font-size:12px;color:var(--text-soft)}
     .rules-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .auto-switch-head{
+      margin-bottom:10px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+    }
+    .auto-switch-countdown{
+      display:none;
+      align-items:center;
+      justify-content:center;
+      min-height:22px;
+      padding:2px 9px;
+      border:1px solid var(--switch-urgency-border, rgba(63,255,139,.26));
+      border-radius:999px;
+      color:var(--switch-urgency-text, var(--primary));
+      background:var(--switch-urgency-bg, rgba(63,255,139,.08));
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:11px;
+      letter-spacing:.06em;
+      white-space:nowrap;
+      transition:color .25s ease, background .25s ease, border-color .25s ease;
+    }
+    .auto-switch-countdown.active{display:inline-flex}
+    #autoSwitchRulesSection.auto-switch-armed{
+      border-color:var(--switch-urgency-border, rgba(63,255,139,.35));
+      box-shadow:
+        0 0 0 1px var(--switch-urgency-inset, rgba(63,255,139,.12)) inset,
+        0 14px 36px var(--switch-urgency-shadow, rgba(63,255,139,.09));
+      animation:autoSwitchPulse var(--switch-urgency-pulse, 1.1s) ease-in-out infinite;
+      background:
+        radial-gradient(650px 180px at 10% 0%, var(--switch-urgency-glow, rgba(63,255,139,.08)), transparent 70%),
+        var(--surface-low);
+    }
+    #autoSwitchRulesSection.auto-switch-armed.switch-urgency-green{
+      --switch-urgency-border:rgba(63,255,139,.35);
+      --switch-urgency-inset:rgba(63,255,139,.12);
+      --switch-urgency-shadow:rgba(63,255,139,.10);
+      --switch-urgency-glow:rgba(63,255,139,.10);
+      --switch-urgency-text:var(--primary);
+      --switch-urgency-bg:rgba(63,255,139,.09);
+      --switch-urgency-pulse:1.15s;
+    }
+    #autoSwitchRulesSection.auto-switch-armed.switch-urgency-yellow{
+      --switch-urgency-border:rgba(255,209,108,.40);
+      --switch-urgency-inset:rgba(255,209,108,.14);
+      --switch-urgency-shadow:rgba(255,209,108,.12);
+      --switch-urgency-glow:rgba(255,209,108,.12);
+      --switch-urgency-text:#ffd16c;
+      --switch-urgency-bg:rgba(255,209,108,.11);
+      --switch-urgency-pulse:1.0s;
+    }
+    #autoSwitchRulesSection.auto-switch-armed.switch-urgency-orange{
+      --switch-urgency-border:rgba(255,159,67,.45);
+      --switch-urgency-inset:rgba(255,159,67,.16);
+      --switch-urgency-shadow:rgba(255,159,67,.14);
+      --switch-urgency-glow:rgba(255,159,67,.14);
+      --switch-urgency-text:#ff9f43;
+      --switch-urgency-bg:rgba(255,159,67,.12);
+      --switch-urgency-pulse:.9s;
+    }
+    #autoSwitchRulesSection.auto-switch-armed.switch-urgency-red{
+      --switch-urgency-border:rgba(255,113,108,.5);
+      --switch-urgency-inset:rgba(255,113,108,.2);
+      --switch-urgency-shadow:rgba(255,113,108,.18);
+      --switch-urgency-glow:rgba(255,113,108,.18);
+      --switch-urgency-text:#ff8a8a;
+      --switch-urgency-bg:rgba(255,113,108,.14);
+      --switch-urgency-pulse:.72s;
+    }
+    @keyframes autoSwitchPulse{
+      0%,100%{filter:brightness(1)}
+      50%{filter:brightness(1.06)}
+    }
     .status-row{background:var(--surface-low);border-radius:var(--radius);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:14px}
     .status-row .v{font-size:15px;font-family:\"JetBrains Mono\",monospace;color:var(--text)}
     .k{font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.12em}
@@ -1758,7 +1882,98 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .chain-edit-handle{font-size:10px;color:var(--text-soft);letter-spacing:.08em;text-transform:uppercase}
     .chain-edit-arrow{display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;color:var(--text-soft);padding:1px 0}
     .chain-edit-empty{font-size:12px;color:var(--text-soft);padding:8px;border:1px dashed var(--line);border-radius:var(--radius);background:var(--surface-black)}
-    details.guide{margin-top:var(--gap);padding:10px}
+    details.guide{
+      margin-top:var(--gap);
+      padding:0;
+      overflow:hidden;
+    }
+    details.guide summary{
+      list-style:none;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:12px 14px;
+      margin:0;
+      user-select:none;
+      border-bottom:1px solid transparent;
+      transition:background .15s ease, border-color .15s ease;
+    }
+    details.guide summary::-webkit-details-marker{display:none}
+    details.guide summary:hover{background:var(--surface-high)}
+    details.guide summary:focus-visible{
+      outline:2px solid color-mix(in srgb,var(--primary) 62%, transparent);
+      outline-offset:-2px;
+    }
+    details.guide[open] summary{
+      border-bottom-color:var(--line);
+      background:color-mix(in srgb,var(--surface-card) 86%, var(--surface-high) 14%);
+    }
+    .guide-chevron{
+      width:16px;
+      height:16px;
+      color:var(--text-soft);
+      flex:0 0 auto;
+      transition:transform .18s ease,color .18s ease;
+    }
+    details.guide[open] .guide-chevron{
+      transform:rotate(90deg);
+      color:var(--text);
+    }
+    .guide-title{
+      font-size:11px;
+      color:var(--text-soft);
+      text-transform:uppercase;
+      letter-spacing:.12em;
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+    }
+    .guide-body{
+      display:grid;
+      gap:10px;
+      padding:12px 14px 14px;
+      background:var(--surface-card);
+    }
+    .guide-intro{
+      margin:0;
+      color:var(--text-soft);
+      font-size:13px;
+      line-height:1.45;
+    }
+    .guide-grid{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:10px;
+    }
+    .guide-block{
+      background:var(--surface-black);
+      border:1px solid rgba(72,72,71,.2);
+      border-radius:var(--radius);
+      padding:9px 10px;
+      display:grid;
+      gap:6px;
+      min-width:0;
+    }
+    .guide-block h4{
+      margin:0;
+      font-size:11px;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      color:var(--text-soft);
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+    }
+    .guide-block ul{
+      margin:0;
+      padding-left:18px;
+      display:grid;
+      gap:4px;
+      color:var(--text);
+      font-size:12px;
+      line-height:1.4;
+    }
+    .guide-block li{margin:0}
+    @media (max-width:900px){
+      .guide-grid{grid-template-columns:1fr}
+    }
     .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:40}
     .modal{width:min(520px,92vw);background:color-mix(in srgb,var(--surface-highest) 60%, transparent);backdrop-filter:blur(24px);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
     .modal h3{margin:0 0 8px 0}.modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}.modal .body{white-space:pre-wrap;color:var(--text-soft)}.modal input{width:100%;margin-top:8px}
@@ -1767,7 +1982,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
 <body>
   <main class=\"container\">
     <section class=\"app-header\">
-      <div class=\"app-title\">Codex Account Manager</div>
+      <div class=\"app-title-wrap\">
+        <div class=\"app-title\">Codex Account Manager</div>
+        <span id=\"saveSpinner\" class=\"save-spinner\" aria-label=\"Saving\" title=\"Saving\"></span>
+      </div>
       <div class=\"app-header-right\">
         <div class=\"app-version\">v__UI_VERSION__</div>
         <button id=\"themeIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Theme: auto\" aria-label=\"Cycle theme\">◐</button>
@@ -1820,8 +2038,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
       </div>
     </section>
 
-    <section data-settings-section=\"1\" class=\"section card\" style=\"padding:12px;\">
-      <div class=\"k\" style=\"margin-bottom:10px;\">Auto-Switch Rules</div>
+    <section id=\"autoSwitchRulesSection\" data-settings-section=\"1\" class=\"section card\" style=\"padding:12px;\">
+      <div class=\"auto-switch-head\">
+        <div class=\"k\" style=\"margin-bottom:0;\">Auto-Switch Rules</div>
+        <div id=\"asPendingCountdown\" class=\"auto-switch-countdown\">Switch in 00:00</div>
+      </div>
       <div class=\"rules-grid\">
         <div class=\"rules-col settings-card\">
           <div class=\"rules-title\">Execution</div>
@@ -1833,15 +2054,16 @@ def render_ui_html(default_interval: float, token: str) -> str:
             <span class=\"setting-label\">Delay (sec)</span>
             <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"asDelay\" type=\"number\" min=\"0\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
           </div>
-          <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">Cooldown (sec)</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"asCooldown\" type=\"number\" min=\"0\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
+          <div class=\"exec-actions\">
+            <button id=\"asRunSwitchBtn\" class=\"btn btn-block settings-footer-btn\">Run Switch</button>
+            <button id=\"asRapidTestBtn\" class=\"btn btn-block settings-footer-btn\">Rapid Test</button>
+            <button id=\"asForceStopBtn\" class=\"btn btn-block settings-footer-btn btn-danger\">Force Stop</button>
+            <button id=\"asTestAutoSwitchBtn\" class=\"btn btn-block settings-footer-btn\">Test Auto Switch</button>
           </div>
-          <button id=\"asRunSwitchBtn\" class=\"btn btn-block settings-footer-btn\">Run Switch</button>
         </div>
         <div class=\"rules-col settings-card\">
           <div class=\"rules-title\">Selection Policy</div>
-          <div class=\"setting-field\"><span class=\"setting-label\">Ranking</span><select id=\"asRanking\"><option value=\"balanced\">balanced</option><option value=\"max_5h\">max_5h</option><option value=\"max_weekly\">max_weekly</option><option value=\"custom_weights\">custom_weights</option></select></div>
+          <div class=\"setting-field\"><span class=\"setting-label\">Ranking</span><select id=\"asRanking\"><option value=\"balanced\">balanced</option><option value=\"max_5h\">max_5h</option><option value=\"max_weekly\">max_weekly</option><option value=\"manual\">manual</option></select></div>
           <div class=\"setting-row metric inset-row\">
             <span class=\"setting-label\">5H switch %</span>
             <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"as5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
@@ -1850,10 +2072,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
             <span class=\"setting-label\">Weekly switch %</span>
             <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"asWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
           </div>
-          <div class=\"field-row rules-actions\"><button id=\"asAutoArrangeBtn\" class=\"btn-primary\">Auto Arrange</button></div>
+          <div id=\"asAutoArrangeRow\" class=\"field-row rules-actions\"><button id=\"asAutoArrangeBtn\" class=\"btn-primary\">Auto Arrange</button></div>
         </div>
       </div>
-      <div class=\"chain-panel\">
+      <div id=\"asChainPanel\" class=\"chain-panel\">
         <div class=\"chain-head\">
           <div class=\"chain-title\">Switch Chain Preview</div>
           <button id=\"asChainEditBtn\" class=\"btn\" type=\"button\">Edit</button>
@@ -1908,10 +2130,66 @@ def render_ui_html(default_interval: float, token: str) -> str:
     </section>
 
     <details class=\"guide card\">
-      <summary>Guide & Help</summary>
-      <p><b>Current row:</b> green check icon marks active profile and is pinned first.</p>
-      <p><b>Auto column:</b> only checked rows are candidates for auto-switch.</p>
-      <p><b>Notifications:</b> local browser/system notifications are shown when warnings are emitted.</p>
+      <summary>
+        <svg class=\"guide-chevron\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\">
+          <path d=\"M9 6l6 6-6 6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"></path>
+        </svg>
+        <span class=\"guide-title\">Guide & Help</span>
+      </summary>
+      <div class=\"guide-body\">
+        <p class=\"guide-intro\">Use this app to manage local Codex profiles, monitor 5H/weekly usage, and run safe switching workflows from one panel.</p>
+        <div class=\"guide-grid\">
+          <section class=\"guide-block\">
+            <h4>Quick Start</h4>
+            <ul>
+              <li>Use <b>Add Account</b> to create a new profile via device-login flow.</li>
+              <li>Use <b>Switch</b> to activate a profile; active profile is pinned first with green status.</li>
+              <li>Use <b>Refresh</b> or enable auto-refresh to keep usage and state updated.</li>
+            </ul>
+          </section>
+          <section class=\"guide-block\">
+            <h4>Panel Controls</h4>
+            <ul>
+              <li><b>Auto Refresh</b> controls periodic data polling.</li>
+              <li><b>Refresh Interval</b> changes poll timing (seconds).</li>
+              <li>Header icons toggle <b>Theme</b>, <b>Debug mode</b>, and settings panel visibility.</li>
+            </ul>
+          </section>
+          <section class=\"guide-block\">
+            <h4>Accounts Table</h4>
+            <ul>
+              <li>Sort by headers (name, usage, remain, reset, added date, and more).</li>
+              <li><b>Columns</b> opens visibility settings for table fields.</li>
+              <li>Row menu (<b>...</b>) supports rename/remove; mobile cards open full details on tap.</li>
+              <li><b>Auto</b> checkbox marks which profiles are eligible for auto-switch.</li>
+            </ul>
+          </section>
+          <section class=\"guide-block\">
+            <h4>Auto-Switch Rules</h4>
+            <ul>
+              <li>Enable/disable engine, set delay, thresholds, and ranking mode.</li>
+              <li><b>Run Switch</b>, <b>Rapid Test</b>, <b>Force Stop</b>, and <b>Test Auto Switch</b> help validate behavior quickly.</li>
+              <li><b>Switch Chain Preview</b> shows order; <b>Edit</b> allows manual chain reorder.</li>
+              <li><b>Auto Arrange</b> recalculates balanced ordering from current usage.</li>
+            </ul>
+          </section>
+          <section class=\"guide-block\">
+            <h4>Notifications</h4>
+            <ul>
+              <li>Enable browser notifications for warning events.</li>
+              <li>Configure 5H/weekly warning thresholds in the Notifications panel.</li>
+              <li><b>Test Notify</b> sends a delayed test event to verify permission and delivery.</li>
+            </ul>
+          </section>
+          <section class=\"guide-block\">
+            <h4>System.Out & Export</h4>
+            <ul>
+              <li>In debug mode, <b>System.Out</b> shows action logs, events, warnings, and errors.</li>
+              <li><b>Export Debug Logs</b> downloads a JSON snapshot for troubleshooting.</li>
+            </ul>
+          </section>
+        </div>
+      </div>
     </details>
   </main>
 
@@ -2007,6 +2285,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let chainEditLockedName = "";
   let autoSwitchTimingSaveTimer = null;
   let autoSwitchPolicySaveTimer = null;
+  let configSaveQueue = Promise.resolve();
+  let pendingConfigSaves = 0;
+  let saveUiVisibleSince = 0;
+  let saveUiHideTimer = null;
   let pendingAutoSwitchEnabled = null;
   let diagnosticsHooksInstalled = false;
   const MAX_OVERLAY_LOGS = 900;
@@ -2057,6 +2339,99 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(el.dataset.dirty === "1") return;
     const next = String(value ?? "");
     if(String(el.value ?? "") !== next) el.value = next;
+  }
+  function formatCountdownMMSS(secRaw){
+    const sec = Math.max(0, Math.floor(Number(secRaw) || 0));
+    const mm = Math.floor(sec / 60);
+    const ss = sec % 60;
+    return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  }
+  function updateAutoSwitchArmedUI(){
+    const card = byId("autoSwitchRulesSection", false);
+    const badge = byId("asPendingCountdown", false);
+    const state = latestData?.autoState || {};
+    const due = Number(state.pending_switch_due_at || 0);
+    const delay = Math.max(1, Number(state.config_delay_sec || 0) || 1);
+    const nowSec = Date.now() / 1000;
+    const remaining = due - nowSec;
+    const armed = Number.isFinite(due) && due > 0 && remaining > 0;
+    const urgencyClasses = ["switch-urgency-green", "switch-urgency-yellow", "switch-urgency-orange", "switch-urgency-red"];
+    let urgency = "switch-urgency-green";
+    if(armed){
+      const ratio = Math.max(0, Math.min(1, remaining / delay));
+      if(remaining <= 3 || ratio <= 0.15) urgency = "switch-urgency-red";
+      else if(remaining <= 8 || ratio <= 0.35) urgency = "switch-urgency-orange";
+      else if(remaining <= 16 || ratio <= 0.6) urgency = "switch-urgency-yellow";
+    }
+    if(card){
+      card.classList.toggle("auto-switch-armed", !!armed);
+      card.classList.remove(...urgencyClasses);
+      if(armed) card.classList.add(urgency);
+    }
+    if(!badge) return;
+    if(armed){
+      badge.classList.add("active");
+      badge.classList.remove(...urgencyClasses);
+      badge.classList.add(urgency);
+      badge.textContent = `Switch in ${formatCountdownMMSS(remaining)}`;
+    } else {
+      badge.classList.remove("active");
+      badge.classList.remove(...urgencyClasses);
+      badge.textContent = "Switch in 00:00";
+    }
+  }
+  function updateRankingModeUI(modeRaw, enabledRaw){
+    const enabled = enabledRaw !== undefined ? !!enabledRaw : !!byId("asEnabled", false)?.checked;
+    const mode = String(modeRaw || "balanced");
+    const manual = mode === "manual";
+    const chainPanel = byId("asChainPanel", false);
+    const autoArrangeRow = byId("asAutoArrangeRow", false);
+    const chainEditBtn = byId("asChainEditBtn", false);
+    if(chainPanel) chainPanel.style.display = enabled ? "" : "none";
+    if(autoArrangeRow) autoArrangeRow.style.display = enabled ? "" : "none";
+    if(chainEditBtn){
+      chainEditBtn.disabled = !enabled;
+      chainEditBtn.title = enabled ? (manual ? "Edit manual chain order" : "Edit chain (switches ranking to manual)") : "Enable auto-switch first";
+    }
+  }
+  function setConfigSavingState(active, text){
+    if(saveUiHideTimer){
+      clearTimeout(saveUiHideTimer);
+      saveUiHideTimer = null;
+    }
+    const spinner = byId("saveSpinner", false);
+    if(active){
+      saveUiVisibleSince = Date.now();
+      if(spinner) spinner.classList.add("active");
+    } else {
+      const elapsed = Date.now() - saveUiVisibleSince;
+      const remain = Math.max(0, 220 - elapsed);
+      const hideNow = () => {
+        if(spinner) spinner.classList.remove("active");
+      };
+      if(remain > 0){
+        saveUiHideTimer = setTimeout(hideNow, remain);
+      } else {
+        hideNow();
+      }
+    }
+  }
+  async function enqueueConfigPatch(patch){
+    pendingConfigSaves += 1;
+    setConfigSavingState(true, "Saving...");
+    const applyPatch = async () => {
+      const keys = Object.keys(patch || {});
+      pushOverlayLog("ui", "config.patch", { keys });
+      await postApi("/api/ui-config", patch);
+    };
+    const run = configSaveQueue.then(applyPatch);
+    configSaveQueue = run.catch(() => {});
+    try{
+      return await run;
+    } finally {
+      pendingConfigSaves = Math.max(0, pendingConfigSaves - 1);
+      if(pendingConfigSaves === 0) setConfigSavingState(false);
+    }
   }
   function usageClass(v){ const n=Number(v); if(Number.isNaN(n))return ""; if(n<25)return "usage-low"; if(n<50)return "usage-midlow"; if(n<75)return "usage-mid"; return "usage-good"; }
   function fmtUsagePct(usage){
@@ -2263,6 +2638,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       const withSeconds = el.getAttribute("data-remain-seconds") === "1";
       el.textContent = Number.isFinite(ts) && ts > 0 ? fmtRemain(ts, withSeconds) : "unknown";
     });
+    updateAutoSwitchArmedUI();
   }
   function themeFromPref(sel){ if(sel==="dark") return "dark"; if(sel==="light") return "light"; return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; }
   function applyTheme(pref){ document.documentElement.setAttribute("data-theme", themeFromPref(pref || "auto")); }
@@ -2621,6 +2997,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       let holdTimer = null;
       let holdInterval = null;
       let holdTriggered = false;
+      let pointerUsed = false;
       const clearHold = () => {
         if(holdTimer){ clearTimeout(holdTimer); holdTimer = null; }
         if(holdInterval){ clearInterval(holdInterval); holdInterval = null; }
@@ -2637,6 +3014,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       const bindStepperButton = (btn, sign) => {
         btn.addEventListener("pointerdown", (ev) => {
           ev.preventDefault();
+          pointerUsed = true;
           btn.setPointerCapture?.(ev.pointerId);
           startHold(sign);
         });
@@ -2645,6 +3023,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         btn.addEventListener("pointerleave", clearHold);
         // keyboard fallback
         btn.addEventListener("click", () => {
+          if(pointerUsed){ pointerUsed = false; return; }
           if(holdTriggered){ holdTriggered = false; return; }
           applyDelta(sign);
         });
@@ -2820,9 +3199,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   }
 
   async function saveUiConfigPatch(patch){
-    const keys = Object.keys(patch || {});
-    pushOverlayLog("ui", "config.patch", { keys });
-    await postApi("/api/ui-config", patch);
+    await enqueueConfigPatch(patch);
   }
 
   async function setEligibility(name, eligible){ await postApi("/api/auto-switch/account-eligibility", { name, eligible }); }
@@ -2995,14 +3372,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const a = cfg.auto_switch || {};
     byId("asEnabled").checked = pendingAutoSwitchEnabled === null ? !!a.enabled : !!pendingAutoSwitchEnabled;
     setControlValueIfPristine("asDelay", String(a.delay_sec ?? 60));
-    setControlValueIfPristine("asCooldown", String(a.cooldown_sec ?? 60));
     const rankingEl = byId("asRanking", false);
     if(rankingEl && rankingEl.dataset.dirty !== "1") rankingEl.value = a.ranking_mode || "balanced";
+    updateRankingModeUI((rankingEl ? rankingEl.value : (a.ranking_mode || "balanced")), !!a.enabled);
     setControlValueIfPristine("as5h", String(a.thresholds?.h5_switch_pct ?? 20));
     setControlValueIfPristine("asWeekly", String(a.thresholds?.weekly_switch_pct ?? 20));
   }
 
   async function refreshAll(){
+    if(pendingConfigSaves > 0){
+      try { await configSaveQueue; } catch(_) {}
+    }
     setError("");
     const list = await safeGet("/api/list");
     const usage = await safeGet("/api/usage-local");
@@ -3031,6 +3411,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
       if(engineEl) engineEl.textContent = autoState.active ? "ACTIVE" : "IDLE";
       const engineMetaEl = byId("engineMeta", false);
       if(engineMetaEl) engineMetaEl.textContent = "pending: " + (autoState.pending_switch_due_at_text || "-") + " | cooldown: " + (autoState.cooldown_until_text || "-");
+      const rapidBtn = byId("asRapidTestBtn", false);
+      if(rapidBtn){
+        const activeRapid = !!autoState.rapid_test_active;
+        rapidBtn.disabled = activeRapid;
+        rapidBtn.textContent = activeRapid ? "Rapid Running..." : "Rapid Test";
+      }
+      updateAutoSwitchArmedUI();
     }
     if(!autoChain.__error){
       latestData.autoChain = autoChain;
@@ -3194,12 +3581,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
           debugInput.dispatchEvent(new Event("change", { bubbles: true }));
         });
       }
-      byId("notifyToggle").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { enabled: !!byId("notifyToggle").checked } }));
-      byId("notify5h").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { h5_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notify5h").value || "20", 10))) } } }));
-      byId("notifyWeekly").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { weekly_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notifyWeekly").value || "20", 10))) } } }));
+      byId("notifyToggle").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { enabled: !!byId("notifyToggle").checked } }).catch((e)=>setError(e?.message || String(e))));
+      byId("notify5h").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { h5_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notify5h").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
+      byId("notifyWeekly").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { weekly_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notifyWeekly").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
       byId("notifyTestBtn").addEventListener("click", ()=> runAction("notify.test", async ()=>{ const r = await postApi("/api/notifications/test", { delay_sec: 5 }); await triggerSystemNotification("Test notification (5s delay)", 5); return r; }));
       byId("asEnabled").addEventListener("change", async ()=>{
         const next = !!byId("asEnabled").checked;
+        const rankingNow = String(byId("asRanking", false)?.value || latestData?.config?.auto_switch?.ranking_mode || "balanced");
+        updateRankingModeUI(rankingNow, next);
         pendingAutoSwitchEnabled = next;
         try{
           await runAction("auto_switch.enable", ()=>postApi("/api/auto-switch/enable", { enabled: next }));
@@ -3208,6 +3597,57 @@ def render_ui_html(default_interval: float, token: str) -> str:
         }
       });
       byId("asRunSwitchBtn").addEventListener("click", ()=> runAction("auto_switch.run_switch", ()=>postApi("/api/auto-switch/run-switch", {})));
+      byId("asRapidTestBtn").addEventListener("click", ()=> runAction("auto_switch.rapid_test", ()=>postApi("/api/auto-switch/rapid-test", {})));
+      byId("asForceStopBtn").addEventListener("click", ()=> runAction("auto_switch.stop", ()=>postApi("/api/auto-switch/stop", {})));
+      byId("asTestAutoSwitchBtn").addEventListener("click", async ()=>{
+        const ask = await openModal({
+          title: "Test Auto Switch",
+          body: "Temporary 5H threshold % for test (optional). Leave empty to use current value.",
+          input: true,
+          inputPlaceholder: "e.g. 59",
+        });
+        if(!ask || !ask.ok) return;
+        const raw = String(ask.value || "").trim();
+        let threshold = null;
+        if(raw){
+          const n = parseInt(raw, 10);
+          if(!Number.isFinite(n)){
+            setError("Test threshold must be a number.");
+            return;
+          }
+          threshold = Math.max(0, Math.min(100, n));
+        }
+        const btn = byId("asTestAutoSwitchBtn", false);
+        const prevTxt = btn ? btn.textContent : "";
+        if(btn){
+          btn.disabled = true;
+          btn.textContent = "Testing...";
+        }
+        setError("");
+        try{
+          const data = await postApi("/api/auto-switch/test", {
+            threshold_5h: threshold,
+            timeout_sec: 30,
+          });
+          const used = data?.used_threshold_5h;
+          const switched = !!data?.switched;
+          let body = `Used 5H threshold: ${used ?? "(current)"}%\\nTimeout: ${data?.timeout_sec ?? 30}s`;
+          if(switched){
+            const ev = data?.event || {};
+            body += `\\n\\nResult: switched\\nEvent: ${ev.message || "auto-switched"}`;
+          } else {
+            body += `\\n\\nResult: no switch event within timeout.\\nCheck System.Out for warning/no-candidate details.`;
+          }
+          await openModal({ title: "Auto Switch Test Result", body });
+        } catch(e){
+          setError(e?.message || String(e));
+        } finally {
+          if(btn){
+            btn.disabled = false;
+            btn.textContent = prevTxt || "Test Auto Switch";
+          }
+        }
+      });
       byId("asChainEditBtn").addEventListener("click", ()=>openChainEditModal());
       byId("chainEditCancelBtn").addEventListener("click", ()=>closeChainEditModal());
       byId("chainEditSaveBtn").addEventListener("click", async ()=>{
@@ -3216,27 +3656,40 @@ def render_ui_html(default_interval: float, token: str) -> str:
         const payloadChain = ensureLockedChainOrder(chainEditNames);
         const saveBtn = byId("chainEditSaveBtn", false);
         const cancelBtn = byId("chainEditCancelBtn", false);
+        const chainBox = byId("asChainPreview", false);
         const prevSaveTxt = saveBtn ? saveBtn.textContent : "";
         if(saveBtn){
           saveBtn.disabled = true;
           saveBtn.textContent = "Saving...";
         }
         if(cancelBtn) cancelBtn.disabled = true;
+        if(chainBox) chainBox.style.opacity = "0.55";
         pushOverlayLog("ui", "action.start auto_switch.chain.save");
         try{
-          const data = await postApi("/api/auto-switch/chain", { chain: payloadChain });
-          const names = Array.isArray(data?.chain) ? data.chain : payloadChain;
-          const items = Array.isArray(data?.items) && data.items.length
-            ? data.items
-            : names.map((n)=>({ name:n, remaining_5h:null, remaining_weekly:null }));
-          const previewPayload = {
-            chain: names,
-            items,
-            manual_chain: Array.isArray(data?.manual_chain) ? data.manual_chain : payloadChain,
-            chain_text: String(data?.chain_text || names.join(" -> ") || "-"),
-          };
-          latestData.autoChain = previewPayload;
-          renderChainPreview(previewPayload);
+          await postApi("/api/auto-switch/chain", { chain: payloadChain });
+          const rankingEl = byId("asRanking", false);
+          if(rankingEl){
+            rankingEl.value = "manual";
+            rankingEl.dataset.dirty = "0";
+          }
+          if(latestData?.config?.auto_switch){
+            latestData.config.auto_switch.ranking_mode = "manual";
+          }
+          updateRankingModeUI("manual", !!byId("asEnabled", false)?.checked);
+          const liveChain = await safeGet("/api/auto-switch/chain");
+          if(liveChain && !liveChain.__error){
+            latestData.autoChain = liveChain;
+            renderChainPreview(liveChain);
+          } else {
+            const fallbackPayload = {
+              chain: payloadChain,
+              items: payloadChain.map((n)=>({ name:n, remaining_5h:null, remaining_weekly:null })),
+              manual_chain: payloadChain,
+              chain_text: payloadChain.join(" -> ") || "-",
+            };
+            latestData.autoChain = fallbackPayload;
+            renderChainPreview(fallbackPayload);
+          }
           closeChainEditModal();
           pushOverlayLog("ui", "action.success auto_switch.chain.save", { duration_ms: Date.now() - startedAt });
           setTimeout(()=>{ refreshAll().catch(()=>{}); }, 0);
@@ -3245,6 +3698,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
           pushOverlayLog("error", "action.fail auto_switch.chain.save", { error: msg, duration_ms: Date.now() - startedAt });
           setError(msg);
         } finally {
+          if(chainBox) chainBox.style.opacity = "";
           if(saveBtn){
             saveBtn.disabled = false;
             saveBtn.textContent = prevSaveTxt || "Save";
@@ -3253,21 +3707,20 @@ def render_ui_html(default_interval: float, token: str) -> str:
         }
       });
       const saveAutoSwitchTiming = async () => {
+        if(autoSwitchTimingSaveTimer){
+          clearTimeout(autoSwitchTimingSaveTimer);
+          autoSwitchTimingSaveTimer = null;
+        }
         const cfgAuto = latestData?.config?.auto_switch || {};
         const delay = intOrDefault(byId("asDelay").value, cfgAuto.delay_sec ?? 60, 0, 3600);
-        const cooldown = intOrDefault(byId("asCooldown").value, cfgAuto.cooldown_sec ?? 60, 0, 3600);
         byId("asDelay").value = String(delay);
-        byId("asCooldown").value = String(cooldown);
         try{
-          await saveUiConfigPatch({ auto_switch: { delay_sec: delay, cooldown_sec: cooldown } });
+          await saveUiConfigPatch({ auto_switch: { delay_sec: delay } });
           if(latestData?.config?.auto_switch){
             latestData.config.auto_switch.delay_sec = delay;
-            latestData.config.auto_switch.cooldown_sec = cooldown;
           }
           const d1 = byId("asDelay", false);
-          const d2 = byId("asCooldown", false);
           if(d1) d1.dataset.dirty = "0";
-          if(d2) d2.dataset.dirty = "0";
         } catch(e){
           setError(e?.message || String(e));
         }
@@ -3279,13 +3732,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
           saveAutoSwitchTiming();
         }, 320);
       };
-      ["asDelay","asCooldown"].forEach((id) => {
+      ["asDelay"].forEach((id) => {
         const el = byId(id, false);
         if(!el) return;
         el.addEventListener("input", scheduleAutoSwitchTimingSave);
         el.addEventListener("change", saveAutoSwitchTiming);
       });
       const saveSelectionPolicy = async () => {
+        if(autoSwitchPolicySaveTimer){
+          clearTimeout(autoSwitchPolicySaveTimer);
+          autoSwitchPolicySaveTimer = null;
+        }
         const cfgAuto = latestData?.config?.auto_switch || {};
         const cfgThr = cfgAuto.thresholds || {};
         const patch = {
@@ -3325,9 +3782,15 @@ def render_ui_html(default_interval: float, token: str) -> str:
       });
       const rankingEl = byId("asRanking", false);
       if(rankingEl){
-        rankingEl.addEventListener("change", ()=>saveSelectionPolicy().catch((e)=>setError(e?.message || String(e))));
+        rankingEl.addEventListener("change", ()=>{
+          updateRankingModeUI(rankingEl.value, !!byId("asEnabled", false)?.checked);
+          saveSelectionPolicy().catch((e)=>setError(e?.message || String(e)));
+        });
       }
       byId("asAutoArrangeBtn").addEventListener("click", async ()=>{
+        const rankingEl = byId("asRanking", false);
+        if(rankingEl) rankingEl.value = "balanced";
+        updateRankingModeUI("balanced", !!byId("asEnabled", false)?.checked);
         const btn = byId("asAutoArrangeBtn", false);
         const prevTxt = btn ? btn.textContent : "";
         setError("");
@@ -3362,7 +3825,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
           }
         }
       });
-      ["asDelay","asCooldown","as5h","asWeekly","asRanking"].forEach((id) => {
+      ["asDelay","as5h","asWeekly","asRanking"].forEach((id) => {
         const el = byId(id, false);
         if(!el) return;
         const markDirty = () => { el.dataset.dirty = "1"; };
@@ -3514,14 +3977,6 @@ def _candidate_score(row: dict, cfg: dict) -> tuple[float, tuple]:
         score = r5n
     elif mode == "max_weekly":
         score = rwn
-    elif mode == "custom_weights":
-        w = auto.get("weights") or {}
-        score = (
-            float(w.get("rem5h", 0.40)) * r5n
-            + float(w.get("remWeekly", 0.35)) * rwn
-            + float(w.get("reset5h", 0.15)) * s5
-            + float(w.get("resetWeekly", 0.10)) * sw
-        )
     else:
         score = 0.40 * r5n + 0.35 * rwn + 0.15 * s5 + 0.10 * sw
     tie = (
@@ -3554,6 +4009,9 @@ def _choose_auto_switch_candidate(usage_payload: dict, cfg: dict):
     rows = usage_payload.get("profiles") or []
     current_name = usage_payload.get("current_profile")
     auto = (cfg.get("auto_switch") or {})
+    ranking_mode = str(auto.get("ranking_mode") or "balanced")
+    if ranking_mode == "manual":
+        return _choose_manual_chain_target(usage_payload, cfg)
     same_policy = auto.get("same_principal_policy", "skip")
     cands = []
     cands_by_name: dict[str, dict] = {}
@@ -3572,34 +4030,52 @@ def _choose_auto_switch_candidate(usage_payload: dict, cfg: dict):
         cands_by_name[str(name)] = r
     if not cands:
         return None
-    chain_names = _ordered_chain_names(usage_payload, cfg)
-    for nm in chain_names:
-        if nm == current_name:
-            continue
-        row = cands_by_name.get(str(nm))
-        if row:
-            return row
     cands.sort(key=lambda x: (x[0], x[1]), reverse=True)
     return cands[0][2]
 
 
+def _next_chain_name(chain_names: list[str], current_name: str | None, allowed_names: set[str] | None = None) -> str | None:
+    if not chain_names:
+        return None
+    names = [str(x) for x in chain_names if str(x).strip()]
+    if not names:
+        return None
+    allowed = set(str(x) for x in allowed_names) if isinstance(allowed_names, set) else None
+    cur = str(current_name) if current_name else None
+
+    def is_allowed(nm: str) -> bool:
+        if cur and nm == cur:
+            return False
+        if allowed is not None and nm not in allowed:
+            return False
+        return True
+
+    if cur and cur in names:
+        idx = names.index(cur)
+        total = len(names)
+        for step in range(1, total + 1):
+            cand = names[(idx + step) % total]
+            if is_allowed(cand):
+                return cand
+        return None
+    for cand in names:
+        if is_allowed(cand):
+            return cand
+    return None
+
+
 def _choose_manual_chain_target(usage_payload: dict, cfg: dict):
     rows = usage_payload.get("profiles") or []
-    current_name = usage_payload.get("current_profile")
     row_by_name: dict[str, dict] = {}
     for r in rows:
         n = r.get("name")
         if n:
             row_by_name[str(n)] = r
-    chain_names = _ordered_chain_names(usage_payload, cfg)
-    for nm in chain_names:
-        if not nm:
-            continue
-        if current_name and str(nm) == str(current_name):
-            continue
-        row = row_by_name.get(str(nm))
-        if row:
-            return row
+    queue = _manual_live_queue(usage_payload, cfg)
+    if len(queue) >= 2:
+        target = row_by_name.get(queue[1])
+        if target:
+            return target
     return None
 
 
@@ -3654,14 +4130,96 @@ def _ordered_chain_names(usage_payload: dict, cfg: dict) -> list[str]:
         if nm in row_by_name and nm not in seen:
             seen.add(nm)
             merged.append(nm)
-    if current_name:
-        cur = str(current_name)
-        if cur in merged:
-            idx = merged.index(cur)
-            merged = merged[idx:] + merged[:idx]
-        elif cur in row_by_name:
-            merged = [cur] + [n for n in merged if n != cur]
     return merged
+
+
+def _manual_live_queue(usage_payload: dict, cfg: dict) -> list[str]:
+    rows = usage_payload.get("profiles") or []
+    current_name = usage_payload.get("current_profile")
+    if not current_name:
+        for r in rows:
+            if bool(r.get("is_current")) and r.get("name"):
+                current_name = str(r.get("name"))
+                break
+    row_by_name: dict[str, dict] = {}
+    for r in rows:
+        n = r.get("name")
+        if n:
+            row_by_name[str(n)] = r
+    if not row_by_name:
+        return []
+
+    manual = _manual_chain_from_cfg(cfg)
+    manual = [nm for nm in manual if nm in row_by_name]
+
+    # Keep queue anchored at current account and preserve forward manual order.
+    head: list[str] = []
+    dropped: list[str] = []
+    if manual:
+        if current_name and current_name in manual:
+            idx = manual.index(current_name)
+            head = manual[idx:]
+            dropped = manual[:idx]
+        else:
+            head = list(manual)
+            if current_name and current_name in row_by_name and current_name not in head:
+                head.insert(0, str(current_name))
+    elif current_name and current_name in row_by_name:
+        head = [str(current_name)]
+
+    seen = set()
+    queue: list[str] = []
+    for nm in head:
+        if nm not in seen:
+            seen.add(nm)
+            queue.append(nm)
+
+    # Fill any missing profile names in score order for stability.
+    ranked_missing: list[tuple[float, tuple, str]] = []
+    for nm, row in row_by_name.items():
+        if nm in seen:
+            continue
+        score, tie = _candidate_score(row, cfg)
+        ranked_missing.append((score, tie, nm))
+    ranked_missing.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    for _, _, nm in ranked_missing:
+        if nm not in seen:
+            seen.add(nm)
+            queue.append(nm)
+
+    # In manual mode, append one "next best" candidate after the forward queue.
+    # This keeps preview dynamic after each switch: current -> next... -> best extra.
+    if dropped:
+        candidates: list[tuple[float, tuple, str]] = []
+        auto = (cfg.get("auto_switch") or {})
+        same_policy = auto.get("same_principal_policy", "skip")
+        elig: set[str] = set()
+        for r in rows:
+            name = r.get("name")
+            if not name:
+                continue
+            nm = str(name)
+            if nm == current_name:
+                continue
+            if not bool(r.get("auto_switch_eligible")):
+                continue
+            if same_policy == "skip" and bool(r.get("same_principal")):
+                continue
+            if _remaining_pct(r, "usage_5h") is None and _remaining_pct(r, "usage_weekly") is None:
+                continue
+            elig.add(nm)
+        for nm in dropped:
+            if nm not in row_by_name or nm not in elig:
+                continue
+            score, tie = _candidate_score(row_by_name[nm], cfg)
+            candidates.append((score, tie, nm))
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        if candidates:
+            best_nm = candidates[0][2]
+            if best_nm in queue:
+                queue.remove(best_nm)
+            queue.append(best_nm)
+    return queue
 
 
 def _auto_switch_chain(usage_payload: dict, cfg: dict) -> list[dict]:
@@ -3671,7 +4229,11 @@ def _auto_switch_chain(usage_payload: dict, cfg: dict) -> list[dict]:
         n = r.get("name")
         if n:
             row_by_name[str(n)] = r
-    chain_names = _ordered_chain_names(usage_payload, cfg)
+    ranking_mode = str(((cfg.get("auto_switch") or {}).get("ranking_mode")) or "balanced")
+    if ranking_mode == "manual":
+        chain_names = _manual_live_queue(usage_payload, cfg)
+    else:
+        chain_names = _ordered_chain_names(usage_payload, cfg)
     items: list[dict] = []
     for nm in chain_names:
         rr = row_by_name.get(nm, {})
@@ -3683,6 +4245,44 @@ def _auto_switch_chain(usage_payload: dict, cfg: dict) -> list[dict]:
             }
         )
     return items
+
+
+def _auto_arranged_chain(usage_payload: dict, cfg: dict) -> tuple[list[str], list[dict]]:
+    rows = usage_payload.get("profiles") or []
+    current_name = usage_payload.get("current_profile")
+    if not current_name:
+        for r in rows:
+            if bool(r.get("is_current")) and r.get("name"):
+                current_name = str(r.get("name"))
+                break
+    row_by_name: dict[str, dict] = {}
+    ranked: list[tuple[float, tuple, dict]] = []
+    for r in rows:
+        name = r.get("name")
+        if not name:
+            continue
+        name_s = str(name)
+        row_by_name[name_s] = r
+        if current_name and name_s == str(current_name):
+            continue
+        score, tie = _candidate_score(r, cfg)
+        ranked.append((score, tie, r))
+    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    chain_names: list[str] = []
+    if current_name and str(current_name) in row_by_name:
+        chain_names.append(str(current_name))
+    chain_names.extend([str(x[2].get("name")) for x in ranked if x[2].get("name")])
+    items: list[dict] = []
+    for nm in chain_names:
+        rr = row_by_name.get(nm, {})
+        items.append(
+            {
+                "name": nm,
+                "remaining_5h": _remaining_pct(rr, "usage_5h"),
+                "remaining_weekly": _remaining_pct(rr, "usage_weekly"),
+            }
+        )
+    return chain_names, items
 
 
 def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_timeout_sec: float, token: str) -> int:
@@ -3706,6 +4306,18 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
         "last_eval_ok": None,
         "active": False,
         "stop_event": threading.Event(),
+        "rapid_test_active": False,
+        "rapid_test_started_at": None,
+        "rapid_test_stop": threading.Event(),
+        "rapid_test_wait_sec": None,
+        "rapid_test_step": 0,
+    }
+    usage_cache_lock = threading.RLock()
+    usage_cache: dict[str, object] = {
+        "ts": 0.0,
+        "payload": None,
+        "cfg_hash": None,
+        "timeout": None,
     }
 
     def is_debug_enabled() -> bool:
@@ -3733,9 +4345,44 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
         log_runtime("info", f"event:{event_type}", {"id": ev["id"], "message": message, "details": details or {}})
         return ev
 
+    def _cfg_usage_cache_key(cfg: dict) -> str:
+        try:
+            auto = cfg.get("auto_switch") or {}
+            prof = cfg.get("profiles") or {}
+            sig = {
+                "auto_enabled": bool(auto.get("enabled", False)),
+                "ranking_mode": auto.get("ranking_mode", "balanced"),
+                "manual_chain": list(auto.get("manual_chain") or []),
+                "same_principal_policy": auto.get("same_principal_policy", "skip"),
+                "candidate_policy": auto.get("candidate_policy", "only_selected"),
+                "eligibility": dict((prof.get("eligibility") or {})),
+            }
+            return json.dumps(sig, sort_keys=True, separators=(",", ":"))
+        except Exception:
+            return "cfg:unknown"
+
+    def collect_usage_local_data_cached(timeout_sec: int, config: dict, ttl_sec: float = 2.0, force: bool = False):
+        key = _cfg_usage_cache_key(config if isinstance(config, dict) else {})
+        now = time.time()
+        if not force:
+            with usage_cache_lock:
+                cached_payload = usage_cache.get("payload")
+                cached_ts = float(usage_cache.get("ts") or 0.0)
+                cached_key = usage_cache.get("cfg_hash")
+                if cached_payload and cached_key == key and (now - cached_ts) <= max(0.05, ttl_sec):
+                    return cached_payload
+        payload = collect_usage_local_data(timeout_sec=timeout_sec, config=config)
+        with usage_cache_lock:
+            usage_cache["ts"] = time.time()
+            usage_cache["payload"] = payload
+            usage_cache["cfg_hash"] = key
+            usage_cache["timeout"] = timeout_sec
+        return payload
+
     def auto_switch_state_payload(cfg: dict):
         now = time.time()
-        cooldown_sec = int(((cfg.get("auto_switch") or {}).get("cooldown_sec", 60)))
+        cooldown_cfg = int((cfg.get("auto_switch") or {}).get("cooldown_sec", 60))
+        cooldown_sec = max(AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC, cooldown_cfg)
         last_sw = runtime.get("last_switch_ts")
         cooldown_until = (last_sw + cooldown_sec) if last_sw else None
         return {
@@ -3752,10 +4399,91 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             "last_switch_at_text": epoch_to_text(runtime.get("last_switch_ts")),
             "events_count": len(runtime["events"]),
             "config_enabled": bool(((cfg.get("auto_switch") or {}).get("enabled"))),
+            "rapid_test_active": bool(runtime.get("rapid_test_active", False)),
+            "rapid_test_started_at": runtime.get("rapid_test_started_at"),
+            "rapid_test_started_at_text": epoch_to_text(runtime.get("rapid_test_started_at")),
+            "rapid_test_wait_sec": runtime.get("rapid_test_wait_sec"),
+            "rapid_test_step": int(runtime.get("rapid_test_step") or 0),
         }
+
+    def _run_rapid_test():
+        runtime["rapid_test_active"] = True
+        runtime["rapid_test_started_at"] = time.time()
+        runtime["rapid_test_step"] = 0
+        runtime["rapid_test_wait_sec"] = None
+        runtime["rapid_test_stop"].clear()
+        try:
+            cfg = load_cam_config()
+            delay_sec = int(((cfg.get("auto_switch") or {}).get("delay_sec", 60)))
+            wait_sec = max(1, delay_sec + 30)
+            runtime["rapid_test_wait_sec"] = wait_sec
+            usage_payload = collect_usage_local_data_cached(timeout_sec=7, config=cfg, ttl_sec=0.0, force=True)
+            chain_names = _ordered_chain_names(usage_payload, cfg)
+            if len(chain_names) < 2:
+                push_event("error", "rapid-test: need at least 2 accounts in chain")
+                return
+            push_event("rapid-test", "rapid test started", {"chain": chain_names, "wait_per_step_sec": wait_sec})
+            max_steps = max(1, len(chain_names) - 1)
+            for step in range(1, max_steps + 1):
+                if runtime["rapid_test_stop"].is_set():
+                    push_event("rapid-test", "rapid test stopped")
+                    break
+                cfg = load_cam_config()
+                usage_payload = collect_usage_local_data_cached(timeout_sec=7, config=cfg, ttl_sec=0.0, force=True)
+                current_name = usage_payload.get("current_profile")
+                candidate = _choose_manual_chain_target(usage_payload, cfg)
+                if not candidate:
+                    push_event("error", "rapid-test: no manual chain target found", {"current": current_name})
+                    break
+                target = str(candidate.get("name") or "").strip()
+                if not target:
+                    push_event("error", "rapid-test: invalid target")
+                    break
+                runtime["rapid_test_step"] = step
+                runtime["pending_warning"] = {
+                    "current": current_name,
+                    "detail": {"rapid_test": True, "target": target, "step": step, "wait_sec": wait_sec},
+                    "created_at": time.time(),
+                }
+                runtime["pending_switch_due_at"] = time.time() + wait_sec
+                push_event("rapid-test", f"step {step}: switching '{current_name}' -> '{target}' in {wait_sec}s", {"step": step, "current": current_name, "target": target})
+                while not runtime["rapid_test_stop"].is_set():
+                    due = float(runtime.get("pending_switch_due_at") or 0.0)
+                    if due <= 0.0 or time.time() >= due:
+                        break
+                    if runtime["stop_event"].wait(0.25):
+                        runtime["rapid_test_stop"].set()
+                        break
+                if runtime["rapid_test_stop"].is_set():
+                    push_event("rapid-test", "rapid test stopped")
+                    break
+                rc, out, err = _capture_fn(lambda: cmd_switch(target, restart_codex=True))
+                if rc == 0:
+                    runtime["last_switch_ts"] = time.time()
+                    push_event("switch", f"rapid-test switched to '{target}'", {"target": target, "step": step, "stdout": out.strip()})
+                else:
+                    push_event("error", f"rapid-test failed to switch '{target}'", {"target": target, "step": step, "stdout": out.strip(), "stderr": err.strip()})
+                    break
+                runtime["pending_warning"] = None
+                runtime["pending_switch_due_at"] = None
+        except Exception as e:
+            push_event("error", f"rapid-test exception: {e}")
+        finally:
+            runtime["rapid_test_active"] = False
+            runtime["rapid_test_started_at"] = None
+            runtime["rapid_test_step"] = 0
+            runtime["rapid_test_wait_sec"] = None
+            runtime["pending_warning"] = None
+            runtime["pending_switch_due_at"] = None
+            runtime["rapid_test_stop"].clear()
 
     def auto_switch_tick():
         while not runtime["stop_event"].is_set():
+            if runtime.get("rapid_test_active"):
+                runtime["last_eval_ts"] = time.time()
+                runtime["last_eval_ok"] = True
+                runtime["stop_event"].wait(0.5)
+                continue
             cfg = load_cam_config()
             runtime["active"] = bool((cfg.get("auto_switch") or {}).get("enabled", False))
             now = time.time()
@@ -3767,7 +4495,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 runtime["stop_event"].wait(1.5)
                 continue
             try:
-                usage_payload = collect_usage_local_data(timeout_sec=5, config=cfg)
+                usage_payload = collect_usage_local_data_cached(timeout_sec=5, config=cfg, ttl_sec=2.0)
                 current_name = usage_payload.get("current_profile")
                 current_row = None
                 for r in usage_payload.get("profiles", []):
@@ -3790,7 +4518,8 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     continue
                 auto_cfg = cfg.get("auto_switch") or {}
                 delay_sec = int(auto_cfg.get("delay_sec", 60))
-                cooldown_sec = int(auto_cfg.get("cooldown_sec", 60))
+                cooldown_cfg = int(auto_cfg.get("cooldown_sec", 60))
+                cooldown_sec = max(AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC, cooldown_cfg)
                 if runtime["pending_warning"] is None:
                     runtime["pending_warning"] = {"current": current_name, "detail": detail, "created_at": now}
                     runtime["pending_switch_due_at"] = now + delay_sec
@@ -3809,13 +4538,13 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     continue
                 candidate = _choose_auto_switch_candidate(usage_payload, cfg)
                 if not candidate:
-                    push_event("error", "auto-switch: no eligible target account found", {"current": current_name})
+                    push_event("error", "auto-switch: no target found in switch chain", {"current": current_name})
                     runtime["pending_warning"] = None
                     runtime["pending_switch_due_at"] = None
                     runtime["last_eval_ok"] = False
                     runtime["stop_event"].wait(3.0)
                     continue
-                rc, out, err = _capture_fn(lambda: cmd_switch(str(candidate.get("name")), restart_codex=False))
+                rc, out, err = _capture_fn(lambda: cmd_switch(str(candidate.get("name")), restart_codex=True))
                 if rc == 0:
                     runtime["last_switch_ts"] = now
                     push_event("switch", f"auto-switched to '{candidate.get('name')}'", {"target": candidate.get("name"), "stdout": out.strip()})
@@ -3895,7 +4624,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 return _json_ok(auto_switch_state_payload(load_cam_config()))
             if self.command == "GET" and path == "/api/auto-switch/chain":
                 cfg = load_cam_config()
-                usage_payload = collect_usage_local_data(timeout_sec=7, config=cfg)
+                usage_payload = collect_usage_local_data_cached(timeout_sec=7, config=cfg, ttl_sec=3.0)
                 chain_items = _auto_switch_chain(usage_payload, cfg)
                 chain_names = [str(x.get("name")) for x in chain_items if x.get("name")]
                 manual_chain = _manual_chain_from_cfg(cfg)
@@ -3942,7 +4671,8 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     except Exception:
                         return _json_error("BAD_TIMEOUT", "timeout must be a positive number")
                 cfg = load_cam_config()
-                return _json_ok(collect_usage_local_data(timeout, config=cfg))
+                force = bool_value((q.get("force", ["false"])[0]), False)
+                return _json_ok(collect_usage_local_data_cached(timeout, config=cfg, ttl_sec=2.0, force=force))
             if self.command == "GET" and path == "/api/adv/list":
                 args = ["list"]
                 if bool_value((q.get("debug", ["false"])[0]), False):
@@ -3994,6 +4724,20 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 cfg = update_cam_config({"auto_switch": {"enabled": enabled}})
                 push_event("auto-switch-toggle", f"auto-switch set to {'enabled' if enabled else 'disabled'}")
                 return _json_ok({"enabled": enabled, "config": cfg})
+            if self.command == "POST" and path == "/api/auto-switch/stop":
+                cfg = update_cam_config({"auto_switch": {"enabled": False}})
+                runtime["rapid_test_stop"].set()
+                runtime["pending_warning"] = None
+                runtime["pending_switch_due_at"] = None
+                runtime["last_switch_ts"] = None
+                push_event("auto-switch-stop", "auto-switch force-stopped and pending state cleared")
+                return _json_ok({"enabled": False, "runtime": auto_switch_state_payload(load_cam_config()), "config": cfg})
+            if self.command == "POST" and path == "/api/auto-switch/rapid-test":
+                if runtime.get("rapid_test_active"):
+                    return _json_error("RAPID_TEST_BUSY", "rapid test is already running", 409)
+                t = threading.Thread(target=_run_rapid_test, daemon=True)
+                t.start()
+                return _json_ok({"started": True, "wait_per_step_sec": None, "message": "rapid test started"})
             if self.command == "POST" and path == "/api/auto-switch/account-eligibility":
                 name = str(body.get("name", "")).strip()
                 if not name:
@@ -4021,11 +4765,12 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     clean_chain.append(name)
                 cfg = load_cam_config()
                 auto = cfg.setdefault("auto_switch", {})
+                auto["ranking_mode"] = "manual"
                 auto["manual_chain"] = clean_chain
                 cfg = save_cam_config(cfg)
                 chain_names = list(clean_chain)
                 chain_items = [{"name": n, "remaining_5h": None, "remaining_weekly": None} for n in chain_names]
-                push_event("auto-switch-chain", "auto-switch chain order updated", {"chain": clean_chain})
+                push_event("auto-switch-chain", "auto-switch chain order updated", {"chain": clean_chain, "ranking_mode": "manual"})
                 return _json_ok(
                     {
                         "manual_chain": clean_chain,
@@ -4038,9 +4783,9 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             if self.command == "POST" and path == "/api/auto-switch/auto-arrange":
                 cfg = load_cam_config()
                 usage_payload = collect_usage_local_data(timeout_sec=7, config=cfg)
-                chain_items = _auto_switch_chain(usage_payload, cfg)
-                chain_names = [str(x.get("name")) for x in chain_items if x.get("name")]
+                chain_names, chain_items = _auto_arranged_chain(usage_payload, cfg)
                 auto = cfg.setdefault("auto_switch", {})
+                auto["ranking_mode"] = "balanced"
                 auto["manual_chain"] = chain_names
                 cfg = save_cam_config(cfg)
                 push_event(
@@ -4064,7 +4809,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if not candidate:
                     return _json_error("NO_CANDIDATE", "no eligible candidate for auto-switch", 400)
                 target = str(candidate.get("name"))
-                rc, out, err = _capture_fn(lambda: cmd_switch(target, restart_codex=False))
+                rc, out, err = _capture_fn(lambda: cmd_switch(target, restart_codex=True))
                 payload = _command_result("auto_switch.run_once", rc, out, err)
                 if rc != 0:
                     push_event("error", f"auto-switch run-once failed for '{target}'", {"stderr": err.strip()})
@@ -4075,11 +4820,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             if self.command == "POST" and path == "/api/auto-switch/run-switch":
                 cfg = load_cam_config()
                 usage_payload = collect_usage_local_data(timeout_sec=7, config=cfg)
-                # Manual run-switch follows explicit chain order and should not
-                # be blocked by auto eligibility filters.
-                candidate = _choose_manual_chain_target(usage_payload, cfg)
-                if not candidate:
-                    candidate = _choose_auto_switch_candidate(usage_payload, cfg)
+                candidate = _choose_auto_switch_candidate(usage_payload, cfg)
                 if not candidate:
                     return _json_error("NO_CANDIDATE", "no target found in switch chain", 400)
                 target = str(candidate.get("name"))
@@ -4091,6 +4832,69 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 runtime["last_switch_ts"] = time.time()
                 push_event("switch-manual", f"manual run-switch switched to '{target}'")
                 return _json_ok(payload)
+            if self.command == "POST" and path == "/api/auto-switch/test":
+                timeout_sec = min(180, int_value(body.get("timeout_sec"), 30, minimum=5))
+                threshold_raw = body.get("threshold_5h")
+                threshold_5h = None
+                if threshold_raw not in (None, ""):
+                    try:
+                        threshold_5h = max(0, min(100, int(float(threshold_raw))))
+                    except Exception:
+                        return _json_error("BAD_THRESHOLD", "threshold_5h must be a number between 0 and 100")
+                cfg_before = load_cam_config()
+                auto_before = copy.deepcopy(cfg_before.get("auto_switch") or {})
+                start_id = int(runtime.get("next_event_id", 1)) - 1
+                push_event("auto-switch-test", "auto-switch test started", {"threshold_5h": threshold_5h, "timeout_sec": timeout_sec})
+                try:
+                    cfg_test = load_cam_config()
+                    auto_test = cfg_test.setdefault("auto_switch", {})
+                    auto_test["enabled"] = True
+                    auto_test["delay_sec"] = 0
+                    auto_test["cooldown_sec"] = 0
+                    runtime["last_switch_ts"] = None
+                    if threshold_5h is not None:
+                        thr = auto_test.setdefault("thresholds", {})
+                        thr["h5_switch_pct"] = threshold_5h
+                    save_cam_config(cfg_test)
+                    deadline = time.time() + timeout_sec
+                    switched_ev = None
+                    while time.time() < deadline:
+                        for ev in runtime["events"]:
+                            eid = int(ev.get("id", 0))
+                            if eid <= start_id:
+                                continue
+                            if str(ev.get("type")) == "switch" and "auto-switched to" in str(ev.get("message", "")):
+                                switched_ev = ev
+                                break
+                        if switched_ev:
+                            break
+                        runtime["stop_event"].wait(0.5)
+                    events_after = [ev for ev in runtime["events"] if int(ev.get("id", 0)) > start_id]
+                    if switched_ev:
+                        push_event("auto-switch-test", "auto-switch test passed", {"event_id": switched_ev.get("id"), "message": switched_ev.get("message")})
+                        return _json_ok(
+                            {
+                                "switched": True,
+                                "event": switched_ev,
+                                "events": events_after[-30:],
+                                "used_threshold_5h": threshold_5h,
+                                "timeout_sec": timeout_sec,
+                            }
+                        )
+                    push_event("auto-switch-test", "auto-switch test timed out", {"timeout_sec": timeout_sec})
+                    return _json_ok(
+                        {
+                            "switched": False,
+                            "event": None,
+                            "events": events_after[-30:],
+                            "used_threshold_5h": threshold_5h,
+                            "timeout_sec": timeout_sec,
+                        }
+                    )
+                finally:
+                    cfg_restore = load_cam_config()
+                    cfg_restore["auto_switch"] = auto_before
+                    save_cam_config(cfg_restore)
             if self.command == "POST" and path == "/api/local/save":
                 name = str(body.get("name", "")).strip()
                 if not name:
@@ -4675,13 +5479,18 @@ def cmd_autoswitch(action: str) -> int:
         print("auto-switch disabled")
         print_json(cfg.get("auto_switch", {}))
         return 0
+    if action == "stop":
+        cfg = update_cam_config({"auto_switch": {"enabled": False}})
+        print("auto-switch force-stopped (disabled and pending runtime should clear in UI)")
+        print_json(cfg.get("auto_switch", {}))
+        return 0
     if action == "run-once":
         usage_payload = collect_usage_local_data(timeout_sec=7, config=cfg)
         candidate = _choose_auto_switch_candidate(usage_payload, cfg)
         if not candidate:
             print("error: no eligible auto-switch candidate found")
             return 1
-        return cmd_switch(str(candidate.get("name")), restart_codex=False)
+        return cmd_switch(str(candidate.get("name")), restart_codex=True)
     print(f"error: unknown autoswitch action '{action}'")
     return 1
 
@@ -4807,7 +5616,7 @@ def main() -> int:
     p_ui_autostart.add_argument("--port", type=int, default=UI_DEFAULT_PORT, help=f"Bind port (default: {UI_DEFAULT_PORT})")
 
     p_autoswitch = sub.add_parser("autoswitch", help="Manage auto-switch config and run-once action")
-    p_autoswitch.add_argument("action", choices=["status", "enable", "disable", "run-once"])
+    p_autoswitch.add_argument("action", choices=["status", "enable", "disable", "stop", "run-once"])
 
     p_notify = sub.add_parser("notify", help="Notification helper commands")
     p_notify.add_argument("action", choices=["test"])
