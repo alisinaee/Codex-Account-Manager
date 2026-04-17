@@ -43,7 +43,7 @@ CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.1-alpha-test"
+DEFAULT_APP_VERSION = "0.0.2"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -133,6 +133,8 @@ DEFAULT_CAM_CONFIG = {
         "enabled": False,
         "trigger_mode": "any",
         "delay_sec": 60,
+        "use_h5": True,
+        "use_weekly": True,
         "thresholds": {
             "h5_switch_pct": 20,
             "weekly_switch_pct": 20,
@@ -508,6 +510,8 @@ def sanitize_cam_config(raw: dict) -> dict:
     auto["enabled"] = bool(auto.get("enabled", False))
     auto["trigger_mode"] = auto.get("trigger_mode") if auto.get("trigger_mode") in ("any", "all") else "any"
     auto["delay_sec"] = clamp_int(auto.get("delay_sec"), 60, minimum=0, maximum=3600)
+    auto["use_h5"] = True
+    auto["use_weekly"] = True
     ath = auto.get("thresholds", {})
     auto["thresholds"] = {
         "h5_switch_pct": clamp_int(ath.get("h5_switch_pct"), 20, minimum=0, maximum=100),
@@ -1767,6 +1771,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .sub::before{content:\"\";width:8px;height:8px;border-radius:999px;background:var(--primary);box-shadow:0 0 10px rgba(63,255,139,.55)}
     #lastRefresh{font-size:11px;color:var(--text-soft)}
     .fatal{display:none;margin-top:10px;background:rgba(215,56,59,.18);border:1px solid rgba(215,56,59,.45);color:#ffd6d6;padding:10px;border-radius:var(--radius);white-space:pre-wrap}
+    .inapp-notice-stack{position:fixed;top:84px;right:18px;z-index:120;display:flex;flex-direction:column;gap:10px;max-width:min(420px,calc(100vw - 28px));pointer-events:none}
+    .inapp-notice{pointer-events:auto;background:var(--surface-high);border:1px solid rgba(72,72,71,.45);border-left:4px solid var(--primary);border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.35);padding:10px 12px;animation:slideNotice .18s ease-out}
+    .inapp-notice-title{font-weight:700;font-size:13px;margin-bottom:4px;color:var(--text)}
+    .inapp-notice-body{color:var(--text-soft);font-size:12px;line-height:1.45;white-space:pre-wrap}
+    @keyframes slideNotice{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
     .section{margin-top:var(--gap)}
     .card,.table-wrap,.toolbar{background:var(--surface-low);border-radius:var(--radius);border:1px solid transparent;box-shadow:var(--ambient)}
     .toolbar{padding:14px}
@@ -2198,6 +2207,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     <select id=\"themeSelect\" style=\"display:none\"><option value=\"auto\">Auto</option><option value=\"dark\">Dark</option><option value=\"light\">Light</option></select>
     <input id=\"debugToggle\" type=\"checkbox\" style=\"display:none\" />
     <div id=\"fatalBanner\" class=\"fatal\"></div>
+    <div id=\"inAppNoticeStack\" class=\"inapp-notice-stack\" aria-live=\"polite\" aria-atomic=\"false\"></div>
 
     <section id=\"settingsSection\" data-settings-section=\"1\" class=\"section toolbar\">
       <div class=\"controls-grid\">
@@ -2215,20 +2225,19 @@ def render_ui_html(default_interval: float, token: str) -> str:
         </section>
 
         <section class=\"control-card notify-card settings-card\">
-          <div class=\"group-title\">Notifications</div>
+          <div class=\"group-title\">Alarm</div>
           <div class=\"setting-row\">
-            <span class=\"setting-label\">Enable Notifications</span>
-            <label class=\"toggle\"><input id=\"notifyToggle\" type=\"checkbox\" /></label>
+            <span class=\"setting-label\">Enable Sound Alarm</span>
+            <label class=\"toggle\"><input id=\"alarmToggle\" type=\"checkbox\" /></label>
           </div>
           <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">5H warn %</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"notify5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
+            <span class=\"setting-label\">5H alarm %</span>
+            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"alarm5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
           </div>
           <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">Weekly warn %</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"notifyWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
+            <span class=\"setting-label\">Weekly alarm %</span>
+            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"alarmWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
           </div>
-          <button id=\"notifyTestBtn\" class=\"btn btn-block settings-footer-btn\">Test Notify</button>
         </section>
       </div>
     </section>
@@ -2369,11 +2378,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
             </ul>
           </section>
           <section class=\"guide-block\">
-            <h4>Notifications</h4>
+            <h4>Alarm</h4>
             <ul>
-              <li>Enable browser notifications for warning events.</li>
-              <li>Configure 5H/weekly warning thresholds in the Notifications panel.</li>
-              <li><b>Test Notify</b> sends a delayed test event to verify permission and delivery.</li>
+              <li>Enable/disable sound alarms for warning events.</li>
+              <li>Configure 5H/weekly alarm thresholds in the Alarm panel.</li>
+              <li>Main auto-switch is controlled by the single <b>Enabled</b> switch in Execution.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -2532,6 +2541,24 @@ def render_ui_html(default_interval: float, token: str) -> str:
   function byId(id, required=true){ const el=document.getElementById(id); if(!el && required) throw new Error("Missing element: "+id); return el; }
   function showFatal(e){ const b=byId("fatalBanner", false); if(!b) return; b.style.display="block"; b.textContent="UI boot error: " + (e?.message || String(e)); }
   function setError(msg){ const e=byId("error", false); if(e) e.textContent = msg || ""; }
+  function showInAppNotice(title, body, opts){
+    const stack = byId("inAppNoticeStack", false);
+    if(!stack) return;
+    const holdMs = Math.max(1500, Number((opts && opts.duration_ms) || 7000));
+    const keep = !!(opts && opts.require_interaction);
+    const card = document.createElement("div");
+    card.className = "inapp-notice";
+    card.innerHTML = `<div class="inapp-notice-title">${escHtml(title || "Notification")}</div><div class="inapp-notice-body">${escHtml(body || "")}</div>`;
+    stack.prepend(card);
+    while(stack.children.length > 5){
+      const last = stack.lastElementChild;
+      if(last) last.remove();
+      else break;
+    }
+    if(!keep){
+      setTimeout(() => { try { card.remove(); } catch(_) {} }, holdMs);
+    }
+  }
   function intOrDefault(raw, fallback, min=0, max=1000000){
     const n = parseInt(String(raw ?? "").trim(), 10);
     const base = Number.isFinite(n) ? n : Number(fallback);
@@ -3494,8 +3521,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const tag = String((opts && opts.tag) || ("cam-manual-" + Date.now()));
     const requireInteraction = !!(opts && opts.require_interaction);
     const renotify = !!(opts && opts.renotify);
+    const inAppAlways = !!(opts && opts.in_app_always);
     if(playAlarm) playAlarmPattern(delayMs);
     if(!(await ensureNotificationPermission(false))){
+      if(inAppAlways){
+        setTimeout(() => {
+          showInAppNotice("Codex Account Manager", String(message || "Notification"), { require_interaction: requireInteraction });
+        }, delayMs);
+      }
       if(playAlarm){
         setError("Browser notification permission is blocked. Alarm sound played instead.");
       } else {
@@ -3506,6 +3539,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
     setTimeout(async () => {
       const body = String(message || "Notification");
       const destination = "/?v="+encodeURIComponent(UI_VERSION);
+      if(inAppAlways){
+        showInAppNotice("Codex Account Manager", body, { require_interaction: requireInteraction });
+      }
       const options = {
         body,
         tag,
@@ -3537,14 +3573,19 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const cfg = latestData.config || {};
     if(!((cfg.notifications||{}).enabled)) return;
     if(!ev || ev.id <= lastEventId || notifiedEventIds.has(ev.id)) return;
-    if(ev.type !== "warning" && ev.type !== "notify-test") return;
+    if(ev.type !== "warning") return;
     notifiedEventIds.add(ev.id);
-    const delaySec = Number((ev.details || {}).delay_sec || 0);
-    await triggerSystemNotification(ev.message || "Usage warning", delaySec, {
-      tag: "cam-"+ev.id,
-      renotify: true,
-      require_interaction: (ev.type === "notify-test"),
-    });
+    const details = ev.details || {};
+    const alarmCfg = (cfg.notifications || {});
+    const ath = alarmCfg.thresholds || {};
+    const rem5 = Number(details.remaining_5h);
+    const remW = Number(details.remaining_weekly);
+    const h5Hit = Number.isFinite(rem5) ? rem5 < Number(ath.h5_warn_pct ?? 20) : !!details.h5_hit;
+    const wHit = Number.isFinite(remW) ? remW < Number(ath.weekly_warn_pct ?? 20) : !!details.weekly_hit;
+    if(!(h5Hit || wHit)) return;
+    await primeAlarmAudio();
+    playAlarmPattern(0);
+    showInAppNotice("Alarm", ev.message || "Usage warning", { duration_ms: 9000 });
   }
 
   function renderTable(usage){
@@ -3663,9 +3704,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
     updateHeaderDebugIcon(!!ui.debug_mode);
     byId("debugRuntimeSection").style.display = ui.debug_mode ? "block" : "none";
     const n = cfg.notifications || {};
-    byId("notifyToggle").checked = !!n.enabled;
-    byId("notify5h").value = String(n.thresholds?.h5_warn_pct ?? 20);
-    byId("notifyWeekly").value = String(n.thresholds?.weekly_warn_pct ?? 20);
+    byId("alarmToggle").checked = !!n.enabled;
+    byId("alarm5h").value = String(n.thresholds?.h5_warn_pct ?? 20);
+    byId("alarmWeekly").value = String(n.thresholds?.weekly_warn_pct ?? 20);
     const a = cfg.auto_switch || {};
     byId("asEnabled").checked = pendingAutoSwitchEnabled === null ? !!a.enabled : !!pendingAutoSwitchEnabled;
     setControlValueIfPristine("asDelay", String(a.delay_sec ?? 60));
@@ -3753,7 +3794,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   async function init(){
     try {
       installDiagnosticsHooks();
-      ensureNotificationServiceWorker().catch(()=>{});
+      document.addEventListener("pointerdown", () => { primeAlarmAudio().catch(()=>{}); }, { once: true });
       const settingsBtn = byId("settingsToggleBtn", false);
       if(settingsBtn){
         const hidden = localStorage.getItem("cam_settings_hidden") === "1";
@@ -3879,24 +3920,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
           debugInput.dispatchEvent(new Event("change", { bubbles: true }));
         });
       }
-      byId("notifyToggle").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { enabled: !!byId("notifyToggle").checked } }).catch((e)=>setError(e?.message || String(e))));
-      byId("notify5h").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { h5_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notify5h").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
-      byId("notifyWeekly").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { weekly_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notifyWeekly").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
-      byId("notifyTestBtn").addEventListener("click", async ()=>{
-        await primeAlarmAudio();
-        if(!(await ensureNotificationPermission(true))) return;
-        await ensureNotificationServiceWorker();
-        runAction("notify.test", async ()=>{
-          const r = await postApi("/api/notifications/test", { delay_sec: 5 });
-          await triggerSystemNotification("Test notification (5s delay)", 5, {
-            play_alarm: true,
-            tag: "cam-manual-test-"+Date.now(),
-            renotify: true,
-            require_interaction: true,
-          });
-          return r;
-        });
-      });
+      byId("alarmToggle").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { enabled: !!byId("alarmToggle").checked } }).catch((e)=>setError(e?.message || String(e))));
+      byId("alarm5h").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { h5_warn_pct: Math.max(0, Math.min(100, parseInt(byId("alarm5h").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
+      byId("alarmWeekly").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { weekly_warn_pct: Math.max(0, Math.min(100, parseInt(byId("alarmWeekly").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
       byId("asEnabled").addEventListener("change", async ()=>{
         const next = !!byId("asEnabled").checked;
         const rankingNow = String(byId("asRanking", false)?.value || latestData?.config?.auto_switch?.ranking_mode || "balanced");
@@ -4335,12 +4361,21 @@ def _trigger_breached(current_row: dict, cfg: dict) -> tuple[bool, dict]:
     auto = (cfg.get("auto_switch") or {})
     thr = (auto.get("thresholds") or {})
     mode = auto.get("trigger_mode", "any")
+    use_h5 = True
+    use_weekly = True
     p5 = _remaining_pct(current_row, "usage_5h")
     pw = _remaining_pct(current_row, "usage_weekly")
-    h5_hit = p5 is not None and p5 < float(thr.get("h5_switch_pct", 20))
-    w_hit = pw is not None and pw < float(thr.get("weekly_switch_pct", 20))
-    breached = (h5_hit or w_hit) if mode == "any" else (h5_hit and w_hit)
+    h5_hit = use_h5 and p5 is not None and p5 < float(thr.get("h5_switch_pct", 20))
+    w_hit = use_weekly and pw is not None and pw < float(thr.get("weekly_switch_pct", 20))
+    active_hits = []
+    if use_h5:
+        active_hits.append(h5_hit)
+    if use_weekly:
+        active_hits.append(w_hit)
+    breached = False if not active_hits else ((any(active_hits)) if mode == "any" else all(active_hits))
     return breached, {
+        "use_h5": use_h5,
+        "use_weekly": use_weekly,
         "h5_hit": h5_hit,
         "weekly_hit": w_hit,
         "remaining_5h": p5,
