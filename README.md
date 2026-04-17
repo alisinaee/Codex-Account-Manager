@@ -76,37 +76,6 @@ codex-account list-adv --debug
 - Port `4673` busy: run `codex-account ui --port 7788`.
 - Browser not opening automatically: run with `--no-open` and open URL manually.
 
-## Homebrew
-
-Install directly from this repository formula:
-
-```bash
-brew install --formula https://raw.githubusercontent.com/alisinaee/Codex-Account-Manager/main/Formula/codex-account-manager.rb
-```
-
-Upgrade later:
-
-```bash
-brew update
-brew upgrade codex-account-manager
-```
-
-### Homebrew Release Update Steps (Maintainer)
-
-For each new app release:
-
-1. Bump app version and create GitHub release tag (for example `v0.0.2`).
-2. Compute tarball checksum:
-
-```bash
-curl -L -s https://github.com/alisinaee/Codex-Account-Manager/archive/refs/tags/v0.0.2.tar.gz | shasum -a 256
-```
-
-3. Update [`Formula/codex-account-manager.rb`](Formula/codex-account-manager.rb):
-   - `url` with new tag
-   - `sha256` with new checksum
-4. Commit and push formula update.
-5. Users run `brew upgrade codex-account-manager`.
 
 ## Local Mode Commands
 
