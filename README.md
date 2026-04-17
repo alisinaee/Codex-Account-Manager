@@ -12,7 +12,26 @@ Cross-platform Codex account tooling focused on a lightweight Python CLI and a l
 
 ### Install / Run
 
-From project root:
+Recommended (cross-platform) via `pipx`:
+
+```bash
+pipx install "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"
+codex-account --help
+```
+
+Update later:
+
+```bash
+pipx upgrade codex-account-manager
+```
+
+Uninstall:
+
+```bash
+pipx uninstall codex-account-manager
+```
+
+From project root (developer/local run):
 
 ```bash
 chmod +x bin/codex-account

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-account-manager"
+version = "0.0.1a0"
+description = "Cross-platform Codex account tooling with a Python CLI and local web UI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Codex Account Manager Contributors" }
+]
+keywords = ["codex", "cli", "account", "manager"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Environment :: Console"
+]
+
+[project.urls]
+Homepage = "https://github.com/alisinaee/Codex-Account-Manager"
+Repository = "https://github.com/alisinaee/Codex-Account-Manager"
+Issues = "https://github.com/alisinaee/Codex-Account-Manager/issues"
+
+[project.scripts]
+codex-account = "codex_account_manager.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["codex_account_manager*"]
