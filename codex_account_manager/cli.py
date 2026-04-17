@@ -41,10 +41,7 @@ UI_DEFAULT_PORT = 4673
 CAM_DIR = CODEX_HOME / "account-manager"
 CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
-APP_CANDIDATES = [
-    ("Codex", "/Applications/Codex.app/Contents/MacOS/Codex"),
-    ("CodexBar", "/Applications/CodexBar.app/Contents/MacOS/CodexBar"),
-]
+APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
 DEFAULT_APP_VERSION = "0.0.1-alpha-test"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
@@ -69,6 +66,51 @@ def load_app_version() -> str:
 
 
 APP_VERSION = load_app_version()
+
+
+def _load_project_config() -> dict:
+    try:
+        if PROJECT_CONFIG_FILE.exists():
+            raw = json.loads(PROJECT_CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return raw
+    except Exception:
+        pass
+    return {}
+
+
+def _codex_project_config() -> dict:
+    raw = _load_project_config().get("codex")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _config_str(raw, key: str) -> str | None:
+    val = raw.get(key)
+    if isinstance(val, str):
+        val = val.strip()
+        if val:
+            return val
+    return None
+
+
+def _set_private_permissions(path: Path) -> None:
+    if os.name == "posix":
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+        return
+    if sys.platform.startswith("win") and shutil.which("icacls"):
+        user = os.environ.get("USERNAME")
+        if user:
+            try:
+                subprocess.run(
+                    ["icacls", str(path), "/inheritance:r", f"/grant:r", f"{user}:R"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
 
 
 DEFAULT_CAM_CONFIG = {
@@ -767,59 +809,194 @@ def prepare_profile_home(name: str) -> Path:
     profile_home.mkdir(parents=True, exist_ok=True)
     target_auth = profile_home / "auth.json"
     shutil.copy2(source_auth, target_auth)
-    os.chmod(target_auth, 0o600)
+    _set_private_permissions(target_auth)
     return profile_home
 
 
+def _platform_process_candidates() -> dict[str, list[str]]:
+    return {
+        "Codex": [
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            "Codex.exe",
+            "codex.exe",
+            "codex",
+        ],
+        "CodexBar": [
+            "/Applications/CodexBar.app/Contents/MacOS/CodexBar",
+            "CodexBar.exe",
+            "codexbar.exe",
+            "codexbar",
+        ],
+    }
+
+
 def _proc_running(pattern: str) -> bool:
-    p = subprocess.run(
-        ["pgrep", "-f", pattern],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return p.returncode == 0
+    try:
+        if sys.platform.startswith("win"):
+            image = Path(pattern).name.lower()
+            if not image.endswith(".exe"):
+                image = f"{image}.exe"
+            p = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {image}"],
+                capture_output=True,
+                text=True,
+            )
+            if p.returncode != 0:
+                return False
+            return image in p.stdout.lower()
+        if shutil.which("pgrep"):
+            p = subprocess.run(
+                ["pgrep", "-f", pattern],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return p.returncode == 0
+    except Exception:
+        return False
+    return False
 
 
 def detect_running_app_name():
-    for app_name, proc_pattern in APP_CANDIDATES:
-        if _proc_running(proc_pattern):
-            return app_name
+    candidates = _platform_process_candidates()
+    for app_name in APP_CANDIDATES:
+        for proc_pattern in candidates.get(app_name, []):
+            if _proc_running(proc_pattern):
+                return app_name
     return None
 
 
 def codex_running() -> bool:
-    return detect_running_app_name() is not None
+    try:
+        return detect_running_app_name() is not None
+    except Exception:
+        return False
 
 
-def stop_codex() -> None:
-    for app_name, proc_pattern in APP_CANDIDATES:
-        subprocess.run(["osascript", "-e", f'tell application "{app_name}" to quit'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["pkill", "-f", proc_pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def stop_codex() -> bool:
+    candidates = _platform_process_candidates()
+    touched = False
+    for app_name in APP_CANDIDATES:
+        if sys.platform == "darwin":
+            subprocess.run(["osascript", "-e", f'tell application "{app_name}" to quit'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            touched = True
+        for proc_pattern in candidates.get(app_name, []):
+            if sys.platform.startswith("win"):
+                image = Path(proc_pattern).name
+                if not image.lower().endswith(".exe"):
+                    image = f"{image}.exe"
+                subprocess.run(["taskkill", "/F", "/IM", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                touched = True
+            elif shutil.which("pkill"):
+                subprocess.run(["pkill", "-f", proc_pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                touched = True
+            elif shutil.which("killall"):
+                subprocess.run(["killall", "-q", Path(proc_pattern).name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                touched = True
     for _ in range(20):
         if not codex_running():
             break
         time.sleep(0.15)
+    return touched
 
 
-def start_codex(preferred_app_name: str = "") -> None:
+def _configured_codex_app_path() -> Path | None:
+    cfg = _codex_project_config()
+    if sys.platform == "darwin":
+        key = "app_path_macos"
+    elif sys.platform.startswith("win"):
+        key = "app_path_windows"
+    else:
+        key = "app_path_linux"
+    raw = _config_str(cfg, key)
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.exists() else None
+
+
+def start_codex(preferred_app_name: str = "") -> bool:
     app_order = []
     if preferred_app_name:
         app_order.append(preferred_app_name)
-    app_order.extend([x[0] for x in APP_CANDIDATES if x[0] != preferred_app_name])
-    for app_name in app_order:
-        p = subprocess.run(["open", "-a", app_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if p.returncode == 0:
-            return
+    app_order.extend([x for x in APP_CANDIDATES if x != preferred_app_name])
+    configured = _configured_codex_app_path()
+    if configured:
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen([str(configured)], creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            else:
+                subprocess.Popen([str(configured)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return True
+        except Exception:
+            pass
+    if sys.platform.startswith("win"):
+        for candidate in ("codex", "Codex.exe", "codex.exe"):
+            p = subprocess.run(["cmd", "/c", "start", "", candidate], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if p.returncode == 0:
+                return True
+        return False
+    if sys.platform == "darwin":
+        for app_name in app_order:
+            p = subprocess.run(["open", "-a", app_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if p.returncode == 0:
+                return True
+        return False
+    codex_bin = shutil.which("codex")
+    if codex_bin:
+        try:
+            subprocess.Popen([codex_bin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def _codex_cli_fallback_candidates() -> list[Path]:
+    out = []
+    cfg = _codex_project_config()
+    cfg_cli = _config_str(cfg, "cli_path")
+    if cfg_cli:
+        out.append(Path(cfg_cli).expanduser())
+    if sys.platform == "darwin":
+        out.append(Path("/Applications/Codex.app/Contents/Resources/codex"))
+    elif sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA")
+        pfiles = os.environ.get("ProgramFiles")
+        pfiles_x86 = os.environ.get("ProgramFiles(x86)")
+        for base in [local, pfiles, pfiles_x86]:
+            if base:
+                out.append(Path(base) / "Codex" / "codex.exe")
+                out.append(Path(base) / "Codex" / "bin" / "codex.exe")
+    else:
+        out.extend(
+            [
+                Path.home() / ".local" / "bin" / "codex",
+                Path("/usr/local/bin/codex"),
+                Path("/usr/bin/codex"),
+            ]
+        )
+    return out
 
 
 def resolve_codex_cli() -> str:
+    env_cli = os.environ.get("CODEX_CLI_PATH")
+    if env_cli:
+        p = Path(env_cli).expanduser()
+        if p.exists():
+            return str(p)
     p = shutil.which("codex")
     if p:
         return p
-    fallback = Path("/Applications/Codex.app/Contents/Resources/codex")
-    if fallback.exists():
-        return str(fallback)
-    raise RuntimeError("Could not find 'codex' CLI. Install Codex CLI first.")
+    for fallback in _codex_cli_fallback_candidates():
+        if fallback.exists():
+            return str(fallback)
+    if sys.platform.startswith("win"):
+        hint = "Install Codex CLI and ensure 'codex' or 'codex.exe' is in PATH, or set CODEX_CLI_PATH."
+    elif sys.platform == "darwin":
+        hint = "Install Codex CLI and ensure 'codex' is in PATH, or set CODEX_CLI_PATH."
+    else:
+        hint = "Install Codex CLI and ensure 'codex' is in PATH (for example ~/.local/bin), or set CODEX_CLI_PATH."
+    raise RuntimeError(f"Could not find 'codex' CLI. {hint}")
 
 
 def resolve_codex_auth_runner():
@@ -929,7 +1106,7 @@ def write_profile(name: str, source_auth: Path, source_label: str, overwrite: bo
     target_dir.mkdir(parents=True, exist_ok=True)
     target_auth = target_dir / "auth.json"
     shutil.copy2(source_auth, target_auth)
-    os.chmod(target_auth, 0o600)
+    _set_private_permissions(target_auth)
 
     meta = {
         "name": name,
@@ -1277,17 +1454,24 @@ def cmd_switch(name: str, restart_codex: bool) -> int:
 
     AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    running_app = detect_running_app_name()
+    running_app = None
+    try:
+        running_app = detect_running_app_name()
+    except Exception:
+        running_app = None
     if running_app:
-        stop_codex()
+        try:
+            stop_codex()
+        except Exception:
+            pass
 
     if AUTH_FILE.exists():
         backup = BACKUPS_DIR / f"auth-{now_stamp()}.json"
         shutil.copy2(AUTH_FILE, backup)
-        os.chmod(backup, 0o600)
+        _set_private_permissions(backup)
 
     shutil.copy2(source_auth, AUTH_FILE)
-    os.chmod(AUTH_FILE, 0o600)
+    _set_private_permissions(AUTH_FILE)
 
     print(f"switched to profile '{name}'")
     print(f"active account: {account_hint_from_auth(AUTH_FILE)}")
@@ -1298,8 +1482,15 @@ def cmd_switch(name: str, restart_codex: bool) -> int:
         print("note: this switch may not change your effective canonical account")
 
     if restart_codex:
-        start_codex(preferred_app_name=running_app or "Codex")
-        print("Codex/CodexBar restart requested")
+        started = False
+        try:
+            started = start_codex(preferred_app_name=running_app or "Codex")
+        except Exception:
+            started = False
+        if started:
+            print("Codex/CodexBar restart requested")
+        else:
+            print("warning: automatic Codex restart is unavailable on this system; start it manually if needed")
     else:
         print("start Codex manually if needed")
     return 0
@@ -2286,6 +2477,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let latestData = { status: null, usage: null, list: null, config: null, autoState: null, autoChain: null, events: [] };
   let lastEventId = 0;
   const notifiedEventIds = new Set();
+  let alarmAudioCtx = null;
+  let notificationSwRegistration = null;
   let baseLogs = [];
   let overlayLogs = [];
   let activeRowActionsName = null;
@@ -3246,14 +3439,97 @@ def render_ui_html(default_interval: float, token: str) -> str:
     return true;
   }
 
-  async function triggerSystemNotification(message, delaySec){
-    const delayMs = Math.max(0, Number(delaySec || 0) * 1000);
-    if(!(await ensureNotificationPermission(true))) return;
-    setTimeout(() => {
+  async function ensureNotificationServiceWorker(){
+    if(!("serviceWorker" in navigator)) return null;
+    if(notificationSwRegistration) return notificationSwRegistration;
+    try{
+      const reg = await navigator.serviceWorker.register("/sw.js?v="+encodeURIComponent(UI_VERSION), { scope: "/" });
+      notificationSwRegistration = reg || null;
+      return notificationSwRegistration;
+    } catch(_) {
+      return null;
+    }
+  }
+
+  async function primeAlarmAudio(){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return false;
+    if(!alarmAudioCtx){
+      try { alarmAudioCtx = new AC(); } catch(_) { return false; }
+    }
+    if(alarmAudioCtx.state === "suspended"){
+      try { await alarmAudioCtx.resume(); } catch(_) {}
+    }
+    return alarmAudioCtx.state === "running";
+  }
+
+  function playAlarmPattern(delayMs){
+    if(!alarmAudioCtx || alarmAudioCtx.state !== "running") return;
+    const now = alarmAudioCtx.currentTime + Math.max(0, Number(delayMs || 0)) / 1000;
+    const seq = [
+      { t: 0.00, f: 880, d: 0.22 },
+      { t: 0.28, f: 1046, d: 0.22 },
+      { t: 0.56, f: 1318, d: 0.34 },
+    ];
+    seq.forEach((tone) => {
       try {
-        const n = new Notification("Codex Account Manager", { body: message || "Notification", tag: "cam-manual-test" });
-        n.onclick = () => { try { window.focus(); window.location.href = "/?v="+encodeURIComponent(UI_VERSION); } catch(_) {} };
+        const osc = alarmAudioCtx.createOscillator();
+        const gain = alarmAudioCtx.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(tone.f, now + tone.t);
+        gain.gain.setValueAtTime(0.0001, now + tone.t);
+        gain.gain.exponentialRampToValueAtTime(0.18, now + tone.t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + tone.t + tone.d);
+        osc.connect(gain);
+        gain.connect(alarmAudioCtx.destination);
+        osc.start(now + tone.t);
+        osc.stop(now + tone.t + tone.d + 0.02);
       } catch(_) {}
+    });
+  }
+
+  async function triggerSystemNotification(message, delaySec, opts){
+    const delayMs = Math.max(0, Number(delaySec || 0) * 1000);
+    const playAlarm = !!(opts && opts.play_alarm);
+    const tag = String((opts && opts.tag) || ("cam-manual-" + Date.now()));
+    const requireInteraction = !!(opts && opts.require_interaction);
+    const renotify = !!(opts && opts.renotify);
+    if(playAlarm) playAlarmPattern(delayMs);
+    if(!(await ensureNotificationPermission(false))){
+      if(playAlarm){
+        setError("Browser notification permission is blocked. Alarm sound played instead.");
+      } else {
+        setError("Notification permission is blocked. Enable it in browser settings.");
+      }
+      return;
+    }
+    setTimeout(async () => {
+      const body = String(message || "Notification");
+      const destination = "/?v="+encodeURIComponent(UI_VERSION);
+      const options = {
+        body,
+        tag,
+        renotify,
+        requireInteraction,
+        data: { url: destination, source: "codex-account-ui" },
+      };
+      try {
+        const reg = await ensureNotificationServiceWorker();
+        if(reg && typeof reg.showNotification === "function"){
+          await reg.showNotification("Codex Account Manager", options);
+          return;
+        }
+      } catch(_) {}
+      try {
+        const n = new Notification("Codex Account Manager", options);
+        n.onclick = () => { try { window.focus(); window.location.href = destination; } catch(_) {} };
+      } catch(e) {
+        if(playAlarm){
+          setError("Alarm played, but the browser blocked the notification card.");
+        } else {
+          setError("Failed to display notification card.");
+        }
+      }
     }, delayMs);
   }
 
@@ -3264,13 +3540,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(ev.type !== "warning" && ev.type !== "notify-test") return;
     notifiedEventIds.add(ev.id);
     const delaySec = Number((ev.details || {}).delay_sec || 0);
-    if(!(await ensureNotificationPermission(false))) return;
-    setTimeout(() => {
-      try {
-        const n = new Notification("Codex Account Manager", { body: ev.message || "Usage warning", tag: "cam-"+ev.id });
-        n.onclick = () => { try { window.focus(); window.location.href = "/?v="+encodeURIComponent(UI_VERSION); } catch(_) {} };
-      } catch(_) {}
-    }, Math.max(0, delaySec * 1000));
+    await triggerSystemNotification(ev.message || "Usage warning", delaySec, {
+      tag: "cam-"+ev.id,
+      renotify: true,
+      require_interaction: (ev.type === "notify-test"),
+    });
   }
 
   function renderTable(usage){
@@ -3479,6 +3753,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   async function init(){
     try {
       installDiagnosticsHooks();
+      ensureNotificationServiceWorker().catch(()=>{});
       const settingsBtn = byId("settingsToggleBtn", false);
       if(settingsBtn){
         const hidden = localStorage.getItem("cam_settings_hidden") === "1";
@@ -3608,10 +3883,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
       byId("notify5h").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { h5_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notify5h").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
       byId("notifyWeekly").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { weekly_warn_pct: Math.max(0, Math.min(100, parseInt(byId("notifyWeekly").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
       byId("notifyTestBtn").addEventListener("click", async ()=>{
+        await primeAlarmAudio();
         if(!(await ensureNotificationPermission(true))) return;
+        await ensureNotificationServiceWorker();
         runAction("notify.test", async ()=>{
           const r = await postApi("/api/notifications/test", { delay_sec: 5 });
-          await triggerSystemNotification("Test notification (5s delay)", 5);
+          await triggerSystemNotification("Test notification (5s delay)", 5, {
+            play_alarm: true,
+            tag: "cam-manual-test-"+Date.now(),
+            renotify: true,
+            require_interaction: true,
+          });
           return r;
         });
       });
@@ -3950,6 +4232,37 @@ def render_ui_html(default_interval: float, token: str) -> str:
     html = html.replace("__UI_VERSION__", APP_VERSION)
     html = html.replace("__UI_VERSION_JSON__", version_json)
     return html
+
+
+def render_ui_sw_js() -> str:
+    script = """self.addEventListener("install", (event) => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener("notificationclick", (event) => {
+  try { event.notification.close(); } catch(_) {}
+  const targetUrl = "/?v=__UI_VERSION__";
+  event.waitUntil((async () => {
+    const allClients = await clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of allClients) {
+      try {
+        if (client && "focus" in client) {
+          await client.focus();
+          if ("navigate" in client) await client.navigate(targetUrl);
+          return;
+        }
+      } catch(_) {}
+    }
+    if (clients.openWindow) {
+      await clients.openWindow(targetUrl);
+    }
+  })());
+});"""
+    return script.replace("__UI_VERSION__", APP_VERSION)
 def find_free_port(host: str = "127.0.0.1") -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
@@ -5121,6 +5434,10 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 html = render_ui_html(interval_sec, token)
                 self._reply(200, html, "text/html; charset=utf-8")
                 return
+            if parsed.path == "/sw.js":
+                script = render_ui_sw_js()
+                self._reply(200, script, "application/javascript; charset=utf-8")
+                return
             if parsed.path.startswith("/api/"):
                 status_code, payload = self._api()
                 self._reply(status_code, payload)
@@ -5352,6 +5669,42 @@ def cmd_ui(host: str, port: int, no_open: bool, interval_sec: float, idle_timeou
     return 0
 
 
+def _pids_listening_on_port(port: int) -> set[int]:
+    pids: set[int] = set()
+    if shutil.which("lsof"):
+        try:
+            p = subprocess.run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True)
+            for raw in p.stdout.splitlines():
+                raw = raw.strip()
+                if raw.isdigit():
+                    pids.add(int(raw))
+        except Exception:
+            pass
+    if pids:
+        return pids
+    if shutil.which("ss"):
+        try:
+            p = subprocess.run(["ss", "-lptn", f"sport = :{port}"], capture_output=True, text=True)
+            for match in re.findall(r"pid=(\d+)", p.stdout):
+                pids.add(int(match))
+        except Exception:
+            pass
+    if pids:
+        return pids
+    if shutil.which("netstat"):
+        try:
+            p = subprocess.run(["netstat", "-nlp"], capture_output=True, text=True)
+            for line in p.stdout.splitlines():
+                if f":{port} " not in line:
+                    continue
+                m = re.search(r"\s(\d+)/", line)
+                if m:
+                    pids.add(int(m.group(1)))
+        except Exception:
+            pass
+    return pids
+
+
 def cmd_ui_service(action: str, host: str, port: int, no_open: bool, interval_sec: float, idle_timeout_sec: float) -> int:
     use_host = host or UI_DEFAULT_HOST
     use_port = port or UI_DEFAULT_PORT
@@ -5383,16 +5736,12 @@ def cmd_ui_service(action: str, host: str, port: int, no_open: bool, interval_se
         if isinstance(pid, int):
             stopped = stop_ui_process(pid)
         if not stopped and sys.platform != "win32":
-            try:
-                p = subprocess.run(["lsof", "-ti", f"tcp:{use_port}"], capture_output=True, text=True)
-                for raw_pid in [x.strip() for x in p.stdout.splitlines() if x.strip()]:
-                    try:
-                        os.kill(int(raw_pid), signal.SIGTERM)
-                        stopped = True
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            for other_pid in _pids_listening_on_port(use_port):
+                try:
+                    os.kill(int(other_pid), signal.SIGTERM)
+                    stopped = True
+                except Exception:
+                    pass
         ok = wait_ui_stopped(use_host, use_port)
         clear_ui_pid_info()
         if ok:
@@ -5416,6 +5765,20 @@ def _autostart_command(no_open: bool = True) -> list[str]:
     if no_open:
         cmd.append("--no-open")
     return cmd
+
+
+def _linux_systemd_user_available() -> bool:
+    if not shutil.which("systemctl"):
+        return False
+    try:
+        proc = subprocess.run(["systemctl", "--user", "list-unit-files"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _linux_xdg_autostart_path() -> Path:
+    return Path.home() / ".config" / "autostart" / "codex-account-ui.desktop"
 
 
 def cmd_ui_autostart(action: str, host: str, port: int) -> int:
@@ -5464,30 +5827,56 @@ def cmd_ui_autostart(action: str, host: str, port: int) -> int:
             return 0
 
     if action in ("install", "uninstall", "status"):
-        service_dir = Path.home() / ".config" / "systemd" / "user"
-        service_path = service_dir / "codex-account-ui.service"
+        if _linux_systemd_user_available():
+            service_dir = Path.home() / ".config" / "systemd" / "user"
+            service_path = service_dir / "codex-account-ui.service"
+            if action == "install":
+                service_dir.mkdir(parents=True, exist_ok=True)
+                exec_cmd = " ".join([shlex.quote(x) for x in cmd])
+                service_path.write_text(
+                    f"[Unit]\nDescription=Codex Account Manager UI\n\n[Service]\nType=simple\nExecStart={exec_cmd}\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
+                    encoding="utf-8",
+                )
+                subprocess.run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["systemctl", "--user", "enable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"autostart installed: {service_path}")
+                return 0
+            if action == "uninstall":
+                subprocess.run(["systemctl", "--user", "disable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if service_path.exists():
+                    service_path.unlink()
+                subprocess.run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print("autostart uninstalled")
+                return 0
+            if action == "status":
+                enabled = subprocess.run(["systemctl", "--user", "is-enabled", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+                active = subprocess.run(["systemctl", "--user", "is-active", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+                print_json({"installed": service_path.exists(), "enabled": enabled, "active": active, "backend": "systemd", "path": str(service_path)})
+                return 0
+
+        desktop_path = _linux_xdg_autostart_path()
         if action == "install":
-            service_dir.mkdir(parents=True, exist_ok=True)
+            desktop_path.parent.mkdir(parents=True, exist_ok=True)
             exec_cmd = " ".join([shlex.quote(x) for x in cmd])
-            service_path.write_text(
-                f"[Unit]\nDescription=Codex Account Manager UI\n\n[Service]\nType=simple\nExecStart={exec_cmd}\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
+            desktop_path.write_text(
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=Codex Account Manager UI\n"
+                "Comment=Start Codex Account Manager UI service\n"
+                f"Exec={exec_cmd}\n"
+                "Terminal=false\n"
+                "X-GNOME-Autostart-enabled=true\n",
                 encoding="utf-8",
             )
-            subprocess.run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "enable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"autostart installed: {service_path}")
+            print(f"autostart installed: {desktop_path}")
             return 0
         if action == "uninstall":
-            subprocess.run(["systemctl", "--user", "disable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if service_path.exists():
-                service_path.unlink()
-            subprocess.run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if desktop_path.exists():
+                desktop_path.unlink()
             print("autostart uninstalled")
             return 0
         if action == "status":
-            enabled = subprocess.run(["systemctl", "--user", "is-enabled", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-            active = subprocess.run(["systemctl", "--user", "is-active", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-            print_json({"installed": service_path.exists(), "enabled": enabled, "active": active, "path": str(service_path)})
+            print_json({"installed": desktop_path.exists(), "backend": "xdg", "path": str(desktop_path)})
             return 0
 
     print(f"error: unsupported autostart action '{action}'")
