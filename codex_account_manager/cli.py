@@ -43,7 +43,7 @@ CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.2"
+DEFAULT_APP_VERSION = "0.0.3"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -965,12 +965,26 @@ def _codex_cli_fallback_candidates() -> list[Path]:
         out.append(Path("/Applications/Codex.app/Contents/Resources/codex"))
     elif sys.platform.startswith("win"):
         local = os.environ.get("LOCALAPPDATA")
+        appdata = os.environ.get("APPDATA")
         pfiles = os.environ.get("ProgramFiles")
         pfiles_x86 = os.environ.get("ProgramFiles(x86)")
+        user_profile = os.environ.get("USERPROFILE")
         for base in [local, pfiles, pfiles_x86]:
             if base:
                 out.append(Path(base) / "Codex" / "codex.exe")
                 out.append(Path(base) / "Codex" / "bin" / "codex.exe")
+                out.append(Path(base) / "Codex" / "codex.cmd")
+                out.append(Path(base) / "Codex" / "bin" / "codex.cmd")
+                out.append(Path(base) / "Programs" / "Codex" / "codex.exe")
+                out.append(Path(base) / "Programs" / "Codex" / "resources" / "codex.exe")
+                out.append(Path(base) / "Programs" / "Codex" / "resources" / "bin" / "codex.exe")
+                out.append(Path(base) / "Microsoft" / "WindowsApps" / "codex.exe")
+        if appdata:
+            out.append(Path(appdata) / "npm" / "codex.cmd")
+            out.append(Path(appdata) / "npm" / "codex.bat")
+        if user_profile:
+            out.append(Path(user_profile) / "scoop" / "shims" / "codex.cmd")
+            out.append(Path(user_profile) / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links" / "codex.exe")
     else:
         out.extend(
             [
@@ -982,15 +996,47 @@ def _codex_cli_fallback_candidates() -> list[Path]:
     return out
 
 
+def _resolve_codex_cli_from_where_windows() -> str | None:
+    if not sys.platform.startswith("win"):
+        return None
+    where_exe = shutil.which("where")
+    if not where_exe:
+        return None
+    try:
+        proc = subprocess.run(
+            [where_exe, "codex"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in (proc.stdout or "").splitlines():
+        candidate = line.strip().strip('"')
+        if not candidate:
+            continue
+        p = Path(candidate)
+        if p.exists():
+            return str(p)
+    return None
+
+
 def resolve_codex_cli() -> str:
     env_cli = os.environ.get("CODEX_CLI_PATH")
     if env_cli:
         p = Path(env_cli).expanduser()
         if p.exists():
             return str(p)
-    p = shutil.which("codex")
-    if p:
-        return p
+    for candidate in ("codex", "codex.exe", "codex.cmd", "codex.bat"):
+        p = shutil.which(candidate)
+        if p:
+            return p
+    where_hit = _resolve_codex_cli_from_where_windows()
+    if where_hit:
+        return where_hit
     for fallback in _codex_cli_fallback_candidates():
         if fallback.exists():
             return str(fallback)
