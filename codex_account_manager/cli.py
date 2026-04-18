@@ -43,7 +43,7 @@ CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.4"
+DEFAULT_APP_VERSION = "0.0.5"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -259,8 +259,18 @@ def _run_add_login_session(session_id: str) -> None:
             _cleanup_add_login_session(s)
             return
         if rc != 0:
+            tail = ""
+            out_lines = s.get("output") or []
+            if isinstance(out_lines, list):
+                for item in reversed(out_lines):
+                    if isinstance(item, str) and item.strip():
+                        tail = item.strip()
+                        break
             s["status"] = "failed"
-            s["error"] = f"codex login failed with exit code {rc}"
+            if tail:
+                s["error"] = f"login command failed with exit code {rc}: {tail}"
+            else:
+                s["error"] = f"login command failed with exit code {rc}"
             s["finished_at"] = dt.datetime.now().isoformat(timespec="seconds")
             s["updated_at"] = s["finished_at"]
             _cleanup_add_login_session(s)
@@ -295,14 +305,13 @@ def _run_add_login_session(session_id: str) -> None:
 
 def start_add_login_session(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, device_auth: bool) -> dict:
     ensure_dirs()
-    codex_cli = resolve_codex_cli()
-    temp_home = Path(tempfile.mkdtemp(prefix="codex-account-add-", dir=str(CODEX_HOME / ".tmp")))
+    tmp_root = CODEX_HOME / ".tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    temp_home = Path(tempfile.mkdtemp(prefix="codex-account-add-", dir=str(tmp_root)))
     temp_auth = temp_home / "auth.json"
     env = os.environ.copy()
     env["CODEX_HOME"] = str(temp_home)
-    login_cmd = [codex_cli, "login"]
-    if device_auth:
-        login_cmd.append("--device-auth")
+    login_cmd = resolve_add_login_command(device_auth=device_auth)
 
     proc = subprocess.Popen(
         login_cmd,
@@ -1128,6 +1137,45 @@ def _resolve_codex_cli_from_appx_windows() -> str | None:
     return None
 
 
+def _can_invoke_codex_cli(path: str) -> bool:
+    try:
+        subprocess.run(
+            [path, "--help"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        return True
+    except subprocess.TimeoutExpired:
+        return True
+    except PermissionError:
+        return False
+    except OSError:
+        return False
+    except Exception:
+        return True
+
+
+def _normalize_working_codex_cli(path: str | None) -> str | None:
+    if not path:
+        return None
+    p = Path(path).expanduser()
+    if not p.exists():
+        return None
+    candidate = str(p)
+    if not sys.platform.startswith("win"):
+        return candidate
+    if _can_invoke_codex_cli(candidate):
+        return candidate
+    # Windows Store installs may expose a non-invocable internal path; prefer launcher alias.
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        alias = Path(local) / "Microsoft" / "WindowsApps" / "codex.exe"
+        if alias.exists() and _can_invoke_codex_cli(str(alias)):
+            return str(alias)
+    return None
+
+
 def resolve_codex_cli() -> str:
     env_cli = os.environ.get("CODEX_CLI_PATH")
     if env_cli:
@@ -1135,26 +1183,27 @@ def resolve_codex_cli() -> str:
         if p.exists():
             return str(p)
     for candidate in ("codex", "codex.exe", "codex.cmd", "codex.bat"):
-        p = shutil.which(candidate)
-        if p:
-            return p
-    where_hit = _resolve_codex_cli_from_where_windows()
+        hit = _normalize_working_codex_cli(shutil.which(candidate))
+        if hit:
+            return hit
+    where_hit = _normalize_working_codex_cli(_resolve_codex_cli_from_where_windows())
     if where_hit:
         return where_hit
-    ps_hit = _resolve_codex_cli_from_powershell_command_windows()
+    ps_hit = _normalize_working_codex_cli(_resolve_codex_cli_from_powershell_command_windows())
     if ps_hit:
         return ps_hit
-    reg_hit = _resolve_codex_cli_from_app_paths_registry_windows()
+    reg_hit = _normalize_working_codex_cli(_resolve_codex_cli_from_app_paths_registry_windows())
     if reg_hit:
         return reg_hit
-    appx_hit = _resolve_codex_cli_from_appx_windows()
+    appx_hit = _normalize_working_codex_cli(_resolve_codex_cli_from_appx_windows())
     if appx_hit:
         return appx_hit
     for fallback in _codex_cli_fallback_candidates():
-        if fallback.exists():
-            return str(fallback)
+        hit = _normalize_working_codex_cli(str(fallback))
+        if hit:
+            return hit
     if sys.platform.startswith("win"):
-        hint = "Install Codex CLI and ensure 'codex' or 'codex.exe' is in PATH, or set CODEX_CLI_PATH."
+        hint = "Install Codex CLI and ensure 'codex' or 'codex.exe' is in PATH (Windows Store: %LOCALAPPDATA%\\\\Microsoft\\\\WindowsApps\\\\codex.exe), or set CODEX_CLI_PATH."
     elif sys.platform == "darwin":
         hint = "Install Codex CLI and ensure 'codex' is in PATH, or set CODEX_CLI_PATH."
     else:
@@ -1170,6 +1219,28 @@ def resolve_codex_auth_runner():
     if npx:
         return [npx, "-y", "@loongphy/codex-auth"]
     raise RuntimeError("Could not find 'codex-auth' or 'npx'. Install with: npm i -g @loongphy/codex-auth")
+
+
+def resolve_add_login_command(device_auth: bool) -> list[str]:
+    errors: list[str] = []
+    try:
+        codex_cli = resolve_codex_cli()
+        cmd = [codex_cli, "login"]
+        if device_auth:
+            cmd.append("--device-auth")
+        return cmd
+    except Exception as e:
+        errors.append(str(e))
+    try:
+        runner = resolve_codex_auth_runner()
+        cmd = runner + ["login"]
+        if device_auth:
+            cmd.append("--device-auth")
+        return cmd
+    except Exception as e:
+        errors.append(str(e))
+    joined = " | ".join([x for x in errors if x]) or "no available login runner"
+    raise RuntimeError(f"Could not start login flow. {joined}")
 
 
 def run_codex_auth(args) -> int:
@@ -1304,13 +1375,15 @@ def cmd_save(name: str, overwrite: bool) -> int:
 
 def cmd_add(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, device_auth: bool) -> int:
     ensure_dirs()
+    tmp_root = CODEX_HOME / ".tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
     try:
-        codex_cli = resolve_codex_cli()
+        login_cmd = resolve_add_login_command(device_auth=device_auth)
     except RuntimeError as e:
         print(f"error: {e}")
         return 1
 
-    temp_home = Path(tempfile.mkdtemp(prefix="codex-account-add-", dir=str(CODEX_HOME / ".tmp")))
+    temp_home = Path(tempfile.mkdtemp(prefix="codex-account-add-", dir=str(tmp_root)))
     temp_auth = temp_home / "auth.json"
 
     env = os.environ.copy()
@@ -1324,12 +1397,9 @@ def cmd_add(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, devi
     print(f"temp CODEX_HOME: {temp_home}")
 
     try:
-        login_cmd = [codex_cli, "login"]
-        if device_auth:
-            login_cmd.append("--device-auth")
         proc = subprocess.run(login_cmd, env=env, timeout=timeout)
         if proc.returncode != 0:
-            print(f"error: codex login failed with exit code {proc.returncode}")
+            print(f"error: login command failed with exit code {proc.returncode}")
             return 1
 
         if not temp_auth.exists():
