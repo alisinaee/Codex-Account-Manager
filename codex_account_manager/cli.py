@@ -43,7 +43,7 @@ CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.3"
+DEFAULT_APP_VERSION = "0.0.4"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -1024,6 +1024,110 @@ def _resolve_codex_cli_from_where_windows() -> str | None:
     return None
 
 
+def _resolve_codex_cli_from_powershell_command_windows() -> str | None:
+    if not sys.platform.startswith("win"):
+        return None
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if not ps:
+        return None
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$names=@('codex','codex.exe','codex.cmd','codex.bat');"
+        "foreach($n in $names){"
+        "$c=Get-Command $n -All | Select-Object -First 1;"
+        "if($c -and $c.Source){Write-Output $c.Source; break}"
+        "}"
+    )
+    try:
+        proc = subprocess.run(
+            [ps, "-NoProfile", "-Command", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    candidate = (proc.stdout or "").strip().strip('"')
+    if not candidate:
+        return None
+    p = Path(candidate)
+    return str(p) if p.exists() else None
+
+
+def _resolve_codex_cli_from_app_paths_registry_windows() -> str | None:
+    if not sys.platform.startswith("win"):
+        return None
+    reg_exe = shutil.which("reg")
+    if not reg_exe:
+        return None
+    keys = [
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\App Paths\codex.exe",
+        r"HKLM\Software\Microsoft\Windows\CurrentVersion\App Paths\codex.exe",
+    ]
+    for key in keys:
+        try:
+            proc = subprocess.run(
+                [reg_exe, "query", key, "/ve"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+        except Exception:
+            continue
+        if proc.returncode != 0:
+            continue
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "REG_SZ" not in line:
+                continue
+            value = line.split("REG_SZ", 1)[-1].strip().strip('"')
+            if value and Path(value).exists():
+                return value
+    return None
+
+
+def _resolve_codex_cli_from_appx_windows() -> str | None:
+    if not sys.platform.startswith("win"):
+        return None
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if not ps:
+        return None
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$pkg=Get-AppxPackage -Name *Codex* | Select-Object -First 1;"
+        "if($pkg -and $pkg.InstallLocation){Write-Output $pkg.InstallLocation}"
+    )
+    try:
+        proc = subprocess.run(
+            [ps, "-NoProfile", "-Command", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=4,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    base = (proc.stdout or "").strip().strip('"')
+    if not base:
+        return None
+    for candidate in (
+        Path(base) / "app" / "resources" / "codex.exe",
+        Path(base) / "app" / "resources" / "codex.EXE",
+        Path(base) / "codex.exe",
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def resolve_codex_cli() -> str:
     env_cli = os.environ.get("CODEX_CLI_PATH")
     if env_cli:
@@ -1037,6 +1141,15 @@ def resolve_codex_cli() -> str:
     where_hit = _resolve_codex_cli_from_where_windows()
     if where_hit:
         return where_hit
+    ps_hit = _resolve_codex_cli_from_powershell_command_windows()
+    if ps_hit:
+        return ps_hit
+    reg_hit = _resolve_codex_cli_from_app_paths_registry_windows()
+    if reg_hit:
+        return reg_hit
+    appx_hit = _resolve_codex_cli_from_appx_windows()
+    if appx_hit:
+        return appx_hit
     for fallback in _codex_cli_fallback_candidates():
         if fallback.exists():
             return str(fallback)
