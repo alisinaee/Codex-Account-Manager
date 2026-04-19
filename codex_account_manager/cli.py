@@ -43,7 +43,7 @@ CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.5"
+DEFAULT_APP_VERSION = "0.0.6"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -266,11 +266,17 @@ def _run_add_login_session(session_id: str) -> None:
                     if isinstance(item, str) and item.strip():
                         tail = item.strip()
                         break
-            s["status"] = "failed"
+            reason = f"login command failed with exit code {rc}"
             if tail:
-                s["error"] = f"login command failed with exit code {rc}: {tail}"
+                reason = f"{reason}: {tail}"
+            fallback_ok, fallback_msg = _try_fallback_add_from_current_auth(name=name, overwrite=overwrite, reason=reason)
+            if fallback_ok:
+                s["status"] = "completed"
+                s["message"] = fallback_msg
+                s["error"] = None
             else:
-                s["error"] = f"login command failed with exit code {rc}"
+                s["status"] = "failed"
+                s["error"] = fallback_msg
             s["finished_at"] = dt.datetime.now().isoformat(timespec="seconds")
             s["updated_at"] = s["finished_at"]
             _cleanup_add_login_session(s)
@@ -305,11 +311,41 @@ def _run_add_login_session(session_id: str) -> None:
 
 def start_add_login_session(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, device_auth: bool) -> dict:
     ensure_dirs()
+    try:
+        login_cmd = resolve_add_login_command(device_auth=device_auth)
+    except RuntimeError as e:
+        fallback_ok, fallback_msg = _try_fallback_add_from_current_auth(name=name, overwrite=overwrite, reason=str(e))
+        if not fallback_ok:
+            raise RuntimeError(fallback_msg)
+        session_id = secrets.token_hex(8)
+        now_iso = dt.datetime.now().isoformat(timespec="seconds")
+        session = {
+            "id": session_id,
+            "name": name,
+            "status": "completed",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "finished_at": now_iso,
+            "url": None,
+            "code": None,
+            "message": fallback_msg,
+            "error": None,
+            "output": [fallback_msg],
+            "proc": None,
+            "temp_home": None,
+            "temp_auth": None,
+            "overwrite": bool(overwrite),
+            "keep_temp_home": bool(keep_temp_home),
+            "timeout": int(timeout),
+        }
+        with ADD_LOGIN_LOCK:
+            ADD_LOGIN_SESSIONS[session_id] = session
+        return _session_public_payload(session)
+
     temp_home = Path(tempfile.mkdtemp(prefix="codex-account-add-", dir=str(ensure_tmp_dir())))
     temp_auth = temp_home / "auth.json"
     env = os.environ.copy()
     env["CODEX_HOME"] = str(temp_home)
-    login_cmd = resolve_add_login_command(device_auth=device_auth)
 
     proc = subprocess.Popen(
         login_cmd,
@@ -1247,6 +1283,23 @@ def resolve_add_login_command(device_auth: bool) -> list[str]:
     raise RuntimeError(f"Could not start login flow. {joined}")
 
 
+def _try_fallback_add_from_current_auth(name: str, overwrite: bool, reason: str = "") -> tuple[bool, str]:
+    if not AUTH_FILE.exists():
+        if reason:
+            return False, f"{reason}. Also no active auth found at {AUTH_FILE}."
+        return False, f"No active auth found at {AUTH_FILE}."
+    try:
+        write_profile(name=name, source_auth=AUTH_FILE, source_label=str(AUTH_FILE), overwrite=overwrite)
+        msg = "codex login runner unavailable; saved active auth as profile"
+        if reason:
+            msg = f"{msg} ({reason})"
+        return True, msg
+    except RuntimeError as e:
+        if reason:
+            return False, f"{reason}. Fallback save failed: {e}"
+        return False, f"Fallback save failed: {e}"
+
+
 def run_codex_auth(args) -> int:
     try:
         runner = resolve_codex_auth_runner()
@@ -1384,7 +1437,11 @@ def cmd_add(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, devi
     try:
         login_cmd = resolve_add_login_command(device_auth=device_auth)
     except RuntimeError as e:
-        print(f"error: {e}")
+        fallback_ok, fallback_msg = _try_fallback_add_from_current_auth(name=name, overwrite=overwrite, reason=str(e))
+        if fallback_ok:
+            print(fallback_msg)
+            return 0
+        print(f"error: {fallback_msg}")
         return 1
 
     temp_home = Path(tempfile.mkdtemp(prefix="codex-account-add-", dir=str(tmp_root)))
@@ -1403,7 +1460,12 @@ def cmd_add(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, devi
     try:
         proc = subprocess.run(login_cmd, env=env, timeout=timeout)
         if proc.returncode != 0:
-            print(f"error: login command failed with exit code {proc.returncode}")
+            reason = f"login command failed with exit code {proc.returncode}"
+            fallback_ok, fallback_msg = _try_fallback_add_from_current_auth(name=name, overwrite=overwrite, reason=reason)
+            if fallback_ok:
+                print(fallback_msg)
+                return 0
+            print(f"error: {fallback_msg}")
             return 1
 
         if not temp_auth.exists():
