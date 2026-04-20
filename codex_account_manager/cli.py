@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import collections
 import copy
 import contextlib
 import datetime as dt
@@ -25,7 +26,15 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
+
+try:
+    from .contracts import CommandResult
+    from .services import DiagnosticsLogger, UiConfigService, UsageService
+except Exception:
+    # Support direct script execution (python path/to/cli.py ...)
+    from contracts import CommandResult  # type: ignore
+    from services import DiagnosticsLogger, UiConfigService, UsageService  # type: ignore
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -41,6 +50,8 @@ UI_DEFAULT_PORT = 4673
 CAM_DIR = CODEX_HOME / "account-manager"
 CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
+CAM_LOG_MAX_BYTES = 2 * 1024 * 1024
+CAM_LOG_BACKUPS = 4
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
 DEFAULT_APP_VERSION = "0.0.7"
@@ -66,6 +77,10 @@ def load_app_version() -> str:
 
 
 APP_VERSION = load_app_version()
+PROJECT_RELEASES_URL = "https://github.com/alisinaee/Codex-Account-Manager/releases"
+GITHUB_RELEASES_API_URL = "https://api.github.com/repos/alisinaee/Codex-Account-Manager/releases"
+RELEASE_NOTES_FALLBACK_FILE = PROJECT_ROOT / "docs" / "release-notes.md"
+RELEASE_NOTES_CACHE_TTL_SEC = 180.0
 
 
 def _load_project_config() -> dict:
@@ -179,8 +194,12 @@ DEFAULT_CAM_CONFIG = {
 
 ADD_LOGIN_LOCK = threading.Lock()
 CAM_CONFIG_LOCK = threading.RLock()
+CAM_LOG_LOCK = threading.RLock()
 ADD_LOGIN_SESSIONS: dict[str, dict] = {}
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+_JWT_LIKE_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}")
+_SECRET_PAIR_RE = re.compile(r"(?i)\b(access_token|refresh_token|id_token|token|authorization|secret|password|apikey|api_key)\s*[:=]\s*([^\s,;]+)")
 
 
 def _extract_device_login_hints(text: str) -> tuple[str | None, str | None]:
@@ -441,17 +460,89 @@ def ensure_tmp_dir() -> Path:
     return tmp_dir
 
 
+def _redact_log_text(value: str) -> str:
+    if not value:
+        return value
+    out = _BEARER_RE.sub("Bearer [REDACTED]", value)
+    out = _JWT_LIKE_RE.sub("[REDACTED_JWT]", out)
+    out = _SECRET_PAIR_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", out)
+    return out
+
+
+def _sanitize_log_value(value, depth: int = 0):
+    if value is None:
+        return None
+    if depth > 4:
+        return "[depth-limit]"
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _redact_log_text(value)
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_log_value(x, depth + 1) for x in value[:50]]
+    if isinstance(value, dict):
+        out = {}
+        idx = 0
+        for k, v in value.items():
+            if idx >= 80:
+                out["__truncated__"] = True
+                break
+            key = str(k)
+            if key.lower() in {"access_token", "refresh_token", "id_token", "token", "authorization", "secret", "password", "apikey", "api_key", "session", "cookie"}:
+                out[key] = "[REDACTED]"
+            else:
+                out[key] = _sanitize_log_value(v, depth + 1)
+            idx += 1
+        return out
+    return _redact_log_text(str(value))
+
+
+def _rotate_cam_log_if_needed(max_bytes: int = CAM_LOG_MAX_BYTES, backups: int = CAM_LOG_BACKUPS) -> None:
+    try:
+        if not CAM_LOG_FILE.exists():
+            return
+        if CAM_LOG_FILE.stat().st_size < max(1024, int(max_bytes)):
+            return
+        keep = max(1, int(backups))
+        oldest = CAM_LOG_FILE.with_name(f"{CAM_LOG_FILE.name}.{keep}")
+        try:
+            if oldest.exists():
+                oldest.unlink()
+        except Exception:
+            pass
+        for idx in range(keep - 1, 0, -1):
+            src = CAM_LOG_FILE.with_name(f"{CAM_LOG_FILE.name}.{idx}")
+            dst = CAM_LOG_FILE.with_name(f"{CAM_LOG_FILE.name}.{idx + 1}")
+            if src.exists():
+                try:
+                    os.replace(str(src), str(dst))
+                except Exception:
+                    pass
+        first = CAM_LOG_FILE.with_name(f"{CAM_LOG_FILE.name}.1")
+        try:
+            os.replace(str(CAM_LOG_FILE), str(first))
+        except Exception:
+            return
+    except Exception:
+        pass
+
+
 def cam_log(level: str, message: str, details=None, echo: bool = False) -> None:
     try:
-        ensure_dirs()
-        payload = {
-            "ts": dt.datetime.now().isoformat(),
-            "level": str(level).lower(),
-            "message": str(message),
-            "details": details if details is not None else {},
-        }
-        with CAM_LOG_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        with CAM_LOG_LOCK:
+            ensure_dirs()
+            _rotate_cam_log_if_needed()
+            payload = {
+                "ts": dt.datetime.now().isoformat(),
+                "level": str(level).lower(),
+                "message": _redact_log_text(str(message)),
+                "details": _sanitize_log_value(details if details is not None else {}),
+                "pid": os.getpid(),
+                "thread": threading.current_thread().name,
+            }
+            with CAM_LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            _set_private_permissions(CAM_LOG_FILE)
         if echo:
             print(f"[cam:{payload['level']}] {payload['message']}")
     except Exception:
@@ -462,8 +553,11 @@ def read_log_tail(max_lines: int = 300):
     try:
         if not CAM_LOG_FILE.exists():
             return []
-        raw = CAM_LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-        lines = raw[-max_lines:]
+        ring: collections.deque[str] = collections.deque(maxlen=max(1, int(max_lines)))
+        with CAM_LOG_FILE.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                ring.append(line.rstrip("\n"))
+        lines = list(ring)
         rows = []
         for line in lines:
             line = line.strip()
@@ -602,6 +696,12 @@ def sanitize_cam_config(raw: dict) -> dict:
             clean_eligibility[k.strip()] = bool(v)
     profiles["eligibility"] = clean_eligibility
     cfg["profiles"] = profiles
+    meta = cfg.get("_meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["revision"] = clamp_int(meta.get("revision", 1), 1, minimum=1, maximum=2_000_000_000)
+    meta["updated_at"] = str(meta.get("updated_at") or dt.datetime.now().isoformat())
+    cfg["_meta"] = meta
     return cfg
 
 
@@ -623,15 +723,23 @@ def load_cam_config() -> dict:
 def save_cam_config(cfg: dict) -> dict:
     with CAM_CONFIG_LOCK:
         norm = sanitize_cam_config(cfg if isinstance(cfg, dict) else {})
+        meta = norm.setdefault("_meta", {})
+        prev_rev = clamp_int(meta.get("revision", 1), 1, minimum=1, maximum=2_000_000_000)
+        meta["revision"] = prev_rev + 1
+        meta["updated_at"] = dt.datetime.now().isoformat()
         atomic_write_json(CAM_CONFIG_FILE, norm)
         return norm
 
 
-def update_cam_config(patch: dict) -> dict:
+def update_cam_config(patch: dict, base_revision: int | None = None) -> dict:
     with CAM_CONFIG_LOCK:
         cfg = load_cam_config()
         if not isinstance(patch, dict):
             return cfg
+        if base_revision is not None:
+            cur_rev = clamp_int(((cfg.get("_meta") or {}).get("revision")), 1, minimum=1, maximum=2_000_000_000)
+            if int(base_revision) != int(cur_rev):
+                raise RuntimeError(f"stale config revision (expected {base_revision}, current {cur_rev})")
         deep_merge(cfg, patch)
         return save_cam_config(cfg)
 
@@ -753,13 +861,13 @@ def fetch_usage_from_auth(auth_path: Path, timeout_sec: int = 7):
     try:
         data = load_json(auth_path)
     except Exception as e:
-        return None, None, f"bad auth json: {e}"
+        return None, None, None, None, f"bad auth json: {e}"
 
     tokens = data.get("tokens", {}) if isinstance(data.get("tokens"), dict) else {}
     access_token = tokens.get("access_token")
     account_id = tokens.get("account_id")
     if not access_token or not account_id:
-        return None, None, "missing access_token/account_id"
+        return None, None, None, None, "missing access_token/account_id"
 
     req = urllib.request.Request(
         url="https://chatgpt.com/backend-api/wham/usage",
@@ -776,12 +884,20 @@ def fetch_usage_from_auth(auth_path: Path, timeout_sec: int = 7):
             raw = resp.read().decode("utf-8", errors="replace")
             payload = json.loads(raw)
     except urllib.error.HTTPError as e:
-        return None, None, f"http {e.code}"
+        return None, None, None, None, f"http {e.code}"
     except Exception as e:
-        return None, None, f"request failed: {e}"
+        return None, None, None, None, f"request failed: {e}"
 
     usage_5h, usage_weekly = extract_usage_windows(payload)
-    return usage_5h, usage_weekly, None
+    plan_type = None
+    is_paid = None
+    maybe_plan = payload.get("plan_type") if isinstance(payload, dict) else None
+    if isinstance(maybe_plan, str) and maybe_plan.strip():
+        plan_type = maybe_plan.strip()
+        normalized = plan_type.lower()
+        free_markers = {"free", "chatgptfreeplan", "none", "unknown", "basic"}
+        is_paid = normalized not in free_markers and "free" not in normalized
+    return usage_5h, usage_weekly, plan_type, is_paid, None
 
 
 def account_hint_from_auth(path: Path) -> str:
@@ -875,10 +991,8 @@ def _find_duplicate_email_profile(source_auth: Path, exclude_profile_name: str =
     return None
 
 
-def account_id_from_auth(path: Path):
-    try:
-        data = load_json(path)
-    except Exception:
+def _account_id_from_data(data: dict | None):
+    if not isinstance(data, dict):
         return None
     account_id = data.get("account_id")
     if not account_id and isinstance(data.get("tokens"), dict):
@@ -886,10 +1000,8 @@ def account_id_from_auth(path: Path):
     return str(account_id) if account_id else None
 
 
-def principal_id_from_auth(path: Path):
-    try:
-        data = load_json(path)
-    except Exception:
+def _principal_id_from_data(data: dict | None):
+    if not isinstance(data, dict):
         return None
     id_token = data.get("id_token")
     if not id_token and isinstance(data.get("tokens"), dict):
@@ -902,12 +1014,26 @@ def principal_id_from_auth(path: Path):
         oid = payload.get("oid")
         if oid:
             return f"oid:{oid}"
-    account_id = data.get("account_id")
-    if not account_id and isinstance(data.get("tokens"), dict):
-        account_id = data["tokens"].get("account_id")
+    account_id = _account_id_from_data(data)
     if account_id:
         return f"account_id:{account_id}"
     return None
+
+
+def account_id_from_auth(path: Path):
+    try:
+        data = load_json(path)
+    except Exception:
+        return None
+    return _account_id_from_data(data)
+
+
+def principal_id_from_auth(path: Path):
+    try:
+        data = load_json(path)
+    except Exception:
+        return None
+    return _principal_id_from_data(data)
 
 
 def profile_principal_id(name: str):
@@ -1902,39 +2028,61 @@ def collect_usage_local_data(timeout_sec: int, config: dict | None = None):
             return None
 
     active_canonical = canonical_auth(AUTH_FILE) if AUTH_FILE.exists() else None
-    json_rows = []
-    current_profile = None
+    principal_counts: dict[str, int] = {}
+    profile_meta: dict[str, dict] = {}
     for p in profiles:
         auth_path = p / "auth.json"
-        meta_path = p / "meta.json"
-        display_email = "-"
-        saved_at = None
+        entry = {
+            "canonical": None,
+            "principal_id": None,
+            "account_id": "-",
+            "email": "-",
+            "raw_data": None,
+        }
         try:
             data = load_json(auth_path)
+            entry["raw_data"] = data
+            entry["canonical"] = json.dumps(data, sort_keys=True, separators=(",", ":"))
+            entry["principal_id"] = _principal_id_from_data(data)
+            entry["account_id"] = _account_id_from_data(data) or "-"
             tokens = data.get("tokens", {}) if isinstance(data.get("tokens"), dict) else {}
             id_token = tokens.get("id_token") or data.get("id_token")
             if isinstance(id_token, str) and id_token:
                 payload = decode_jwt_payload(id_token) or {}
                 maybe_email = payload.get("email")
                 if maybe_email:
-                    display_email = str(maybe_email)
+                    entry["email"] = str(maybe_email)
         except Exception:
             pass
+        pid = entry["principal_id"]
+        if pid:
+            principal_counts[pid] = principal_counts.get(pid, 0) + 1
+        profile_meta[p.name] = entry
+
+    json_rows = []
+    current_profile = None
+    for p in profiles:
+        auth_path = p / "auth.json"
+        meta_path = p / "meta.json"
+        entry = profile_meta.get(p.name) or {}
+        display_email = entry.get("email", "-")
+        saved_at = None
         if meta_path.exists():
             try:
                 meta = load_json(meta_path)
                 saved_at = meta.get("saved_at")
             except Exception:
                 saved_at = None
-        account_id = account_id_from_auth(auth_path) or "-"
-        principal_id = principal_id_from_auth(auth_path)
-        usage_5h, usage_weekly, err = fetch_usage_from_auth(auth_path, timeout_sec=timeout_sec)
+        account_id = str(entry.get("account_id", "-") or "-")
+        principal_id = entry.get("principal_id")
+        usage_5h, usage_weekly, plan_type, is_paid, err = fetch_usage_from_auth(auth_path, timeout_sec=timeout_sec)
         cell_5h = format_usage_cell(*(usage_5h or (None, None)))
         cell_weekly = format_usage_cell(*(usage_weekly or (None, None)))
-        is_current = active_canonical is not None and canonical_auth(auth_path) == active_canonical
+        profile_canonical = entry.get("canonical")
+        is_current = bool(active_canonical is not None and profile_canonical and profile_canonical == active_canonical)
         if is_current:
             current_profile = p.name
-        same = len(find_same_principal_profiles(principal_id, exclude_name=p.name)) > 0
+        same = bool(principal_id and int(principal_counts.get(str(principal_id), 0)) > 1)
         json_rows.append(
             {
                 "name": p.name,
@@ -1950,6 +2098,8 @@ def collect_usage_local_data(timeout_sec: int, config: dict | None = None):
                     "resets_at": usage_weekly[1] if usage_weekly else None,
                     "text": cell_weekly,
                 },
+                "plan_type": plan_type,
+                "is_paid": is_paid,
                 "is_current": is_current,
                 "same_principal": same,
                 "error": err or None,
@@ -2305,8 +2455,21 @@ def cmd_auth_passthrough(command_args) -> int:
     return run_codex_auth(command_args)
 
 
+def _error_type_for_code(code: str, status: int) -> str:
+    c = str(code or "").upper()
+    if status >= 500:
+        return "internal"
+    if c in {"FORBIDDEN", "UNAUTHORIZED"}:
+        return "permission"
+    if c.startswith("BAD_") or c.startswith("MISSING_") or c in {"NO_CANDIDATE", "RAPID_TEST_BUSY", "NOT_FOUND"}:
+        return "validation"
+    if c in {"COMMAND_FAILED", "START_FAILED", "BAD_CONFIG"}:
+        return "transient"
+    return "validation" if status < 500 else "internal"
+
+
 def _json_error(code: str, message: str, status: int = 400, details=None):
-    payload = {"ok": False, "error": {"code": code, "message": message}}
+    payload = {"ok": False, "error": {"code": code, "type": _error_type_for_code(code, status), "message": message}}
     if details is not None:
         payload["error"]["details"] = details
     return status, payload
@@ -2325,12 +2488,187 @@ def _capture_fn(fn):
 
 
 def _command_result(name: str, rc: int, stdout: str, stderr: str):
-    return {
-        "command": name,
-        "exit_code": rc,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
+    return CommandResult(command=name, exit_code=rc, stdout=stdout, stderr=stderr).to_dict()
+
+
+def _normalize_release_tag(raw: str | None) -> str:
+    tag = str(raw or "").strip().lower()
+    if tag.startswith("release "):
+        tag = tag.split(" ", 1)[1].strip()
+    if tag.startswith("v"):
+        tag = tag[1:]
+    return re.sub(r"[^0-9a-z.+_-]", "", tag)
+
+
+def _is_current_release_tag(tag: str | None) -> bool:
+    return bool(_normalize_release_tag(tag) and _normalize_release_tag(tag) == _normalize_release_tag(APP_VERSION))
+
+
+def _extract_release_highlights(body: str, max_items: int = 12) -> list[str]:
+    out: list[str] = []
+    for line in str(body or "").splitlines():
+        m = re.match(r"^\s*-\s+(.+?)\s*$", line)
+        if not m:
+            continue
+        out.append(m.group(1).strip())
+        if len(out) >= max(1, int(max_items)):
+            break
+    return out
+
+
+def _normalize_github_release_rows(rows) -> list[dict]:
+    out: list[dict] = []
+    if not isinstance(rows, list):
+        return out
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if bool(row.get("draft")):
+            continue
+        tag = str(row.get("tag_name") or row.get("name") or "").strip()
+        if not tag:
+            continue
+        title = str(row.get("name") or tag).strip() or tag
+        body = row.get("body") if isinstance(row.get("body"), str) else ""
+        published_at = str(row.get("published_at") or row.get("created_at") or "").strip() or None
+        url = str(row.get("html_url") or "").strip() or f"{PROJECT_RELEASES_URL}/tag/{quote(tag)}"
+        out.append(
+            {
+                "tag": tag,
+                "version": tag,
+                "title": title,
+                "published_at": published_at,
+                "body": body,
+                "highlights": _extract_release_highlights(body),
+                "url": url,
+                "is_prerelease": bool(row.get("prerelease")),
+                "is_draft": False,
+                "is_current": _is_current_release_tag(tag),
+                "source": "github",
+            }
+        )
+    out.sort(key=lambda r: str(r.get("published_at") or ""), reverse=True)
+    return out
+
+
+def _fetch_github_release_notes(timeout_sec: float = 5.0) -> list[dict]:
+    req = urllib.request.Request(
+        GITHUB_RELEASES_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "codex-account-manager-ui",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=max(1.0, float(timeout_sec))) as resp:
+        payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    return _normalize_github_release_rows(payload)
+
+
+def _parse_local_release_notes(path: Path | None = None) -> list[dict]:
+    source_path = path or RELEASE_NOTES_FALLBACK_FILE
+    try:
+        content = source_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    sections: list[tuple[str, list[str]]] = []
+    current_tag = None
+    current_lines: list[str] = []
+    for line in content.splitlines():
+        m = re.match(r"^\s*##\s+(.+?)\s*$", line)
+        if m:
+            if current_tag is not None:
+                sections.append((current_tag, current_lines))
+            current_tag = m.group(1).strip()
+            current_lines = []
+            continue
+        if current_tag is not None:
+            current_lines.append(line)
+    if current_tag is not None:
+        sections.append((current_tag, current_lines))
+    out: list[dict] = []
+    for tag, lines in sections:
+        body = "\n".join(lines).strip()
+        low = str(tag).strip().lower()
+        is_unreleased = low == "unreleased"
+        url = None if is_unreleased else f"{PROJECT_RELEASES_URL}/tag/{quote(str(tag).strip())}"
+        is_pre = any(marker in low for marker in ("alpha", "beta", "rc", "pre-release", "pre"))
+        out.append(
+            {
+                "tag": str(tag).strip(),
+                "version": str(tag).strip(),
+                "title": str(tag).strip(),
+                "published_at": None,
+                "body": body,
+                "highlights": _extract_release_highlights(body),
+                "url": url,
+                "is_prerelease": is_pre,
+                "is_draft": False,
+                "is_current": _is_current_release_tag(tag),
+                "source": "local",
+            }
+        )
+    return out
+
+
+def load_release_notes_payload(
+    *,
+    force_refresh: bool = False,
+    cache: dict | None = None,
+    now_ts: float | None = None,
+    fetcher=None,
+    fallback_path: Path | None = None,
+) -> dict:
+    cache_obj = cache if isinstance(cache, dict) else {}
+    now = float(now_ts if now_ts is not None else time.time())
+    cached_payload = cache_obj.get("payload")
+    cached_ts = float(cache_obj.get("ts") or 0.0)
+    if not force_refresh and isinstance(cached_payload, dict) and (now - cached_ts) < RELEASE_NOTES_CACHE_TTL_SEC:
+        return {**cached_payload, "cached": True, "cache_ttl_sec": int(RELEASE_NOTES_CACHE_TTL_SEC)}
+    fetch_fn = fetcher or _fetch_github_release_notes
+    fallback = fallback_path or RELEASE_NOTES_FALLBACK_FILE
+    payload = None
+    try:
+        releases = fetch_fn()
+        if not isinstance(releases, list):
+            raise RuntimeError("invalid releases payload")
+        if releases:
+            payload = {
+                "status": "synced",
+                "status_text": "Synced from GitHub",
+                "source": "github",
+                "repo_url": PROJECT_RELEASES_URL,
+                "fetched_at": dt.datetime.now().isoformat(),
+                "releases": releases,
+                "error": None,
+            }
+        else:
+            raise RuntimeError("GitHub releases returned empty list")
+    except Exception as e:
+        fallback_releases = _parse_local_release_notes(fallback)
+        if fallback_releases:
+            payload = {
+                "status": "fallback",
+                "status_text": "Showing local fallback",
+                "source": "local",
+                "repo_url": PROJECT_RELEASES_URL,
+                "fetched_at": dt.datetime.now().isoformat(),
+                "releases": fallback_releases,
+                "error": str(e),
+            }
+        else:
+            payload = {
+                "status": "failed",
+                "status_text": "Failed to load release notes",
+                "source": "none",
+                "repo_url": PROJECT_RELEASES_URL,
+                "fetched_at": dt.datetime.now().isoformat(),
+                "releases": [],
+                "error": str(e),
+            }
+    cache_obj["ts"] = now
+    cache_obj["payload"] = payload
+    return {**payload, "cached": False, "cache_ttl_sec": int(RELEASE_NOTES_CACHE_TTL_SEC)}
 
 
 def render_ui_html(default_interval: float, token: str) -> str:
@@ -2342,6 +2680,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
 <head>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <meta name=\"theme-color\" content=\"#0d8a44\" />
+  <link rel=\"icon\" type=\"image/svg+xml\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%230f172a'/%3E%3Cstop offset='100%25' stop-color='%23145f3f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='12' fill='url(%23g)'/%3E%3Crect x='8' y='8' width='48' height='48' rx='10' fill='none' stroke='%233fff8b' stroke-width='4'/%3E%3Cpath d='M21 42V22h9.5c6.4 0 10 3.7 10 10s-3.6 10-10 10z' fill='none' stroke='%233fff8b' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M43 22v20h-2' fill='none' stroke='%23ffd16c' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E\" />
+  <link rel=\"apple-touch-icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%230f172a'/%3E%3Cstop offset='100%25' stop-color='%23145f3f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='12' fill='url(%23g)'/%3E%3Crect x='8' y='8' width='48' height='48' rx='10' fill='none' stroke='%233fff8b' stroke-width='4'/%3E%3Cpath d='M21 42V22h9.5c6.4 0 10 3.7 10 10s-3.6 10-10 10z' fill='none' stroke='%233fff8b' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M43 22v20h-2' fill='none' stroke='%23ffd16c' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E\" />
   <title>Codex Account Manager</title>
   <style>
     @import url(\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap\");
@@ -2708,7 +3049,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .btn-primary-danger{
       background:linear-gradient(90deg,var(--danger),color-mix(in srgb,var(--danger) 80%, #6b0a0a 20%));
       border:0;
-      color:#fff;
+      color:#000;
       font-weight:700;
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
     }
@@ -2759,6 +3100,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .usage-fill.shimmer{width:45%;background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--primary) 72%, white 10%), transparent);animation:usageShimmer 1.05s linear infinite}
     .loading-text{color:var(--text-soft)}
     @keyframes usageShimmer{from{transform:translateX(-140%)}to{transform:translateX(230%)}}
+    @keyframes usagePulse{0%{filter:brightness(1);text-shadow:none}50%{filter:brightness(1.2);text-shadow:0 0 8px color-mix(in srgb,var(--primary) 32%, transparent)}100%{filter:brightness(1);text-shadow:none}}
+    @keyframes usageBarBlink{0%,100%{opacity:1;filter:brightness(1)}50%{opacity:.78;filter:brightness(1.12)}}
+    .usage-cell.updated .usage-pct{animation:usageBarBlink 1.1s ease-in-out infinite}
+    .usage-cell.updated .usage-meter{animation:none}
+    .usage-cell.updated .usage-fill.blink{animation:usageBarBlink 1.1s ease-in-out infinite}
+    .mobile-stat .updated{animation:usagePulse .72s ease-in-out 2}
     .status-dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--text-soft);box-shadow:0 0 6px color-mix(in srgb,var(--text-soft) 30%, transparent)}
     .status-dot.active{background:var(--primary);box-shadow:0 0 10px var(--accent-glow)}.status-dot.warn{background:var(--warn)}.status-dot.danger{background:var(--danger)}
     .badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:1px 7px;font-size:11px;color:var(--text-soft)}
@@ -2956,6 +3303,73 @@ def render_ui_html(default_interval: float, token: str) -> str:
       line-height:1.4;
     }
     .guide-block li{margin:0}
+    .guide-release-block{display:grid;gap:8px}
+    .guide-release-headline{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .guide-release-headline h4{margin:0}
+    .guide-release-status{
+      font-size:12px;
+      color:var(--text-soft);
+      border:1px solid var(--line-soft);
+      background:var(--surface-high);
+      border-radius:var(--radius);
+      padding:6px 8px;
+    }
+    .guide-release-status.synced{color:var(--primary);border-color:var(--accent-border);background:var(--accent-bg)}
+    .guide-release-status.fallback{color:var(--warn-strong);border-color:var(--warn-ring);background:var(--warn-bg)}
+    .guide-release-status.failed{color:var(--danger-soft);border-color:var(--danger-ring);background:var(--danger-bg)}
+    .guide-release-list{display:grid;gap:7px;max-height:320px;overflow:auto;padding-right:2px}
+    .guide-release-empty{
+      border:1px dashed var(--line-soft);
+      border-radius:var(--radius);
+      padding:8px;
+      color:var(--text-soft);
+      font-size:12px;
+      background:var(--surface-high);
+    }
+    .guide-release-item{
+      border:1px solid var(--line-soft);
+      border-radius:var(--radius);
+      background:var(--surface-high);
+      padding:8px;
+      display:grid;
+      gap:6px;
+    }
+    .guide-release-item.current{
+      border-color:var(--accent-border);
+      box-shadow:0 0 0 1px var(--accent-inset) inset;
+    }
+    .guide-release-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+    .guide-release-tag{
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:12px;
+      color:var(--text);
+      font-weight:600;
+    }
+    .guide-release-badge{
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:10px;
+      letter-spacing:.06em;
+      text-transform:uppercase;
+      border-radius:999px;
+      padding:2px 7px;
+      border:1px solid var(--line);
+      color:var(--text-soft);
+      background:var(--surface-black);
+    }
+    .guide-release-badge.prerelease{
+      color:var(--warn-strong);
+      border-color:var(--warn-ring);
+      background:var(--warn-bg);
+    }
+    .guide-release-badge.current{
+      color:var(--primary);
+      border-color:var(--accent-border);
+      background:var(--accent-bg);
+    }
+    .guide-release-meta{font-size:11px;color:var(--text-soft)}
+    .guide-release-highlights{margin:0;padding-left:18px;display:grid;gap:3px;font-size:12px;color:var(--text)}
+    .guide-release-link{font-size:12px;color:var(--primary);text-decoration:none;font-weight:600}
+    .guide-release-link:hover{text-decoration:underline}
     .panel-footer{
       margin-top:var(--gap);
       padding:12px 14px;
@@ -3107,7 +3521,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       <table>
         <thead>
           <tr>
-            <th data-col=\"cur\" data-sort=\"current\">STS</th><th data-col=\"profile\" data-sort=\"name\">Profile</th><th data-col=\"email\" data-sort=\"email\">Email</th><th data-col=\"h5\" data-sort=\"usage5\">5H Usage</th><th data-col=\"h5remain\" data-sort=\"usage5remain\">5H Remain</th><th data-col=\"h5reset\" data-sort=\"usage5reset\">5H Reset At</th><th data-col=\"weekly\" data-sort=\"usageW\">Weekly</th><th data-col=\"weeklyremain\" data-sort=\"usageWremain\">W Remain</th><th data-col=\"weeklyreset\" data-sort=\"usageWreset\">Weekly Reset At</th><th data-col=\"id\" data-sort=\"id\">ID</th><th data-col=\"added\" data-sort=\"savedAt\">Added</th><th data-col=\"note\" class=\"note-col\" data-sort=\"note\">Note</th><th data-col=\"auto\" class=\"no-sort\">Auto</th><th data-col=\"actions\" class=\"no-sort\">Actions</th>
+            <th data-col=\"cur\" data-sort=\"current\">STS</th><th data-col=\"profile\" data-sort=\"name\">Profile</th><th data-col=\"email\" data-sort=\"email\">Email</th><th data-col=\"h5\" data-sort=\"usage5\">5H Usage</th><th data-col=\"h5remain\" data-sort=\"usage5remain\">5H Remain</th><th data-col=\"h5reset\" data-sort=\"usage5reset\">5H Reset At</th><th data-col=\"weekly\" data-sort=\"usageW\">Weekly</th><th data-col=\"weeklyremain\" data-sort=\"usageWremain\">W Remain</th><th data-col=\"weeklyreset\" data-sort=\"usageWreset\">Weekly Reset At</th><th data-col=\"plan\" data-sort=\"planType\">Plan</th><th data-col=\"paid\" data-sort=\"isPaid\">Paid</th><th data-col=\"id\" data-sort=\"id\">ID</th><th data-col=\"added\" data-sort=\"savedAt\">Added</th><th data-col=\"note\" class=\"note-col\" data-sort=\"note\">Note</th><th data-col=\"auto\" class=\"no-sort\">Auto</th><th data-col=\"actions\" class=\"no-sort\">Actions</th>
           </tr>
         </thead>
         <tbody id=\"rows\"></tbody>
@@ -3138,7 +3552,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <div><div class=\"small muted\">Raw auth args</div><input id=\"advAuthArgs\" placeholder=\"list --debug\"/><button id=\"advAuthBtn\">run auth</button></div>
     </section>
 
-    <details class=\"guide card\">
+    <details id=\"guideDetails\" class=\"guide card\">
       <summary>
         <svg class=\"guide-chevron\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\">
           <path d=\"M9 6l6 6-6 6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"></path>
@@ -3146,62 +3560,82 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <span class=\"guide-title\">Guide & Help</span>
       </summary>
       <div class=\"guide-body\">
-        <p class=\"guide-intro\">Use this app to manage local Codex profiles, monitor 5H/weekly usage, and run safe switching workflows from one panel.</p>
+        <p class=\"guide-intro\">Use this panel to run local profile workflows end-to-end: account onboarding, usage monitoring, auto-switch policy, alarms, diagnostics, and release visibility.</p>
         <div class=\"guide-grid\">
           <section class=\"guide-block\">
             <h4>Quick Start</h4>
             <ul>
-              <li>Use <b>Add Account</b> to create a new profile via device-login flow.</li>
-              <li>Use <b>Switch</b> to activate a profile; active profile is pinned first with green status.</li>
-              <li>Use <b>Refresh</b> or enable auto-refresh to keep usage and state updated.</li>
+              <li>Use <b>Add Account</b> to start device login; fallback login is available from the device modal.</li>
+              <li>Use <b>Switch</b> on any row to activate a profile; active row stays pinned first.</li>
+              <li>Use <b>Refresh</b> after profile/config changes for immediate state sync.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
-            <h4>Panel Controls</h4>
+            <h4>Header & Panel Controls</h4>
             <ul>
-              <li><b>Auto Refresh</b> controls periodic data polling.</li>
-              <li><b>Refresh Interval</b> changes poll timing (seconds).</li>
-              <li>Header icons toggle <b>Theme</b>, <b>Debug mode</b>, and settings panel visibility.</li>
+              <li>Header icons cycle <b>Theme</b>, toggle <b>Debug mode</b>, and show/hide settings sections.</li>
+              <li><b>Auto Refresh</b> controls periodic polling; <b>Refresh Interval (sec)</b> uses stepper input.</li>
+              <li><b>Refresh</b> runs immediate fetch without waiting for timer ticks.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
-            <h4>Accounts Table</h4>
+            <h4>Alarm & Notification</h4>
             <ul>
-              <li>Sort by headers (name, usage, remain, reset, added date, and more).</li>
-              <li><b>Columns</b> opens visibility settings for table fields.</li>
-              <li>Row menu (<b>...</b>) supports rename/remove; mobile cards open full details on tap.</li>
-              <li><b>Auto</b> checkbox marks which profiles are eligible for auto-switch.</li>
+              <li><b>Enable Sound Alarm</b> turns usage warning alarm behavior on/off.</li>
+              <li>Set warning thresholds with <b>5H alarm %</b> and <b>Weekly alarm %</b>.</li>
+              <li>Alarm events use warning signals and in-app notices when thresholds are breached.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
             <h4>Auto-Switch Rules</h4>
             <ul>
-              <li>Enable/disable engine, set delay, thresholds, and ranking mode.</li>
-              <li><b>Run Switch</b>, <b>Rapid Test</b>, <b>Force Stop</b>, and <b>Test Auto Switch</b> help validate behavior quickly.</li>
-              <li><b>Switch Chain Preview</b> shows order; <b>Edit</b> allows manual chain reorder.</li>
-              <li><b>Auto Arrange</b> recalculates balanced ordering from current usage.</li>
+              <li><b>Execution</b>: toggle <b>Enabled</b>, set <b>Delay (sec)</b>, run <b>Run Switch</b>/<b>Rapid Test</b>/<b>Force Stop</b>/<b>Test Auto Switch</b>.</li>
+              <li><b>Selection Policy</b>: choose ranking mode and set switch thresholds.</li>
+              <li><b>Switch Chain Preview</b> shows current order; <b>Edit</b> supports manual reorder.</li>
+              <li><b>Auto Arrange</b> recalculates chain ordering from current usage.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
-            <h4>Alarm</h4>
+            <h4>Accounts Area</h4>
             <ul>
-              <li>Enable/disable sound alarms for warning events.</li>
-              <li>Configure 5H/weekly alarm thresholds in the Alarm panel.</li>
-              <li>Main auto-switch is controlled by the single <b>Enabled</b> switch in Execution.</li>
+              <li>Toolbar actions: <b>Add Account</b>, <b>Remove All</b>, and <b>Columns</b>.</li>
+              <li>Table supports sorting by headers and optional column visibility control.</li>
+              <li>Per-row actions: <b>Switch</b>, row menu (<b>Rename</b>/<b>Remove</b>), and <b>Auto</b> eligibility toggle.</li>
+              <li><b>Plan</b> and <b>Paid</b> fields are available as optional columns (hidden by default).</li>
+              <li>Mobile cards open full detail modal and include switch + row-actions shortcuts.</li>
+              <li><b>same-principal</b> badge marks profiles linked to identical principal identity.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
-            <h4>System.Out & Export</h4>
+            <h4>Debug & Advanced</h4>
             <ul>
-              <li>In debug mode, <b>System.Out</b> shows action logs, events, warnings, and errors.</li>
+              <li>In debug mode, <b>System.Out</b> shows UI/API actions, warnings, events, and errors.</li>
               <li><b>Export Debug Logs</b> downloads a JSON snapshot for troubleshooting.</li>
+              <li><b>Advanced Actions</b> exposes wrapped `codex-auth` operations for status/login/switch/import/config/daemon/clean/raw auth.</li>
             </ul>
+          </section>
+          <section class=\"guide-block\">
+            <h4>About Project</h4>
+            <ul>
+              <li><b>App Version:</b> v__UI_VERSION__</li>
+              <li><b>Repository:</b> <a href=\"https://github.com/alisinaee/Codex-Account-Manager\" target=\"_blank\" rel=\"noopener noreferrer\">Codex-Account-Manager</a></li>
+              <li>Local-first Codex profile manager with usage monitoring, safe switching workflows, and auto-switch automation.</li>
+            </ul>
+          </section>
+          <section class=\"guide-block guide-release-block\">
+            <div class=\"guide-release-headline\">
+              <h4>Release Notes</h4>
+              <button id=\"guideReleaseRefreshBtn\" class=\"btn\" type=\"button\">Refresh</button>
+            </div>
+            <div id=\"guideReleaseStatus\" class=\"guide-release-status\">Open this section to load release history.</div>
+            <div id=\"guideReleaseList\" class=\"guide-release-list\"></div>
           </section>
         </div>
       </div>
     </details>
     <footer class=\"panel-footer\" aria-label=\"Project footer\">
       <div><strong>MIT License</strong> | Copyright (c) 2026 Codex Account Manager contributors</div>
+      <div style=\"margin-top:6px;\"><strong>About:</strong> Manage multiple local Codex profiles, track 5H/weekly usage, and run controlled account switching from one panel.</div>
       <div class=\"panel-footer-row\">
         <span>Project:</span>
         <a href=\"https://github.com/alisinaee/Codex-Account-Manager\" target=\"_blank\" rel=\"noopener noreferrer\">github.com/alisinaee/Codex-Account-Manager</a>
@@ -3289,6 +3723,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let eventsTimer = null;
   let sortState = JSON.parse(localStorage.getItem("codex_sort_state") || '{"key":"savedAt","dir":"desc"}');
   let latestData = { status: null, usage: null, list: null, config: null, autoState: null, autoChain: null, events: [] };
+  let sessionUsageCache = null;
+  let usageFlashUntil = {};
+  let usageFetchBlinkActive = false;
   let lastEventId = 0;
   const notifiedEventIds = new Set();
   let alarmAudioCtx = null;
@@ -3306,11 +3743,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let autoSwitchPolicySaveTimer = null;
   let configSaveQueue = Promise.resolve();
   let pendingConfigSaves = 0;
+  let latestConfigRevision = null;
   let saveUiVisibleSince = 0;
   let saveUiHideTimer = null;
   let pendingAutoSwitchEnabled = null;
   let switchInFlight = false;
   let switchPendingName = "";
+  let refreshRunning = false;
+  let refreshQueuedOpts = null;
+  let guideReleaseLoaded = false;
+  let guideReleaseLoading = false;
+  let guideReleaseLastPayload = null;
   let diagnosticsHooksInstalled = false;
   const MAX_OVERLAY_LOGS = 900;
   const LOG_COALESCE_WINDOW_MS = 3500;
@@ -3326,8 +3769,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
     "/api/usage-local",
   ]);
   let activeModalResolver = null;
-  const columnLabels = { cur:"STS", profile:"Profile", email:"Email", h5:"5H Usage", h5remain:"5H Remain", h5reset:"5H Reset At", weekly:"Weekly", weeklyremain:"W Remain", weeklyreset:"Weekly Reset At", id:"ID", added:"Added", note:"Note", auto:"Auto", actions:"Actions" };
-  const defaultColumns = { cur:true, profile:true, email:true, h5:true, h5remain:true, h5reset:false, weekly:true, weeklyremain:true, weeklyreset:false, id:false, added:false, note:false, auto:false, actions:true };
+  const columnLabels = { cur:"STS", profile:"Profile", email:"Email", h5:"5H Usage", h5remain:"5H Remain", h5reset:"5H Reset At", weekly:"Weekly", weeklyremain:"W Remain", weeklyreset:"Weekly Reset At", plan:"Plan", paid:"Paid", id:"ID", added:"Added", note:"Note", auto:"Auto", actions:"Actions" };
+  const defaultColumns = { cur:true, profile:true, email:true, h5:true, h5remain:true, h5reset:false, weekly:true, weeklyremain:true, weeklyreset:false, plan:false, paid:false, id:false, added:false, note:false, auto:false, actions:true };
+  const requiredColumns = new Set(["h5remain", "weeklyremain"]);
+  function normalizeColumnPrefs(pref){
+    const next = { ...defaultColumns, ...(pref || {}) };
+    requiredColumns.forEach((k) => { next[k] = true; });
+    return next;
+  }
   function isLegacyAllColumnsEnabled(pref){
     try { return Object.keys(defaultColumns).every((k) => !!pref[k]); } catch(_) { return false; }
   }
@@ -3337,11 +3786,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
       const migrated = localStorage.getItem("codex_table_columns_default_v2") === "1";
       if(!migrated && p && Object.keys(p).length && isLegacyAllColumnsEnabled(p)){
         localStorage.setItem("codex_table_columns_default_v2", "1");
-        localStorage.setItem("codex_table_columns", JSON.stringify(defaultColumns));
-        return { ...defaultColumns };
+        const normalized = normalizeColumnPrefs(defaultColumns);
+        localStorage.setItem("codex_table_columns", JSON.stringify(normalized));
+        return normalized;
       }
-      return { ...defaultColumns, ...(p||{}) };
-    } catch(_) { return { ...defaultColumns }; }
+      return normalizeColumnPrefs(p);
+    } catch(_) { return normalizeColumnPrefs(defaultColumns); }
   })();
   window.__camBootState = { booted: false, lastError: null, version: UI_VERSION, ts: Date.now() };
 
@@ -3460,8 +3910,29 @@ def render_ui_html(default_interval: float, token: str) -> str:
     setConfigSavingState(true, "Saving...");
     const applyPatch = async () => {
       const keys = Object.keys(patch || {});
-      pushOverlayLog("ui", "config.patch", { keys });
-      await postApi("/api/ui-config", patch);
+      const payload = { ...(patch || {}) };
+      if(Number.isFinite(Number(latestConfigRevision))){
+        payload.base_revision = Number(latestConfigRevision);
+      }
+      pushOverlayLog("ui", "config.patch", { keys, base_revision: payload.base_revision || null });
+      try{
+        const cfg = await postApi("/api/ui-config", payload);
+        latestConfigRevision = Number(cfg?._meta?.revision || latestConfigRevision || 1);
+        return cfg;
+      } catch(e){
+        const msg = String(e?.message || "");
+        if(msg.includes("Config changed elsewhere")){
+          await refreshAll({ usageTimeoutSec: 2 });
+          const retryPayload = { ...(patch || {}) };
+          if(Number.isFinite(Number(latestConfigRevision))){
+            retryPayload.base_revision = Number(latestConfigRevision);
+          }
+          const cfg2 = await postApi("/api/ui-config", retryPayload);
+          latestConfigRevision = Number(cfg2?._meta?.revision || latestConfigRevision || 1);
+          return cfg2;
+        }
+        throw e;
+      }
     };
     const run = configSaveQueue.then(applyPatch);
     configSaveQueue = run.catch(() => {});
@@ -3490,17 +3961,69 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(n < 75) return "mid";
     return "good";
   }
-  function isUsageLoadingState(usage, rowError){
+  function usageMetricSignature(usage){
+    const pct = usagePercentNumber(usage);
+    const resetTs = Number(usage?.resets_at || 0);
+    const text = String(usage?.text || "");
+    return `${Number.isFinite(pct) ? pct : "na"}|${Number.isFinite(resetTs) ? resetTs : "na"}|${text}`;
+  }
+  function markUsageFlashUpdates(prevUsage, nextUsage){
+    if(!prevUsage || !nextUsage) return;
+    const prevRows = Array.isArray(prevUsage?.profiles) ? prevUsage.profiles : [];
+    const nextRows = Array.isArray(nextUsage?.profiles) ? nextUsage.profiles : [];
+    if(!prevRows.length || !nextRows.length) return;
+    const until = Date.now() + 1400;
+    const prevByName = {};
+    for(const row of prevRows){
+      const name = String(row?.name || "").trim();
+      if(name) prevByName[name] = row;
+    }
+    for(const row of nextRows){
+      const name = String(row?.name || "").trim();
+      if(!name) continue;
+      const prev = prevByName[name];
+      if(!prev) continue;
+      if(usageMetricSignature(prev.usage_5h) !== usageMetricSignature(row.usage_5h)){
+        usageFlashUntil[`${name}|h5`] = until;
+      }
+      if(usageMetricSignature(prev.usage_weekly) !== usageMetricSignature(row.usage_weekly)){
+        usageFlashUntil[`${name}|weekly`] = until;
+      }
+    }
+  }
+  function shouldFlashUsage(name, metric){
+    const key = `${String(name || "").trim()}|${metric}`;
+    const until = Number(usageFlashUntil[key] || 0);
+    if(!Number.isFinite(until) || until <= 0) return false;
+    if(until < Date.now()){
+      delete usageFlashUntil[key];
+      return false;
+    }
+    return true;
+  }
+  function shouldBlinkUsage(name, metric, loading){
+    if(loading) return false;
+    return !!usageFetchBlinkActive || shouldFlashUsage(name, metric);
+  }
+  function isUsageLoadingState(usage, rowError, rowLoading){
+    if(!!rowLoading) return true;
     const pct = usagePercentNumber(usage);
     if(!rowError) return false;
     const msg = String(rowError || "").toLowerCase();
-    const transient = msg.includes("request failed") || msg.includes("timed out") || msg.includes("http ");
+    let transient = msg.includes("request failed") || msg.includes("timed out");
+    if(!transient && msg.startsWith("http ")){
+      const code = parseInt(msg.slice(5).trim(), 10);
+      if(Number.isFinite(code)){
+        // Treat only retryable HTTP statuses as loading placeholders.
+        transient = (code >= 500) || code === 408 || code === 429;
+      }
+    }
     if(!transient) return false;
     if(!Number.isFinite(pct)) return true;
     const resetTs = Number(usage?.resets_at || 0);
     return !(Number.isFinite(resetTs) && resetTs > 0);
   }
-  function renderUsageMeter(usage, loading=false){
+  function renderUsageMeter(usage, loading=false, flash=false){
     if(loading){
       return `<div class="usage-cell usage-cell-loading"><span class="usage-pct loading-text">loading...</span><div class="usage-meter loading"><span class="usage-fill shimmer"></span></div></div>`;
     }
@@ -3510,7 +4033,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     const tone = usageFillClass(pct);
     const txtClass = usageClass(pct);
-    return `<div class="usage-cell"><span class="usage-pct ${txtClass}">${pct}%</span><div class="usage-meter"><span class="usage-fill ${tone}" style="width:${pct}%"></span></div></div>`;
+    return `<div class="usage-cell ${flash ? "updated" : ""}"><span class="usage-pct ${txtClass}">${pct}%</span><div class="usage-meter"><span class="usage-fill ${tone} ${flash ? "blink" : ""}" style="width:${pct}%"></span></div></div>`;
   }
   function fmtReset(ts){ if(!ts) return "unknown"; try { const d = new Date(Number(ts)*1000); return Number.isFinite(d.getTime()) ? d.toLocaleString() : "unknown"; } catch(_) { return "unknown"; } }
   function fmtSavedAt(ts){ if(!ts) return "-"; try { const d = new Date(ts); return Number.isFinite(d.getTime()) ? d.toLocaleString() : ts; } catch(_) { return ts; } }
@@ -3802,6 +4325,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
     try {
       res = await fetch(path, options);
     } catch(e){
+      if(e && e.name === "AbortError"){
+        throw e;
+      }
       pushOverlayLog("error", `api.network ${method} ${path}`, {
         error: e?.message || String(e),
         duration_ms: Date.now() - startedAt,
@@ -3811,13 +4337,18 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const body = await res.json().catch(() => ({ok:false,error:{message:"bad json"}}));
     if(!res.ok || !body.ok){
       const code = body?.error?.code || "";
+      const type = body?.error?.type || "";
       const msg = body?.error?.message || "request failed";
       pushOverlayLog("error", `api.error ${method} ${path}`, {
         status: res.status,
         code: code || null,
+        type: type || null,
         message: msg,
         duration_ms: Date.now() - startedAt,
       });
+      if(code === "STALE_CONFIG"){
+        throw new Error("Config changed elsewhere. Refreshing and retrying...");
+      }
       if(code === "FORBIDDEN" && /invalid session token/i.test(msg)){
         setError("Session expired after service restart. Reloading panel...");
         setTimeout(() => { try { window.location.href = "/?v="+encodeURIComponent(UI_VERSION)+"&r="+Date.now(); } catch(_) {} }, 350);
@@ -3827,19 +4358,124 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(shouldTrace){
       pushOverlayLog("ui", `api.response ${method} ${path}`, {
         status: res.status,
+        request_id: body?.meta?.request_id || null,
         duration_ms: Date.now() - startedAt,
       });
     }
     return body.data;
   }
-  async function postApi(path, payload={}){ return callApi(path, { method:"POST", headers:{"Content-Type":"application/json","X-Codex-Token":token}, body: JSON.stringify(payload) }); }
-  async function safeGet(path){ try { return await callApi(path); } catch(e){ return {__error:e.message}; } }
+  async function postApi(path, payload={}){
+    return callApi(path, { method:"POST", headers:{"Content-Type":"application/json","X-Codex-Token":token}, body: JSON.stringify(payload) });
+  }
+  async function safeGet(path, options={}){
+    try { return await callApi(path, options); }
+    catch(e){
+      if(e && e.name === "AbortError") return { __aborted: true };
+      return {__error:e.message};
+    }
+  }
 
   function escHtml(s){
     return String(s || "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
+  }
+  function escAttr(s){
+    return escHtml(s).replaceAll('"', "&quot;");
+  }
+  function normalizeReleaseTag(raw){
+    let s = String(raw || "").trim().toLowerCase();
+    if(s.startsWith("release ")) s = s.slice("release ".length);
+    if(s.startsWith("v")) s = s.slice(1);
+    return s.replace(/[^0-9a-z.+_-]/g, "");
+  }
+  function isCurrentReleaseTag(raw){
+    const a = normalizeReleaseTag(raw);
+    const b = normalizeReleaseTag(UI_VERSION);
+    return !!a && !!b && a === b;
+  }
+  function formatReleaseAge(iso){
+    const t = Date.parse(String(iso || ""));
+    if(!Number.isFinite(t)) return "Unknown date";
+    const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if(sec < 60) return `${sec}s ago`;
+    if(sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if(sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    if(sec < 86400 * 30) return `${Math.floor(sec / 86400)}d ago`;
+    return new Date(t).toLocaleDateString();
+  }
+  function setGuideReleaseStatus(text, state){
+    const el = byId("guideReleaseStatus", false);
+    if(!el) return;
+    el.textContent = String(text || "");
+    el.classList.remove("synced", "fallback", "failed");
+    if(state && (state === "synced" || state === "fallback" || state === "failed")){
+      el.classList.add(state);
+    }
+  }
+  function renderGuideReleaseNotes(payload){
+    const list = byId("guideReleaseList", false);
+    if(!list) return;
+    const releases = Array.isArray(payload?.releases) ? payload.releases : [];
+    if(!releases.length){
+      list.innerHTML = `<div class="guide-release-empty">No release entries available.</div>`;
+      return;
+    }
+    const html = releases.map((r) => {
+      const tag = String(r?.tag || r?.version || "-");
+      const pre = !!r?.is_prerelease;
+      const current = !!r?.is_current || isCurrentReleaseTag(tag);
+      const highlights = Array.isArray(r?.highlights) ? r.highlights.filter(Boolean).slice(0, 4) : [];
+      const link = String(r?.url || "").trim();
+      const meta = r?.published_at ? formatReleaseAge(r.published_at) : "Local entry";
+      const badges = [
+        pre ? `<span class="guide-release-badge prerelease">Pre-release</span>` : "",
+        current ? `<span class="guide-release-badge current">Current</span>` : "",
+      ].filter(Boolean).join("");
+      const highlightHtml = highlights.length
+        ? `<ul class="guide-release-highlights">${highlights.map((h) => `<li>${escHtml(h)}</li>`).join("")}</ul>`
+        : "";
+      const linkHtml = link ? `<a class="guide-release-link" href="${escAttr(link)}" target="_blank" rel="noopener noreferrer">Open on GitHub</a>` : "";
+      return `
+        <article class="guide-release-item ${current ? "current" : ""}">
+          <div class="guide-release-row">
+            <span class="guide-release-tag">${escHtml(tag)}</span>
+            ${badges}
+          </div>
+          <div class="guide-release-meta">${escHtml(meta)}</div>
+          ${highlightHtml}
+          ${linkHtml}
+        </article>
+      `;
+    }).join("");
+    list.innerHTML = html;
+  }
+  async function loadGuideReleaseNotes(force=false){
+    if(guideReleaseLoading) return;
+    guideReleaseLoading = true;
+    setGuideReleaseStatus("Loading release notes...", "");
+    try{
+      const path = force ? "/api/release-notes?force=true" : "/api/release-notes";
+      const payload = await safeGet(path);
+      if(payload.__error){
+        guideReleaseLastPayload = null;
+        setGuideReleaseStatus("Failed to load release notes", "failed");
+        const list = byId("guideReleaseList", false);
+        if(list){
+          list.innerHTML = `<div class="guide-release-empty">${escHtml(payload.__error)}</div>`;
+        }
+        return;
+      }
+      guideReleaseLoaded = true;
+      guideReleaseLastPayload = payload;
+      const statusText = payload?.status_text || "Release notes";
+      const status = String(payload?.status || "");
+      setGuideReleaseStatus(statusText, status);
+      renderGuideReleaseNotes(payload);
+    } finally {
+      guideReleaseLoading = false;
+    }
   }
   async function copyText(text){
     const value = String(text || "");
@@ -3988,6 +4624,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
       case "current": return row.is_current ? 1 : 0;
       case "name": return (row.name||"").toLowerCase();
       case "email": return (row.email||"").toLowerCase();
+      case "planType": return (row.plan_type||"").toLowerCase();
+      case "isPaid": {
+        if(row.is_paid === true) return 2;
+        if(row.is_paid === false) return 1;
+        return 0;
+      }
       case "id": return (row.account_id||"").toLowerCase();
       case "usage5": return Number(row.usage_5h?.remaining_percent ?? -1);
       case "usage5remain": {
@@ -4005,6 +4647,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
       case "note": return row.same_principal ? 1 : 0;
       default: return 0;
     }
+  }
+
+  function fmtPaid(v){
+    if(v === true) return "yes";
+    if(v === false) return "no";
+    return "-";
   }
 
   function applySort(rows){
@@ -4091,13 +4739,18 @@ def render_ui_html(default_interval: float, token: str) -> str:
       wrap.dataset.bound = "1";
     });
   }
-  function saveColumnPrefs(){ try { localStorage.setItem("codex_table_columns", JSON.stringify(columnPrefs)); } catch(_) {} }
+  function saveColumnPrefs(){
+    try {
+      columnPrefs = normalizeColumnPrefs(columnPrefs);
+      localStorage.setItem("codex_table_columns", JSON.stringify(columnPrefs));
+    } catch(_) {}
+  }
   function isAutoSwitchEnabled(){
     try { return !!(latestData.config && latestData.config.auto_switch && latestData.config.auto_switch.enabled); } catch(_) { return false; }
   }
   function applyColumnVisibility(){
     Object.keys(defaultColumns).forEach((k) => {
-      let visible = !!columnPrefs[k];
+      let visible = requiredColumns.has(k) ? true : !!columnPrefs[k];
       if(k === "auto" && !isAutoSwitchEnabled()) visible = false;
       document.querySelectorAll(`[data-col="${k}"]`).forEach((el) => {
         if (visible) el.classList.remove("col-hidden");
@@ -4111,6 +4764,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     panel.innerHTML = "";
     Object.keys(defaultColumns).forEach((k) => {
       if(k === "auto" && !isAutoSwitchEnabled()) return;
+      if(requiredColumns.has(k)) return;
       const wrap = document.createElement("div");
       wrap.className = "columns-item";
       const row = document.createElement("label");
@@ -4303,7 +4957,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   function renderEvents(items){ return items; }
 
   async function loadDebugLogs(){
-    const payload = await safeGet("/api/debug/logs?tail=240");
+    const payload = await safeGet("/api/debug/logs?tail=240&token="+encodeURIComponent(token));
     if(payload.__error) return;
     baseLogs = (payload.logs || []).map((r) => ({
       ts: r.ts || "-",
@@ -4459,8 +5113,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
     for(const p of rows){
       const tr=document.createElement("tr");
       const statusClass = p.is_current ? "active" : "";
-      const h5Loading = isUsageLoadingState(p.usage_5h, p.error);
-      const wLoading = isUsageLoadingState(p.usage_weekly, p.error);
+      const h5Loading = isUsageLoadingState(p.usage_5h, p.error, p.loading_usage);
+      const wLoading = isUsageLoadingState(p.usage_weekly, p.error, p.loading_usage);
+      const h5Flash = shouldBlinkUsage(p.name, "h5", h5Loading);
+      const wFlash = shouldBlinkUsage(p.name, "weekly", wLoading);
       const h5RemainTs = Number(p.usage_5h?.resets_at || 0) || "";
       const wRemainTs = Number(p.usage_weekly?.resets_at || 0) || "";
       const switchTarget = switchInFlight && switchPendingName === p.name;
@@ -4471,12 +5127,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <td data-col="cur"><span class="status-dot ${statusClass}"></span></td>
         <td data-col="profile">${p.name}</td>
         <td data-col="email" class="email-cell" title="${(p.email || "-").replace(/"/g,'&quot;')}">${p.email || "-"}</td>
-        <td data-col="h5">${renderUsageMeter(p.usage_5h, h5Loading)}</td>
+        <td data-col="h5">${renderUsageMeter(p.usage_5h, h5Loading, h5Flash)}</td>
         <td data-col="h5remain" class="reset-cell ${h5Loading ? "loading-text" : ""}" data-remain-ts="${h5RemainTs}" data-remain-seconds="1" data-remain-loading="${h5Loading ? "1" : "0"}">${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}</td>
         <td data-col="h5reset" class="reset-cell">${fmtReset(p.usage_5h?.resets_at)}</td>
-        <td data-col="weekly">${renderUsageMeter(p.usage_weekly, wLoading)}</td>
+        <td data-col="weekly">${renderUsageMeter(p.usage_weekly, wLoading, wFlash)}</td>
         <td data-col="weeklyremain" class="reset-cell ${wLoading ? "loading-text" : ""}" data-remain-ts="${wRemainTs}" data-remain-seconds="0" data-remain-loading="${wLoading ? "1" : "0"}">${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}</td>
         <td data-col="weeklyreset" class="reset-cell">${fmtReset(p.usage_weekly?.resets_at)}</td>
+        <td data-col="plan">${p.plan_type || "-"}</td>
+        <td data-col="paid">${fmtPaid(p.is_paid)}</td>
         <td data-col="id" class="id-cell" title="${(p.account_id || "-").replace(/"/g,'&quot;')}">${p.account_id || "-"}</td>
         <td data-col="added" class="added-cell">${fmtSavedAt(p.saved_at || "-")}</td>
         <td data-col="note" class="note-cell">${p.same_principal ? '<span class="badge">same-principal</span>' : ''}</td>
@@ -4501,14 +5159,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
             </div>
             <div class="mobile-actions">
               <button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
-              <button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
               <button class="btn actions-menu-btn" data-mobile-row-actions="${p.name}">⋯</button>
             </div>
           </div>
           <div class="mobile-email">${p.email || "-"}</div>
           <div class="mobile-stats">
-            <div class="mobile-stat"><span class="label">5H</span><span class="${h5Class}">${fmtUsagePct(p.usage_5h)}</span></div>
-            <div class="mobile-stat"><span class="label">Weekly</span><span class="${wClass}">${fmtUsagePct(p.usage_weekly)}</span></div>
+            <div class="mobile-stat"><span class="label">5H</span><span class="${h5Class} ${h5Flash ? "updated" : ""}">${fmtUsagePct(p.usage_5h)}</span></div>
+            <div class="mobile-stat"><span class="label">Weekly</span><span class="${wClass} ${wFlash ? "updated" : ""}">${fmtUsagePct(p.usage_weekly)}</span></div>
             <div class="mobile-stat"><span class="label">5H Remain</span><span class="${h5Loading ? "loading-text" : ""}">${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}</span></div>
             <div class="mobile-stat"><span class="label">W Remain</span><span class="${wLoading ? "loading-text" : ""}">${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}</span></div>
           </div>
@@ -4524,6 +5181,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
             `Weekly Usage: ${fmtUsagePct(p.usage_weekly)}`,
             `Weekly Remain: ${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}`,
             `Weekly Reset At: ${fmtReset(p.usage_weekly?.resets_at)}`,
+            `Plan: ${p.plan_type || "-"}`,
+            `Paid: ${fmtPaid(p.is_paid)}`,
             `Account ID: ${p.account_id || "-"}`,
             `Added: ${fmtSavedAt(p.saved_at || "-")}`,
             `Note: ${p.same_principal ? "same-principal" : "-"}`,
@@ -4542,7 +5201,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
           mobileSwitchBtn.addEventListener("click", (ev) => {
             ev.stopPropagation();
             runSwitchAction(mobileSwitchBtn.dataset.mobileSwitch);
-            runSwitchAction(mobileSwitchBtn.dataset.mobileSwitch);
           });
         }
         const mobileRowActionsBtn = mrow.querySelector("button[data-mobile-row-actions]");
@@ -4558,7 +5216,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
     applyColumnVisibility();
     refreshRemainCountdowns();
     tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runSwitchAction(btn.dataset.switch)));
-    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runSwitchAction(btn.dataset.switch)));
     tbody.querySelectorAll("button[data-row-actions]").forEach(btn => btn.addEventListener("click", (e)=>{
       e.stopPropagation();
       openRowActionsModal(btn.dataset.rowActions);
@@ -4567,6 +5224,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   }
 
   function applyConfigToControls(cfg){
+    latestConfigRevision = Number(cfg?._meta?.revision || latestConfigRevision || 1);
     const ui = cfg.ui || {};
     byId("themeSelect").value = ui.theme || "auto";
     applyTheme(ui.theme || "auto");
@@ -4596,7 +5254,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const left = s.split("|")[0].trim();
     return left.includes("@") ? left : "";
   }
-  function buildUsageLoadingSnapshot(prevUsage, listPayload, currentPayload, errorMsg){
+  function buildUsageLoadingSnapshot(prevUsage, listPayload, currentPayload, errorMsg, loadingMode=false){
     const srcProfiles = [];
     if(prevUsage && Array.isArray(prevUsage.profiles) && prevUsage.profiles.length){
       for(const p of prevUsage.profiles){ srcProfiles.push({ ...p }); }
@@ -4608,6 +5266,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
           account_id: p.account_id || "-",
           usage_5h: { remaining_percent: null, resets_at: null, text: "-" },
           usage_weekly: { remaining_percent: null, resets_at: null, text: "-" },
+          plan_type: null,
+          is_paid: null,
           is_current: false,
           same_principal: !!p.same_principal,
           error: errorMsg || "request failed",
@@ -4624,87 +5284,195 @@ def render_ui_html(default_interval: float, token: str) -> str:
         ...p,
         usage_5h: { remaining_percent: null, resets_at: null, text: "-" },
         usage_weekly: { remaining_percent: null, resets_at: null, text: "-" },
+        plan_type: p.plan_type ?? null,
+        is_paid: (typeof p.is_paid === "boolean") ? p.is_paid : null,
         is_current: !!byEmail,
         error: errorMsg || p.error || "request failed",
+        loading_usage: !!loadingMode,
       };
     });
     const currentProfile = mapped.find((p) => p.is_current)?.name || null;
     return { refreshed_at: new Date().toISOString(), current_profile: currentProfile, profiles: mapped };
   }
 
+  function buildImmediateLoadingSnapshot(reason){
+    const snapshot = buildUsageLoadingSnapshot(
+      latestData.usage,
+      latestData.list,
+      null,
+      reason || "request pending",
+      true,
+    );
+    if(snapshot && Array.isArray(snapshot.profiles) && snapshot.profiles.length){
+      return snapshot;
+    }
+    return null;
+  }
+
+  function saveBootSnapshot(){
+    try{
+      const payload = {
+        saved_at: new Date().toISOString(),
+        config: latestData.config || null,
+        usage: latestData.usage || null,
+      };
+      localStorage.setItem("cam_boot_snapshot_v1", JSON.stringify(payload));
+    } catch(_) {}
+  }
+
+  function loadBootSnapshot(){
+    try{
+      const raw = localStorage.getItem("cam_boot_snapshot_v1");
+      if(!raw) return null;
+      const parsed = JSON.parse(raw);
+      if(!parsed || typeof parsed !== "object") return null;
+      return parsed;
+    } catch(_) {
+      return null;
+    }
+  }
+
   async function refreshAll(opts){
+    if(refreshRunning){
+      refreshQueuedOpts = opts || {};
+      return;
+    }
+    refreshRunning = true;
+    const runOpts = opts || {};
+    const clearUsageCache = !!runOpts?.clearUsageCache;
+    const showLoading = !!runOpts?.showLoading;
+    if(clearUsageCache){
+      sessionUsageCache = null;
+      usageFlashUntil = {};
+      latestData.usage = null;
+    }
     if(pendingConfigSaves > 0){
       try { await configSaveQueue; } catch(_) {}
     }
-    const usageTimeoutSec = Math.max(1, Number(opts?.usageTimeoutSec || 3));
-    const usageForce = !!opts?.usageForce;
+    const usageTimeoutSec = Math.max(1, Number(runOpts?.usageTimeoutSec || 3));
+    const usageForce = !!runOpts?.usageForce;
     const usagePath = `/api/usage-local?timeout=${encodeURIComponent(String(usageTimeoutSec))}${usageForce ? "&force=true" : ""}`;
     setError("");
-    const [list, usage, config, autoState, autoChain, eventsPayload, current] = await Promise.all([
-      safeGet("/api/list"),
-      safeGet(usagePath),
-      safeGet("/api/ui-config"),
-      safeGet("/api/auto-switch/state"),
-      safeGet("/api/auto-switch/chain"),
-      safeGet("/api/events?since_id="+encodeURIComponent(String(lastEventId))),
-      safeGet("/api/current"),
-    ]);
-    if(!config.__error){
-      latestData.config=config;
-      applyConfigToControls(config);
-      const as = config.auto_switch || {};
-      const autoEl = byId("auto", false);
-      if(autoEl) autoEl.textContent = as.enabled ? "ON" : "OFF";
-      const thrEl = byId("thr", false);
-      if(thrEl) thrEl.textContent = `${as.thresholds?.h5_switch_pct ?? "-"} / ${as.thresholds?.weekly_switch_pct ?? "-"}`;
-      renderColumnsModal();
-      applyColumnVisibility();
-    } else {
-      setError("config: " + config.__error);
-    }
-    if(!usage.__error){
-      latestData.usage = usage;
-      renderTable(usage);
-    } else {
-      const fallbackUsage = buildUsageLoadingSnapshot(latestData.usage, (!list.__error ? list : latestData.list), current, usage.__error);
-      latestData.usage = fallbackUsage;
-      renderTable(fallbackUsage);
-      setError((byId("error").textContent ? byId("error").textContent + "\\n" : "") + "usage: " + usage.__error);
-    }
-    if(!list.__error){ latestData.list = list; }
-    if(!autoState.__error){
-      latestData.autoState = autoState;
-      const engineEl = byId("engine", false);
-      if(engineEl) engineEl.textContent = autoState.active ? "ACTIVE" : "IDLE";
-      const engineMetaEl = byId("engineMeta", false);
-      if(engineMetaEl) engineMetaEl.textContent = "pending: " + (autoState.pending_switch_due_at_text || "-") + " | cooldown: " + (autoState.cooldown_until_text || "-");
-      const rapidBtn = byId("asRapidTestBtn", false);
-      if(rapidBtn){
-        const activeRapid = !!autoState.rapid_test_active;
-        rapidBtn.disabled = activeRapid;
-        rapidBtn.textContent = activeRapid ? "Rapid Running..." : "Rapid Test";
+    if(showLoading){
+      const hasLiveUsage = !!(latestData.usage && Array.isArray(latestData.usage.profiles) && latestData.usage.profiles.length);
+      if(!hasLiveUsage){
+        const prefetchLoading = buildImmediateLoadingSnapshot("request pending");
+        latestData.usage = prefetchLoading;
+        renderTable(prefetchLoading);
       }
-      updateAutoSwitchArmedUI();
     }
-    if(!autoChain.__error){
-      latestData.autoChain = autoChain;
-      renderChainPreview(autoChain);
-    }
-    if(!eventsPayload.__error){
-      const incoming = eventsPayload.events || [];
-      if(incoming.length){
-        for(const ev of incoming){
-          await maybeNotify(ev);
-          lastEventId = Math.max(lastEventId, Number(ev.id || 0));
-          latestData.events.push(ev);
-          pushOverlayLog("event", `${ev.type || "event"}: ${ev.message || ""}`, ev.details || null);
+    try{
+      const phase1Started = Date.now();
+      const [config, autoState, current, list] = await Promise.all([
+        safeGet("/api/ui-config"),
+        safeGet("/api/auto-switch/state"),
+        safeGet("/api/current"),
+        safeGet("/api/list"),
+      ]);
+      if(!config.__error){
+        latestData.config = config;
+        latestConfigRevision = Number(config?._meta?.revision || latestConfigRevision || 1);
+        applyConfigToControls(config);
+        renderColumnsModal();
+        applyColumnVisibility();
+      } else {
+        setError("config: " + config.__error);
+      }
+      if(!autoState.__error){
+        latestData.autoState = autoState;
+        const rapidBtn = byId("asRapidTestBtn", false);
+        if(rapidBtn){
+          const activeRapid = !!autoState.rapid_test_active;
+          rapidBtn.disabled = activeRapid;
+          rapidBtn.textContent = activeRapid ? "Rapid Running..." : "Rapid Test";
+        }
+        updateAutoSwitchArmedUI();
+      }
+      if(!list.__error){
+        latestData.list = list;
+      }
+      pushOverlayLog("ui", "refresh.phase1", { duration_ms: Date.now() - phase1Started });
+
+      const phase2Started = Date.now();
+      usageFetchBlinkActive = true;
+      if(latestData.usage && Array.isArray(latestData.usage.profiles) && latestData.usage.profiles.length){
+        renderTable(latestData.usage);
+      }
+      if(showLoading){
+        const hasLiveUsage = !!(latestData.usage && Array.isArray(latestData.usage.profiles) && latestData.usage.profiles.length);
+        if(!hasLiveUsage){
+          const pendingUsage = buildUsageLoadingSnapshot(
+            latestData.usage,
+            latestData.list,
+            current,
+            "request pending",
+            true,
+          );
+          latestData.usage = pendingUsage;
+          renderTable(pendingUsage);
         }
       }
-      renderEvents(latestData.events);
+      const [usage, autoChain, eventsPayload] = await Promise.all([
+        safeGet(usagePath),
+        safeGet("/api/auto-switch/chain"),
+        safeGet("/api/events?since_id="+encodeURIComponent(String(lastEventId))),
+      ]);
+      usageFetchBlinkActive = false;
+      if(!usage.__error){
+        const prevUsageForFlash = (!showLoading && sessionUsageCache && Array.isArray(sessionUsageCache.profiles) && sessionUsageCache.profiles.length)
+          ? sessionUsageCache
+          : null;
+        if(!showLoading && prevUsageForFlash){
+          markUsageFlashUpdates(prevUsageForFlash, usage);
+        }
+        latestData.usage = usage;
+        sessionUsageCache = usage;
+        renderTable(usage);
+      } else {
+        const hasSessionCache = !!(sessionUsageCache && Array.isArray(sessionUsageCache.profiles) && sessionUsageCache.profiles.length);
+        if(!showLoading && hasSessionCache){
+          latestData.usage = sessionUsageCache;
+          renderTable(sessionUsageCache);
+        } else {
+          const fallbackUsage = buildUsageLoadingSnapshot(latestData.usage, latestData.list, current, usage.__error);
+          latestData.usage = fallbackUsage;
+          renderTable(fallbackUsage);
+        }
+        setError((byId("error").textContent ? byId("error").textContent + "\\n" : "") + "usage: " + usage.__error);
+      }
+      if(!autoChain.__error){
+        latestData.autoChain = autoChain;
+        renderChainPreview(autoChain);
+      }
+      if(!eventsPayload.__error){
+        const incoming = eventsPayload.events || [];
+        if(incoming.length){
+          for(const ev of incoming){
+            await maybeNotify(ev);
+            lastEventId = Math.max(lastEventId, Number(ev.id || 0));
+            latestData.events.push(ev);
+            pushOverlayLog("event", `${ev.type || "event"}: ${ev.message || ""}`, ev.details || null);
+          }
+        }
+        renderEvents(latestData.events);
+      }
+      pushOverlayLog("ui", "refresh.phase2", { duration_ms: Date.now() - phase2Started });
+      const debugEnabled = !!(latestData.config?.ui?.debug_mode);
+      if(debugEnabled){
+        await loadDebugLogs();
+      }
+      saveBootSnapshot();
+      const refreshStamp = byId("lastRefresh", false);
+      if(refreshStamp) refreshStamp.textContent = "Refreshed: " + new Date().toLocaleTimeString();
+    } finally {
+      usageFetchBlinkActive = false;
+      refreshRunning = false;
+      if(refreshQueuedOpts){
+        const nextOpts = refreshQueuedOpts;
+        refreshQueuedOpts = null;
+        setTimeout(() => { refreshAll(nextOpts); }, 0);
+      }
     }
-    await loadDebugLogs();
-    const refreshStamp = byId("lastRefresh", false);
-    if(refreshStamp) refreshStamp.textContent = "Refreshed: " + new Date().toLocaleTimeString();
   }
 
   function resetTimer(){
@@ -4713,7 +5481,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(!enabled) return;
     const iv = Math.max(1, parseInt(byId("intervalInput").value || "5", 10));
     byId("intervalInput").value = String(iv);
-    timer = setInterval(refreshAll, iv * 1000);
+    timer = setInterval(() => { refreshAll({ showLoading: false }).catch(() => {}); }, iv * 1000);
   }
   function resetRemainTicker(){
     if(remainTicker) clearInterval(remainTicker);
@@ -4736,7 +5504,24 @@ def render_ui_html(default_interval: float, token: str) -> str:
           localStorage.setItem("cam_settings_hidden", nextHidden ? "1" : "0");
         });
       }
-      byId("refreshBtn").addEventListener("click", refreshAll);
+      const guideDetails = byId("guideDetails", false);
+      if(guideDetails){
+        guideDetails.addEventListener("toggle", () => {
+          if(guideDetails.open && !guideReleaseLoaded){
+            loadGuideReleaseNotes(false).catch(() => {});
+          }
+        });
+        if(guideDetails.open && !guideReleaseLoaded){
+          loadGuideReleaseNotes(false).catch(() => {});
+        }
+      }
+      const guideReleaseRefreshBtn = byId("guideReleaseRefreshBtn", false);
+      if(guideReleaseRefreshBtn){
+        guideReleaseRefreshBtn.addEventListener("click", () => {
+          loadGuideReleaseNotes(true).catch(() => {});
+        });
+      }
+      byId("refreshBtn").addEventListener("click", () => refreshAll({ showLoading: true, clearUsageCache: true }));
       byId("themeSelect").addEventListener("change", async (e) => { applyTheme(e.target.value); await saveUiConfigPatch({ ui: { theme: e.target.value } }); });
       const themeBtn = byId("themeIconBtn", false);
       if(themeBtn){
@@ -5151,6 +5936,19 @@ def render_ui_html(default_interval: float, token: str) -> str:
       applyColumnVisibility();
       initSteppers(document);
       renderSortIndicators();
+      const bootSnapshot = loadBootSnapshot();
+      if(bootSnapshot && typeof bootSnapshot === "object"){
+        if(bootSnapshot.config && !latestData.config){
+          latestData.config = bootSnapshot.config;
+          applyConfigToControls(bootSnapshot.config);
+          renderColumnsModal();
+          applyColumnVisibility();
+        }
+        if(bootSnapshot.usage && !latestData.usage){
+          latestData.usage = bootSnapshot.usage;
+          renderTable(bootSnapshot.usage);
+        }
+      }
       document.querySelectorAll("th[data-sort]").forEach(th => th.addEventListener("click", ()=>{
         const key=th.dataset.sort;
         if(sortState.key===key) sortState.dir=sortState.dir==="asc"?"desc":"asc";
@@ -5159,7 +5957,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         renderSortIndicators();
         if(latestData.usage) renderTable(latestData.usage);
       }));
-      await refreshAll();
+      await refreshAll({ showLoading: true, clearUsageCache: true });
       resetTimer();
       resetRemainTicker();
       eventsTimer = setInterval(async ()=>{
@@ -5615,6 +6413,9 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
     runtime = {
         "next_event_id": 1,
         "events": [],
+        "last_event_sig": "",
+        "last_event_ts": 0.0,
+        "last_event_obj": None,
         "pending_warning": None,
         "pending_switch_due_at": None,
         "last_switch_ts": None,
@@ -5627,6 +6428,10 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
         "rapid_test_stop": threading.Event(),
         "rapid_test_wait_sec": None,
         "rapid_test_step": 0,
+        "switch_lock": threading.RLock(),
+        "switch_in_flight": False,
+        "switch_target": "",
+        "switch_started_at": 0.0,
     }
     usage_cache_lock = threading.RLock()
     usage_cache: dict[str, object] = {
@@ -5634,7 +6439,16 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
         "payload": None,
         "cfg_hash": None,
         "timeout": None,
+        "epoch": 0,
     }
+    release_notes_cache_lock = threading.RLock()
+    release_notes_cache: dict[str, object] = {
+        "ts": 0.0,
+        "payload": None,
+    }
+    diagnostics_service = DiagnosticsLogger(write_fn=cam_log, tail_fn=read_log_tail)
+    config_service = UiConfigService(load_fn=load_cam_config, save_fn=save_cam_config, update_fn=update_cam_config)
+    usage_service = UsageService(collect_fn=collect_usage_local_data)
 
     def is_debug_enabled() -> bool:
         try:
@@ -5644,21 +6458,33 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             return False
 
     def log_runtime(level: str, message: str, details=None):
-        cam_log(level, message, details=details, echo=is_debug_enabled())
+        diagnostics_service.log(level, message, details=details, echo=is_debug_enabled())
 
     def push_event(event_type: str, message: str, details=None):
+        safe_details = details or {}
+        sig = f"{str(event_type)}|{str(message)}|{json.dumps(safe_details, sort_keys=True, ensure_ascii=False, default=str)}"
+        now_ts = time.time()
+        last_sig = str(runtime.get("last_event_sig") or "")
+        last_ts = float(runtime.get("last_event_ts") or 0.0)
+        if sig == last_sig and (now_ts - last_ts) < 1.2:
+            prev = runtime.get("last_event_obj")
+            if isinstance(prev, dict):
+                return prev
         ev = {
             "id": runtime["next_event_id"],
-            "ts": int(time.time()),
+            "ts": int(now_ts),
             "type": event_type,
             "message": message,
-            "details": details or {},
+            "details": safe_details,
         }
         runtime["next_event_id"] += 1
         runtime["events"].append(ev)
         if len(runtime["events"]) > 200:
             runtime["events"] = runtime["events"][-200:]
-        log_runtime("info", f"event:{event_type}", {"id": ev["id"], "message": message, "details": details or {}})
+        runtime["last_event_sig"] = sig
+        runtime["last_event_ts"] = now_ts
+        runtime["last_event_obj"] = ev
+        log_runtime("info", f"event:{event_type}", {"id": ev["id"], "message": message, "details": safe_details})
         return ev
 
     def _cfg_usage_cache_key(cfg: dict) -> str:
@@ -5680,20 +6506,70 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
     def collect_usage_local_data_cached(timeout_sec: int, config: dict, ttl_sec: float = 2.0, force: bool = False):
         key = _cfg_usage_cache_key(config if isinstance(config, dict) else {})
         now = time.time()
+        epoch = 0
+        with usage_cache_lock:
+            epoch = int(usage_cache.get("epoch") or 0)
         if not force:
             with usage_cache_lock:
                 cached_payload = usage_cache.get("payload")
                 cached_ts = float(usage_cache.get("ts") or 0.0)
                 cached_key = usage_cache.get("cfg_hash")
-                if cached_payload and cached_key == key and (now - cached_ts) <= max(0.05, ttl_sec):
+                cached_epoch = int(usage_cache.get("epoch") or 0)
+                if cached_payload and cached_key == key and cached_epoch == epoch and (now - cached_ts) <= max(0.05, ttl_sec):
                     return cached_payload
-        payload = collect_usage_local_data(timeout_sec=timeout_sec, config=config)
+        payload = usage_service.collect(timeout_sec=timeout_sec, config=config)
         with usage_cache_lock:
             usage_cache["ts"] = time.time()
             usage_cache["payload"] = payload
             usage_cache["cfg_hash"] = key
             usage_cache["timeout"] = timeout_sec
         return payload
+
+    def invalidate_usage_cache(reason: str = "") -> None:
+        with usage_cache_lock:
+            usage_cache["epoch"] = int(usage_cache.get("epoch") or 0) + 1
+            usage_cache["ts"] = 0.0
+            usage_cache["payload"] = None
+            usage_cache["cfg_hash"] = None
+            usage_cache["timeout"] = None
+        if reason:
+            log_runtime("info", "usage cache invalidated", {"reason": reason})
+
+    def execute_profile_switch(
+        target: str,
+        restart_codex: bool,
+        source: str,
+        preferred_restart_app: str = "",
+        preferred_restart_exec: str = "",
+        schedule_deferred_restart: bool = False,
+    ) -> tuple[int, str, str]:
+        with runtime["switch_lock"]:
+            if runtime.get("switch_in_flight"):
+                active_target = str(runtime.get("switch_target") or "").strip() or "unknown"
+                return 409, "", f"switch already in progress for '{active_target}'"
+            runtime["switch_in_flight"] = True
+            runtime["switch_target"] = target
+            runtime["switch_started_at"] = time.time()
+        try:
+            rc, out, err = _capture_fn(lambda: cmd_switch(target, restart_codex=False))
+            if rc == 0:
+                invalidate_usage_cache("profile-switch")
+                if restart_codex:
+                    if schedule_deferred_restart:
+                        def _deferred_restart():
+                            try:
+                                time.sleep(0.8)
+                                restart_codex_app(preferred_app_name=preferred_restart_app, preferred_exec_path=preferred_restart_exec)
+                            except Exception as e:
+                                _log_runtime_safe("warn", "deferred restart failed", {"error": str(e), "name": target})
+                        threading.Thread(target=_deferred_restart, daemon=True).start()
+                    else:
+                        restart_codex_app(preferred_app_name=preferred_restart_app, preferred_exec_path=preferred_restart_exec)
+            return rc, out, err
+        finally:
+            with runtime["switch_lock"]:
+                runtime["switch_in_flight"] = False
+                runtime["switch_target"] = ""
 
     def auto_switch_state_payload(cfg: dict):
         now = time.time()
@@ -5773,7 +6649,12 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if runtime["rapid_test_stop"].is_set():
                     push_event("rapid-test", "rapid test stopped")
                     break
-                rc, out, err = _capture_fn(lambda: cmd_switch(target, restart_codex=True))
+                rc, out, err = execute_profile_switch(
+                    target=target,
+                    restart_codex=True,
+                    source="rapid-test",
+                    schedule_deferred_restart=False,
+                )
                 if rc == 0:
                     runtime["last_switch_ts"] = time.time()
                     push_event("switch", f"rapid-test switched to '{target}'", {"target": target, "step": step, "stdout": out.strip()})
@@ -5860,7 +6741,12 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     runtime["last_eval_ok"] = False
                     runtime["stop_event"].wait(3.0)
                     continue
-                rc, out, err = _capture_fn(lambda: cmd_switch(str(candidate.get("name")), restart_codex=True))
+                rc, out, err = execute_profile_switch(
+                    target=str(candidate.get("name")),
+                    restart_codex=True,
+                    source="auto-switch",
+                    schedule_deferred_restart=False,
+                )
                 if rc == 0:
                     runtime["last_switch_ts"] = now
                     push_event("switch", f"auto-switched to '{candidate.get('name')}'", {"target": candidate.get("name"), "stdout": out.strip()})
@@ -5935,9 +6821,9 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             if self.command == "GET" and path == "/api/health":
                 return _json_ok({"healthy": True, "service": "codex-account-ui", "version": UI_BUILD_VERSION})
             if self.command == "GET" and path == "/api/ui-config":
-                return _json_ok(load_cam_config())
+                return _json_ok(config_service.load())
             if self.command == "GET" and path == "/api/auto-switch/state":
-                return _json_ok(auto_switch_state_payload(load_cam_config()))
+                return _json_ok(auto_switch_state_payload(config_service.load()))
             if self.command == "GET" and path == "/api/auto-switch/chain":
                 cfg = load_cam_config()
                 usage_payload = collect_usage_local_data_cached(timeout_sec=7, config=cfg, ttl_sec=3.0)
@@ -5962,13 +6848,21 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 rows = [ev for ev in runtime["events"] if int(ev.get("id", 0)) > since_id]
                 return _json_ok({"events": rows})
             if self.command == "GET" and path == "/api/debug/logs":
+                req_token = (q.get("token", [""])[0] or "").strip()
+                if req_token != token:
+                    return _json_error("FORBIDDEN", "invalid session token", 403)
                 tail = 200
                 if "tail" in q:
                     try:
                         tail = max(20, min(2000, int(float(q["tail"][0]))))
                     except Exception:
                         tail = 200
-                return _json_ok({"path": str(CAM_LOG_FILE), "logs": read_log_tail(tail)})
+                return _json_ok({"path": str(CAM_LOG_FILE), "logs": diagnostics_service.tail(tail)})
+            if self.command == "GET" and path == "/api/release-notes":
+                force = bool_value((q.get("force", ["false"])[0]), False)
+                with release_notes_cache_lock:
+                    payload = load_release_notes_payload(force_refresh=force, cache=release_notes_cache)
+                return _json_ok(payload)
             if self.command == "GET" and path == "/api/adv/status":
                 return _json_ok(collect_status_data())
             if self.command == "GET" and path == "/api/list":
@@ -5988,7 +6882,27 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                         return _json_error("BAD_TIMEOUT", "timeout must be a positive number")
                 cfg = load_cam_config()
                 force = bool_value((q.get("force", ["false"])[0]), False)
-                return _json_ok(collect_usage_local_data_cached(timeout, config=cfg, ttl_sec=2.0, force=force))
+                usage_started = time.time()
+                result = collect_usage_local_data_cached(timeout, config=cfg, ttl_sec=2.0, force=force)
+                duration_ms = int((time.time() - usage_started) * 1000)
+                error_rows = 0
+                profile_rows = result.get("profiles", []) if isinstance(result, dict) else []
+                for row in profile_rows if isinstance(profile_rows, list) else []:
+                    if isinstance(row, dict) and str(row.get("error", "")).strip():
+                        error_rows += 1
+                if duration_ms >= 1200:
+                    log_runtime(
+                        "warn",
+                        "usage-local slow response",
+                        {"duration_ms": duration_ms, "timeout_sec": timeout, "force": force, "profiles": len(profile_rows) if isinstance(profile_rows, list) else 0, "error_rows": error_rows},
+                    )
+                elif error_rows:
+                    log_runtime(
+                        "warn",
+                        "usage-local row errors",
+                        {"duration_ms": duration_ms, "timeout_sec": timeout, "force": force, "profiles": len(profile_rows) if isinstance(profile_rows, list) else 0, "error_rows": error_rows},
+                    )
+                return _json_ok(result)
             if self.command == "GET" and path == "/api/adv/list":
                 args = ["list"]
                 if bool_value((q.get("debug", ["false"])[0]), False):
@@ -6039,18 +6953,20 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     except Exception as e:
                         _log_runtime_safe("warn", "switch close_only stop failed", {"name": name, "error": str(e)})
                 # Apply profile switch first, then restart asynchronously so the HTTP request can complete.
-                rc, out, err = _capture_fn(lambda: cmd_switch(name, restart_codex=False))
+                rc, out, err = execute_profile_switch(
+                    target=name,
+                    restart_codex=restart,
+                    source="manual-switch",
+                    preferred_restart_app=preferred_restart_app,
+                    preferred_restart_exec=preferred_restart_exec,
+                    schedule_deferred_restart=bool(restart),
+                )
                 payload = _command_result("local.switch", rc, out, err)
                 if rc != 0:
+                    if rc == 409:
+                        return _json_error("CONFLICT", "switch is already in progress", 409, payload)
                     return _json_error("COMMAND_FAILED", "local switch failed", 400, payload)
                 if restart:
-                    def _deferred_restart():
-                        try:
-                            time.sleep(0.8)
-                            restart_codex_app(preferred_app_name=preferred_restart_app, preferred_exec_path=preferred_restart_exec)
-                        except Exception as e:
-                            _log_runtime_safe("warn", "deferred restart failed", {"error": str(e), "name": name})
-                    threading.Thread(target=_deferred_restart, daemon=True).start()
                     _log_runtime_safe(
                         "info",
                         "switch deferred restart scheduled",
@@ -6060,11 +6976,22 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/ui-config":
                 patch = body if isinstance(body, dict) else {}
+                base_revision = None
+                if isinstance(body, dict) and body.get("base_revision") is not None:
+                    try:
+                        base_revision = int(body.get("base_revision"))
+                    except Exception:
+                        return _json_error("BAD_REVISION", "base_revision must be an integer", 400)
+                if isinstance(patch, dict) and "base_revision" in patch:
+                    patch = {k: v for k, v in patch.items() if k != "base_revision"}
                 try:
-                    cfg = update_cam_config(patch)
+                    cfg = config_service.patch(patch, base_revision=base_revision)
                 except Exception as e:
+                    if "stale config revision" in str(e).lower():
+                        return _json_error("STALE_CONFIG", str(e), 409)
                     log_runtime("error", "config update failed", {"error": str(e)})
                     return _json_error("BAD_CONFIG", f"failed to update config: {e}", 400)
+                invalidate_usage_cache("ui-config")
                 log_runtime("info", "config updated", {"patch": patch})
                 return _json_ok(cfg)
             if self.command == "POST" and path == "/api/notifications/test":
@@ -6073,11 +7000,13 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 return _json_ok({"event": ev})
             if self.command == "POST" and path == "/api/auto-switch/enable":
                 enabled = bool_value(body.get("enabled"), False)
-                cfg = update_cam_config({"auto_switch": {"enabled": enabled}})
+                cfg = config_service.patch({"auto_switch": {"enabled": enabled}})
+                invalidate_usage_cache("auto-switch-enable")
                 push_event("auto-switch-toggle", f"auto-switch set to {'enabled' if enabled else 'disabled'}")
                 return _json_ok({"enabled": enabled, "config": cfg})
             if self.command == "POST" and path == "/api/auto-switch/stop":
-                cfg = update_cam_config({"auto_switch": {"enabled": False}})
+                cfg = config_service.patch({"auto_switch": {"enabled": False}})
+                invalidate_usage_cache("auto-switch-stop")
                 runtime["rapid_test_stop"].set()
                 runtime["pending_warning"] = None
                 runtime["pending_switch_due_at"] = None
@@ -6100,6 +7029,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 eligibility = profiles.setdefault("eligibility", {})
                 eligibility[name] = eligible
                 cfg = save_cam_config(cfg)
+                invalidate_usage_cache("account-eligibility")
                 return _json_ok({"name": name, "eligible": eligible, "config": cfg})
             if self.command == "POST" and path == "/api/auto-switch/chain":
                 incoming = body.get("chain")
@@ -6120,6 +7050,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 auto["ranking_mode"] = "manual"
                 auto["manual_chain"] = clean_chain
                 cfg = save_cam_config(cfg)
+                invalidate_usage_cache("auto-switch-chain")
                 chain_names = list(clean_chain)
                 chain_items = [{"name": n, "remaining_5h": None, "remaining_weekly": None} for n in chain_names]
                 push_event("auto-switch-chain", "auto-switch chain order updated", {"chain": clean_chain, "ranking_mode": "manual"})
@@ -6140,6 +7071,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 auto["ranking_mode"] = "balanced"
                 auto["manual_chain"] = chain_names
                 cfg = save_cam_config(cfg)
+                invalidate_usage_cache("auto-arrange")
                 push_event(
                     "auto-switch-chain",
                     "auto-arranged switch chain",
@@ -6161,9 +7093,16 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if not candidate:
                     return _json_error("NO_CANDIDATE", "no eligible candidate for auto-switch", 400)
                 target = str(candidate.get("name"))
-                rc, out, err = _capture_fn(lambda: cmd_switch(target, restart_codex=True))
+                rc, out, err = execute_profile_switch(
+                    target=target,
+                    restart_codex=True,
+                    source="auto-switch-run-once",
+                    schedule_deferred_restart=False,
+                )
                 payload = _command_result("auto_switch.run_once", rc, out, err)
                 if rc != 0:
+                    if rc == 409:
+                        return _json_error("CONFLICT", "switch is already in progress", 409, payload)
                     push_event("error", f"auto-switch run-once failed for '{target}'", {"stderr": err.strip()})
                     return _json_error("COMMAND_FAILED", "auto-switch run-once failed", 400, payload)
                 runtime["last_switch_ts"] = time.time()
@@ -6176,9 +7115,16 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if not candidate:
                     return _json_error("NO_CANDIDATE", "no target found in switch chain", 400)
                 target = str(candidate.get("name"))
-                rc, out, err = _capture_fn(lambda: cmd_switch(target, restart_codex=True))
+                rc, out, err = execute_profile_switch(
+                    target=target,
+                    restart_codex=True,
+                    source="auto-switch-run-switch",
+                    schedule_deferred_restart=False,
+                )
                 payload = _command_result("auto_switch.run_switch", rc, out, err)
                 if rc != 0:
+                    if rc == 409:
+                        return _json_error("CONFLICT", "switch is already in progress", 409, payload)
                     push_event("error", f"manual run-switch failed for '{target}'", {"stderr": err.strip()})
                     return _json_error("COMMAND_FAILED", "manual run-switch failed", 400, payload)
                 runtime["last_switch_ts"] = time.time()
@@ -6256,6 +7202,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 payload = _command_result("local.save", rc, out, err)
                 if rc != 0:
                     return _json_error("COMMAND_FAILED", "local save failed", 400, payload)
+                invalidate_usage_cache("local-save")
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/local/add":
                 name = str(body.get("name", "")).strip()
@@ -6269,6 +7216,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 payload = _command_result("local.add", rc, out, err)
                 if rc != 0:
                     return _json_error("COMMAND_FAILED", "local add failed", 400, payload)
+                invalidate_usage_cache("local-add")
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/local/add/start":
                 name = str(body.get("name", "")).strip()
@@ -6307,12 +7255,14 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 payload = _command_result("local.remove", rc, out, err)
                 if rc != 0:
                     return _json_error("COMMAND_FAILED", "local remove failed", 400, payload)
+                invalidate_usage_cache("local-remove")
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/local/remove-all":
                 rc, out, err = _capture_fn(cmd_remove_all_profiles)
                 payload = _command_result("local.remove_all", rc, out, err)
                 if rc != 0:
                     return _json_error("COMMAND_FAILED", "local remove all failed", 400, payload)
+                invalidate_usage_cache("local-remove-all")
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/local/rename":
                 old_name = str(body.get("old_name", "")).strip()
@@ -6324,6 +7274,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 payload = _command_result("local.rename", rc, out, err)
                 if rc != 0:
                     return _json_error("COMMAND_FAILED", "local rename failed", 400, payload)
+                invalidate_usage_cache("local-rename")
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/local/run":
                 name = str(body.get("name", "")).strip()
@@ -6437,6 +7388,8 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             return _json_error("NOT_FOUND", "endpoint not found", 404)
 
         def do_GET(self):
+            req_started = time.time()
+            req_id = secrets.token_hex(6)
             parsed = urlparse(self.path)
             last_seen["ts"] = time.time()
             if parsed.path == "/" or parsed.path == "/index.html":
@@ -6449,14 +7402,26 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 return
             if parsed.path.startswith("/api/"):
                 status_code, payload = self._api()
+                if isinstance(payload, dict):
+                    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+                    meta["request_id"] = req_id
+                    meta["duration_ms"] = int((time.time() - req_started) * 1000)
+                    payload["meta"] = meta
                 self._reply(status_code, payload)
                 return
             self._reply(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "not found"}})
 
         def do_POST(self):
+            req_started = time.time()
+            req_id = secrets.token_hex(6)
             parsed = urlparse(self.path)
             if parsed.path.startswith("/api/"):
                 status_code, payload = self._api()
+                if isinstance(payload, dict):
+                    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+                    meta["request_id"] = req_id
+                    meta["duration_ms"] = int((time.time() - req_started) * 1000)
+                    payload["meta"] = meta
                 self._reply(status_code, payload)
                 return
             self._reply(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "not found"}})
@@ -6552,6 +7517,7 @@ def write_ui_pid_info(host: str, port: int, pid: int, token: str) -> None:
     }
     with UI_PID_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    _set_private_permissions(UI_PID_FILE)
 
 
 def read_ui_pid_info():
