@@ -1,0 +1,11 @@
+# Local temp/test artifacts
+.tmp-win-fix-*/
+
+# Build artifacts
+build/
+*.egg-info/
+
+# Python bytecode caches
+__pycache__/
+**/__pycache__/
+*.pyc
