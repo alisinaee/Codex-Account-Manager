@@ -325,6 +325,7 @@ def _run_add_login_session(session_id: str) -> None:
 
 def start_add_login_session(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, device_auth: bool) -> dict:
     ensure_dirs()
+    _validate_target_profile_name(name, overwrite=overwrite)
     try:
         login_cmd = resolve_add_login_command(device_auth=device_auth)
     except RuntimeError as e:
@@ -822,6 +823,55 @@ def account_email_from_auth(path: Path) -> str | None:
         email = payload.get("email")
         if isinstance(email, str) and email.strip():
             return email.strip().lower()
+    return None
+
+
+def _normalized_email(value: str | None) -> str:
+    return (str(value or "")).strip().lower()
+
+
+def _existing_profile_dirs() -> list[Path]:
+    ensure_dirs()
+    return sorted([p for p in PROFILES_DIR.iterdir() if p.is_dir()])
+
+
+def _find_conflicting_profile_name(name: str) -> str | None:
+    target_norm = (name or "").strip().lower()
+    if not target_norm:
+        return None
+    for p in _existing_profile_dirs():
+        if p.name.lower() == target_norm:
+            return p.name
+    return None
+
+
+def _validate_target_profile_name(name: str, overwrite: bool = False) -> None:
+    normalized = (name or "").strip()
+    if not normalized:
+        raise RuntimeError("profile name is required")
+    conflicting = _find_conflicting_profile_name(normalized)
+    if not conflicting:
+        return
+    if conflicting != normalized:
+        raise RuntimeError(f"Profile name '{normalized}' conflicts with existing profile '{conflicting}' (case-insensitive duplicate).")
+    if not overwrite:
+        raise RuntimeError(f"Profile '{normalized}' already exists. Use --force to overwrite.")
+
+
+def _find_duplicate_email_profile(source_auth: Path, exclude_profile_name: str = "") -> tuple[str, str] | None:
+    source_email = _normalized_email(account_email_from_auth(source_auth))
+    if not source_email:
+        return None
+    exclude_norm = (exclude_profile_name or "").strip().lower()
+    for p in _existing_profile_dirs():
+        if exclude_norm and p.name.lower() == exclude_norm:
+            continue
+        candidate_auth = p / "auth.json"
+        if not candidate_auth.exists():
+            continue
+        candidate_email = _normalized_email(account_email_from_auth(candidate_auth))
+        if candidate_email and candidate_email == source_email:
+            return p.name, source_email
     return None
 
 
@@ -1653,9 +1703,16 @@ def parse_status_output(text: str):
 
 
 def write_profile(name: str, source_auth: Path, source_label: str, overwrite: bool) -> None:
+    name = (name or "").strip()
+    _validate_target_profile_name(name, overwrite=overwrite)
     target_dir = PROFILES_DIR / name
-    if target_dir.exists() and not overwrite:
-        raise RuntimeError(f"Profile '{name}' already exists. Use --force to overwrite.")
+
+    duplicate_email = _find_duplicate_email_profile(source_auth, exclude_profile_name=name if overwrite else "")
+    if duplicate_email:
+        conflict_name, duplicate_email_text = duplicate_email
+        raise RuntimeError(
+            f"Profile '{conflict_name}' already uses email '{duplicate_email_text}'. Duplicate account emails are not allowed."
+        )
 
     source_email = account_email_from_auth(source_auth)
     if source_email:
@@ -1703,6 +1760,11 @@ def cmd_save(name: str, overwrite: bool) -> int:
 
 def cmd_add(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, device_auth: bool) -> int:
     ensure_dirs()
+    try:
+        _validate_target_profile_name(name, overwrite=overwrite)
+    except RuntimeError as e:
+        print(f"error: {e}")
+        return 1
     tmp_root = CODEX_HOME / ".tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
     try:
@@ -2098,14 +2160,15 @@ def cmd_switch(name: str, restart_codex: bool) -> int:
     return 0
 
 
-def restart_codex_app() -> bool:
-    running_app = None
-    running_exec_path = ""
-    try:
-        running_app = detect_running_app_name()
-    except Exception:
-        running_app = None
-    if sys.platform.startswith("win"):
+def restart_codex_app(preferred_app_name: str = "", preferred_exec_path: str = "") -> bool:
+    running_app = (preferred_app_name or "").strip() or None
+    running_exec_path = (preferred_exec_path or "").strip()
+    if not running_app:
+        try:
+            running_app = detect_running_app_name()
+        except Exception:
+            running_app = None
+    if sys.platform.startswith("win") and not running_exec_path:
         try:
             running_exec_path = _detect_running_codex_executable_windows() or ""
         except Exception:
@@ -2122,7 +2185,17 @@ def restart_codex_app() -> bool:
     except Exception as e:
         _log_runtime_safe("warn", "restart start_codex exception", {"error": str(e)})
         started = False
-    _log_runtime_safe("info", "restart final result", {"started": bool(started), "running_app": running_app, "running_exec_path": running_exec_path})
+    _log_runtime_safe(
+        "info",
+        "restart final result",
+        {
+            "started": bool(started),
+            "running_app": running_app,
+            "running_exec_path": running_exec_path,
+            "preferred_app_name": preferred_app_name,
+            "preferred_exec_path": preferred_exec_path,
+        },
+    )
     return started
 
 
@@ -2645,7 +2718,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .btn-danger{color:var(--danger)}
     .btn-disabled,button:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
     .btn-progress{position:relative}
-    .btn-progress::after{content:"";display:inline-block;width:11px;height:11px;margin-left:8px;border-radius:999px;border:2px solid color-mix(in srgb,var(--on-primary) 70%, transparent);border-top-color:var(--on-primary);animation:spin .8s linear infinite;vertical-align:-2px}
+    .btn-progress{color:transparent !important}
+    .btn-progress::after{content:"";position:absolute;left:50%;top:50%;width:12px;height:12px;margin-left:-6px;margin-top:-6px;border-radius:999px;border:2px solid color-mix(in srgb,var(--on-primary) 70%, transparent);border-top-color:var(--on-primary);animation:spin .8s linear infinite}
     .toggle{display:inline-flex;align-items:center;gap:8px}
     .toggle input{appearance:none;width:38px;height:20px;border-radius:999px;background:var(--surface-highest);position:relative;border:1px solid var(--line);cursor:pointer}
     .toggle input::after{content:\"\";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:999px;background:#e5e2e1;transition:transform .15s ease}
@@ -4196,7 +4270,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   async function setEligibility(name, eligible){ await postApi("/api/auto-switch/account-eligibility", { name, eligible }); }
   const IS_WINDOWS_CLIENT = /windows/i.test((navigator && navigator.userAgent) || "");
   function switchRequestBody(name){
-    return IS_WINDOWS_CLIENT ? { name, no_restart: true } : { name };
+    return IS_WINDOWS_CLIENT ? { name, close_only: true } : { name };
   }
   async function switchProfile(name){
     await postApi("/api/switch", switchRequestBody(name));
@@ -4219,14 +4293,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
       const ok = await runAction("local.switch", () => switchProfile(target), { usageTimeoutSec: 1, usageForce: true });
       if(ok){
         setTimeout(() => { refreshAll({ usageTimeoutSec: 5, usageForce: true }).catch(() => {}); }, 450);
-        if(IS_WINDOWS_CLIENT){
-          await openModal({
-            title: "Switch Completed",
-            body: `Profile '${target}' was switched successfully.\\n\\nPlease close and reopen Codex app manually to continue with the new account.`,
-            okText: "Done",
-            hideCancel: true,
-          });
-        }
       }
     } finally {
       switchInFlight = false;
@@ -4234,7 +4300,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
       renderSwitchProgressState();
     }
   }
-
   function renderEvents(items){ return items; }
 
   async function loadDebugLogs(){
@@ -4436,6 +4501,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
             </div>
             <div class="mobile-actions">
               <button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
+              <button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
               <button class="btn actions-menu-btn" data-mobile-row-actions="${p.name}">⋯</button>
             </div>
           </div>
@@ -4476,6 +4542,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
           mobileSwitchBtn.addEventListener("click", (ev) => {
             ev.stopPropagation();
             runSwitchAction(mobileSwitchBtn.dataset.mobileSwitch);
+            runSwitchAction(mobileSwitchBtn.dataset.mobileSwitch);
           });
         }
         const mobileRowActionsBtn = mrow.querySelector("button[data-mobile-row-actions]");
@@ -4490,6 +4557,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     applyColumnVisibility();
     refreshRemainCountdowns();
+    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runSwitchAction(btn.dataset.switch)));
     tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runSwitchAction(btn.dataset.switch)));
     tbody.querySelectorAll("button[data-row-actions]").forEach(btn => btn.addEventListener("click", (e)=>{
       e.stopPropagation();
@@ -5949,10 +6017,27 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     return _json_error("MISSING_NAME", "profile name is required")
                 restart = not bool_value(body.get("no_restart"), False)
                 close_only = bool_value(body.get("close_only"), False)
-                # Windows: fully manual app lifecycle. Never auto close/reopen.
-                if sys.platform.startswith("win"):
-                    close_only = False
-                    restart = False
+                preferred_restart_app = ""
+                preferred_restart_exec = ""
+                if restart and sys.platform.startswith("win"):
+                    try:
+                        preferred_restart_app = detect_running_app_name() or ""
+                    except Exception:
+                        preferred_restart_app = ""
+                    try:
+                        preferred_restart_exec = _detect_running_codex_executable_windows() or ""
+                    except Exception:
+                        preferred_restart_exec = ""
+                if close_only and sys.platform.startswith("win"):
+                    try:
+                        stop_codex()
+                        _log_runtime_safe(
+                            "info",
+                            "switch close_only stop requested",
+                            {"name": name, "preferred_restart_app": preferred_restart_app, "preferred_restart_exec": preferred_restart_exec},
+                        )
+                    except Exception as e:
+                        _log_runtime_safe("warn", "switch close_only stop failed", {"name": name, "error": str(e)})
                 # Apply profile switch first, then restart asynchronously so the HTTP request can complete.
                 rc, out, err = _capture_fn(lambda: cmd_switch(name, restart_codex=False))
                 payload = _command_result("local.switch", rc, out, err)
@@ -5962,11 +6047,15 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     def _deferred_restart():
                         try:
                             time.sleep(0.8)
-                            restart_codex_app()
+                            restart_codex_app(preferred_app_name=preferred_restart_app, preferred_exec_path=preferred_restart_exec)
                         except Exception as e:
                             _log_runtime_safe("warn", "deferred restart failed", {"error": str(e), "name": name})
                     threading.Thread(target=_deferred_restart, daemon=True).start()
-                    _log_runtime_safe("info", "switch deferred restart scheduled", {"name": name})
+                    _log_runtime_safe(
+                        "info",
+                        "switch deferred restart scheduled",
+                        {"name": name, "preferred_restart_app": preferred_restart_app, "preferred_restart_exec": preferred_restart_exec},
+                    )
                 push_event("switch-manual", f"manually switched to '{name}'")
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/ui-config":
