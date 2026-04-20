@@ -131,6 +131,42 @@ class CliCoreTests(unittest.TestCase):
         self.assertTrue(second["cached"])
         self.assertEqual(fetcher.call_count, 1)
 
+    def test_trigger_breached_hits_when_remaining_equals_threshold(self):
+        cfg = {
+            "auto_switch": {
+                "trigger_mode": "any",
+                "thresholds": {
+                    "h5_switch_pct": 30,
+                    "weekly_switch_pct": 20,
+                },
+            }
+        }
+        current_row = {
+            "usage_5h": {"remaining_percent": 30.0},
+            "usage_weekly": {"remaining_percent": 75.0},
+        }
+        breached, detail = cli._trigger_breached(current_row, cfg)
+        self.assertTrue(breached)
+        self.assertTrue(detail["h5_hit"])
+
+    def test_trigger_breached_hits_when_remaining_drops_below_threshold(self):
+        cfg = {
+            "auto_switch": {
+                "trigger_mode": "any",
+                "thresholds": {
+                    "h5_switch_pct": 30,
+                    "weekly_switch_pct": 20,
+                },
+            }
+        }
+        current_row = {
+            "usage_5h": {"remaining_percent": 28.0},
+            "usage_weekly": {"remaining_percent": 70.0},
+        }
+        breached, detail = cli._trigger_breached(current_row, cfg)
+        self.assertTrue(breached)
+        self.assertTrue(detail["h5_hit"])
+
 
 if __name__ == "__main__":
     unittest.main()
