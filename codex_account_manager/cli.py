@@ -4047,7 +4047,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
   }
 
   async function setEligibility(name, eligible){ await postApi("/api/auto-switch/account-eligibility", { name, eligible }); }
-  async function switchProfile(name){ await postApi("/api/switch",{name, no_restart:true, close_only:true}); await refreshAll(); }
+  const IS_WINDOWS_CLIENT = /windows/i.test((navigator && navigator.userAgent) || "");
+  function switchRequestBody(name){
+    return IS_WINDOWS_CLIENT ? { name, close_only: true } : { name };
+  }
+  async function switchProfile(name){
+    await postApi("/api/switch", switchRequestBody(name));
+    await refreshAll();
+  }
 
   function renderEvents(items){ return items; }
 
@@ -4285,7 +4292,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         if(mobileSwitchBtn){
           mobileSwitchBtn.addEventListener("click", (ev) => {
             ev.stopPropagation();
-            runAction("local.switch", () => postApi("/api/switch", { name: mobileSwitchBtn.dataset.mobileSwitch, no_restart:true, close_only:true }));
+            runAction("local.switch", () => switchProfile(mobileSwitchBtn.dataset.mobileSwitch));
           });
         }
         const mobileRowActionsBtn = mrow.querySelector("button[data-mobile-row-actions]");
@@ -4300,7 +4307,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     applyColumnVisibility();
     refreshRemainCountdowns();
-    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runAction("local.switch", () => postApi("/api/switch", { name: btn.dataset.switch, no_restart:true, close_only:true }))));
+    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runAction("local.switch", () => switchProfile(btn.dataset.switch))));
     tbody.querySelectorAll("button[data-row-actions]").forEach(btn => btn.addEventListener("click", (e)=>{
       e.stopPropagation();
       openRowActionsModal(btn.dataset.rowActions);
