@@ -1,3 +1,24 @@
+Metadata-Version: 2.4
+Name: codex-account-manager
+Version: 0.0.6
+Summary: Cross-platform Codex account tooling with a Python CLI and local web UI
+Author: Codex Account Manager Contributors
+License: MIT
+Project-URL: Homepage, https://github.com/alisinaee/Codex-Account-Manager
+Project-URL: Repository, https://github.com/alisinaee/Codex-Account-Manager
+Project-URL: Issues, https://github.com/alisinaee/Codex-Account-Manager/issues
+Keywords: codex,cli,account,manager
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Environment :: Console
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+
 # Codex Account Manager
 
 Cross-platform Codex account tooling focused on a lightweight Python CLI and a local web UI.

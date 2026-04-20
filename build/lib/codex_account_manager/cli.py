@@ -105,32 +105,12 @@ def _set_private_permissions(path: Path) -> None:
         if user:
             try:
                 subprocess.run(
-                    ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
+                    ["icacls", str(path), "/inheritance:r", f"/grant:r", f"{user}:R"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
             except Exception:
                 pass
-
-
-def _ensure_windows_user_writable(path: Path) -> bool:
-    if not sys.platform.startswith("win"):
-        return True
-    if not shutil.which("icacls"):
-        return False
-    user = os.environ.get("USERNAME")
-    if not user:
-        return False
-    try:
-        res = subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        return res.returncode == 0
-    except Exception:
-        return False
 
 
 DEFAULT_CAM_CONFIG = {
@@ -820,46 +800,22 @@ def account_id_from_auth(path: Path):
     return str(account_id) if account_id else None
 
 
-def principal_id_from_auth(path: Path):
-    try:
-        data = load_json(path)
-    except Exception:
-        return None
-    id_token = data.get("id_token")
-    if not id_token and isinstance(data.get("tokens"), dict):
-        id_token = data["tokens"].get("id_token")
-    if isinstance(id_token, str) and id_token:
-        payload = decode_jwt_payload(id_token) or {}
-        sub = payload.get("sub")
-        if sub:
-            return f"sub:{sub}"
-        oid = payload.get("oid")
-        if oid:
-            return f"oid:{oid}"
-    account_id = data.get("account_id")
-    if not account_id and isinstance(data.get("tokens"), dict):
-        account_id = data["tokens"].get("account_id")
-    if account_id:
-        return f"account_id:{account_id}"
-    return None
-
-
-def profile_principal_id(name: str):
+def profile_account_id(name: str):
     auth_path = PROFILES_DIR / name / "auth.json"
     if not auth_path.exists():
         return None
-    return principal_id_from_auth(auth_path)
+    return account_id_from_auth(auth_path)
 
 
-def find_same_principal_profiles(principal_id: str, exclude_name: str = ""):
-    if not principal_id:
+def find_same_principal_profiles(account_id: str, exclude_name: str = ""):
+    if not account_id:
         return []
     matches = []
     for p in sorted([x for x in PROFILES_DIR.iterdir() if x.is_dir()]):
         if exclude_name and p.name == exclude_name:
             continue
-        pid = profile_principal_id(p.name)
-        if pid == principal_id:
+        pid = profile_account_id(p.name)
+        if pid == account_id:
             matches.append(p.name)
     return matches
 
@@ -952,7 +908,7 @@ def stop_codex() -> bool:
                 image = Path(proc_pattern).name
                 if not image.lower().endswith(".exe"):
                     image = f"{image}.exe"
-                subprocess.run(["taskkill", "/F", "/T", "/IM", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["taskkill", "/F", "/IM", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 touched = True
             elif shutil.which("pkill"):
                 subprocess.run(["pkill", "-f", proc_pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -960,31 +916,6 @@ def stop_codex() -> bool:
             elif shutil.which("killall"):
                 subprocess.run(["killall", "-q", Path(proc_pattern).name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 touched = True
-    if sys.platform.startswith("win"):
-        # Broader fallback for Store/app-hosted builds that may not run under Codex.exe image names.
-        ps = shutil.which("powershell") or shutil.which("pwsh")
-        if ps:
-            script = (
-                "$ErrorActionPreference='SilentlyContinue';"
-                "$targets=Get-Process | Where-Object {"
-                "$n=$_.ProcessName.ToLower();"
-                "$path='';"
-                "try { $path=$_.Path } catch {};"
-                "$p=$path.ToLower();"
-                "$n -like 'codex*' -or $n -like 'codexbar*' -or $n -like 'chatgpt*' -or "
-                "$p -like '*openai*codex*' -or $p -like '*chatgpt*'"
-                "};"
-                "foreach($t in $targets){"
-                "try { taskkill /F /T /PID $t.Id | Out-Null } catch {"
-                "  try { Stop-Process -Id $t.Id -Force -ErrorAction SilentlyContinue } catch {}"
-                "}"
-                "}"
-            )
-            try:
-                subprocess.run([ps, "-NoProfile", "-Command", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
-                touched = True
-            except Exception:
-                pass
     for _ in range(20):
         if not codex_running():
             break
@@ -1007,61 +938,7 @@ def _configured_codex_app_path() -> Path | None:
     return p if p.exists() else None
 
 
-def _log_runtime_safe(level: str, message: str, details=None) -> None:
-    try:
-        log_runtime(level, message, details)
-    except Exception:
-        pass
-
-
-def _detect_running_codex_executable_windows() -> str | None:
-    if not sys.platform.startswith("win"):
-        return None
-    ps = shutil.which("powershell") or shutil.which("pwsh")
-    if not ps:
-        return None
-    script = (
-        "$ErrorActionPreference='SilentlyContinue';"
-        "$p=Get-Process | Where-Object {"
-        "$n=$_.ProcessName.ToLower();"
-        "$n -eq 'codex' -or $n -eq 'codexbar' -or $n -like 'codex*'"
-        "} | Select-Object -First 1 -ExpandProperty Path;"
-        "if($p){Write-Output $p}"
-    )
-    try:
-        proc = subprocess.run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=3)
-    except Exception:
-        return None
-    if proc.returncode != 0:
-        return None
-    path = (proc.stdout or "").strip().strip('"')
-    if not path:
-        return None
-    p = Path(path)
-    return str(p) if p.exists() else None
-
-
-def _start_windows_appsfolder_codex() -> bool:
-    if not sys.platform.startswith("win"):
-        return False
-    ps = shutil.which("powershell") or shutil.which("pwsh")
-    if not ps:
-        return False
-    script = (
-        "$ErrorActionPreference='SilentlyContinue';"
-        "$app=Get-StartApps | Where-Object { $_.Name -like '*Codex*' } | Select-Object -First 1;"
-        "if(-not $app){ exit 1 }"
-        "Start-Process ('shell:AppsFolder\\\\' + $app.AppID) | Out-Null;"
-        "exit 0"
-    )
-    try:
-        proc = subprocess.run([ps, "-NoProfile", "-Command", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
-    except Exception:
-        return False
-    return proc.returncode == 0
-
-
-def start_codex(preferred_app_name: str = "", preferred_exec_path: str = "") -> bool:
+def start_codex(preferred_app_name: str = "") -> bool:
     app_order = []
     if preferred_app_name:
         app_order.append(preferred_app_name)
@@ -1073,46 +950,14 @@ def start_codex(preferred_app_name: str = "", preferred_exec_path: str = "") -> 
                 subprocess.Popen([str(configured)], creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
             else:
                 subprocess.Popen([str(configured)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            _log_runtime_safe("info", "codex.start success configured", {"path": str(configured)})
             return True
-        except Exception as e:
-            _log_runtime_safe("warn", "codex.start failed configured", {"path": str(configured), "error": str(e)})
-    if sys.platform.startswith("win"):
-        launchers: list[str] = []
-        launch_errors: list[dict] = []
-        if preferred_exec_path:
-            launchers.append(str(preferred_exec_path))
-        try:
-            launchers.append(resolve_codex_cli())
         except Exception:
             pass
+    if sys.platform.startswith("win"):
         for candidate in ("codex", "Codex.exe", "codex.exe"):
-            hit = shutil.which(candidate)
-            if hit:
-                launchers.append(hit)
-        seen: set[str] = set()
-        for launcher in launchers:
-            key = str(launcher).strip().lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            try:
-                subprocess.Popen(
-                    [launcher],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                )
-                _log_runtime_safe("info", "codex.start success launcher", {"launcher": launcher})
+            p = subprocess.run(["cmd", "/c", "start", "", candidate], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if p.returncode == 0:
                 return True
-            except Exception as e:
-                launch_errors.append({"launcher": launcher, "error": str(e)})
-                continue
-        if _start_windows_appsfolder_codex():
-            _log_runtime_safe("info", "codex.start success appsfolder", {})
-            return True
-        _log_runtime_safe("warn", "codex.start failed windows", {"attempts": launch_errors})
         return False
     if sys.platform == "darwin":
         for app_name in app_order:
@@ -1569,7 +1414,7 @@ def cmd_save(name: str, overwrite: bool) -> int:
         return 1
     try:
         write_profile(name=name, source_auth=AUTH_FILE, source_label=str(AUTH_FILE), overwrite=overwrite)
-        new_id = profile_principal_id(name)
+        new_id = profile_account_id(name)
         same = find_same_principal_profiles(new_id, exclude_name=name)
         if same:
             print(f"warning: profile '{name}' has same principal id as: {', '.join(same)}")
@@ -1616,7 +1461,7 @@ def cmd_add(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, devi
 
         try:
             write_profile(name=name, source_auth=temp_auth, source_label=str(temp_auth), overwrite=overwrite)
-            new_id = profile_principal_id(name)
+            new_id = profile_account_id(name)
             same = find_same_principal_profiles(new_id, exclude_name=name)
             if same:
                 print(f"warning: profile '{name}' has same principal id as: {', '.join(same)}")
@@ -1645,14 +1490,14 @@ def collect_list_data(config: dict | None = None):
     eligibility = ((cfg.get("profiles") or {}).get("eligibility") or {})
     id_groups = {}
     for p in profiles:
-        pid = profile_principal_id(p.name)
+        pid = profile_account_id(p.name)
         if pid:
             id_groups.setdefault(pid, []).append(p.name)
     rows = []
     for p in profiles:
         meta_path = p / "meta.json"
         auth_path = p / "auth.json"
-        pid = profile_principal_id(p.name)
+        pid = profile_account_id(p.name)
         same_principal_with = []
         if pid and len(id_groups.get(pid, [])) > 1:
             same_principal_with = [x for x in id_groups[pid] if x != p.name]
@@ -1672,7 +1517,7 @@ def collect_list_data(config: dict | None = None):
                 "name": p.name,
                 "account_hint": hint,
                 "saved_at": saved_at,
-                "account_id": account_id_from_auth(auth_path),
+                "account_id": pid,
                 "same_principal": len(same_principal_with) > 0,
                 "same_principal_with": same_principal_with,
                 "auto_switch_eligible": bool(eligibility.get(p.name, False)),
@@ -1744,14 +1589,13 @@ def collect_usage_local_data(timeout_sec: int, config: dict | None = None):
             except Exception:
                 saved_at = None
         account_id = account_id_from_auth(auth_path) or "-"
-        principal_id = principal_id_from_auth(auth_path)
         usage_5h, usage_weekly, err = fetch_usage_from_auth(auth_path, timeout_sec=timeout_sec)
         cell_5h = format_usage_cell(*(usage_5h or (None, None)))
         cell_weekly = format_usage_cell(*(usage_weekly or (None, None)))
         is_current = active_canonical is not None and canonical_auth(auth_path) == active_canonical
         if is_current:
             current_profile = p.name
-        same = len(find_same_principal_profiles(principal_id, exclude_name=p.name)) > 0
+        same = len(find_same_principal_profiles(account_id, exclude_name=p.name)) > 0
         json_rows.append(
             {
                 "name": p.name,
@@ -1892,32 +1736,18 @@ def cmd_switch(name: str, restart_codex: bool) -> int:
         source_auth = ensure_profile_exists(name)
     except RuntimeError as e:
         print(f"error: {e}")
-        _log_runtime_safe("error", "switch failed missing profile", {"name": name, "error": str(e)})
         return 1
 
     AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     running_app = None
-    running_exec_path = ""
-    if restart_codex:
-        try:
-            running_app = detect_running_app_name()
-        except Exception:
-            running_app = None
-        if sys.platform.startswith("win"):
-            try:
-                running_exec_path = _detect_running_codex_executable_windows() or ""
-            except Exception:
-                running_exec_path = ""
-    _log_runtime_safe(
-        "info",
-        "switch begin",
-        {"name": name, "restart_codex": bool(restart_codex), "running_app": running_app, "running_exec_path": running_exec_path},
-    )
-    if restart_codex and running_app:
+    try:
+        running_app = detect_running_app_name()
+    except Exception:
+        running_app = None
+    if running_app:
         try:
             stop_codex()
-            _log_runtime_safe("info", "switch stop_codex requested", {"running_app": running_app})
         except Exception:
             pass
 
@@ -1926,48 +1756,23 @@ def cmd_switch(name: str, restart_codex: bool) -> int:
         shutil.copy2(AUTH_FILE, backup)
         _set_private_permissions(backup)
 
-    try:
-        shutil.copy2(source_auth, AUTH_FILE)
-    except PermissionError as e:
-        repaired = _ensure_windows_user_writable(AUTH_FILE)
-        if repaired:
-            try:
-                shutil.copy2(source_auth, AUTH_FILE)
-            except PermissionError as e2:
-                msg = (
-                    f"cannot write auth file ({AUTH_FILE}). It is locked by a running app or denied by file permissions."
-                )
-                print(f"error: {msg}")
-                print("hint: close Codex/ChatGPT windows and verify your user has write access to auth.json")
-                _log_runtime_safe("error", "switch auth copy permission denied after repair", {"name": name, "target_auth": str(AUTH_FILE), "repaired": repaired, "error": str(e2)})
-                return 1
-        else:
-            msg = (
-                f"cannot write auth file ({AUTH_FILE}). It is locked by a running app or denied by file permissions."
-            )
-            print(f"error: {msg}")
-            print("hint: close Codex/ChatGPT windows and verify your user has write access to auth.json")
-            _log_runtime_safe("error", "switch auth copy permission denied", {"name": name, "target_auth": str(AUTH_FILE), "repaired": repaired, "error": str(e)})
-            return 1
+    shutil.copy2(source_auth, AUTH_FILE)
     _set_private_permissions(AUTH_FILE)
-    _log_runtime_safe("info", "switch auth copied", {"name": name, "source_auth": str(source_auth), "target_auth": str(AUTH_FILE)})
 
     print(f"switched to profile '{name}'")
     print(f"active account: {account_hint_from_auth(AUTH_FILE)}")
-    switched_id = principal_id_from_auth(AUTH_FILE)
+    switched_id = account_id_from_auth(AUTH_FILE)
     same = find_same_principal_profiles(switched_id, exclude_name=name)
     if same:
         print(f"note: '{name}' has same principal id as: {', '.join(same)}")
         print("note: this switch may not change your effective canonical account")
-        _log_runtime_safe("warn", "switch same principal", {"name": name, "same_with": same, "principal_id": switched_id})
 
     if restart_codex:
         started = False
         try:
-            started = start_codex(preferred_app_name=running_app or "Codex", preferred_exec_path=running_exec_path)
+            started = start_codex(preferred_app_name=running_app or "Codex")
         except Exception:
             started = False
-        _log_runtime_safe("info", "switch restart result", {"name": name, "started": bool(started)})
         if started:
             print("Codex/CodexBar restart requested")
         else:
@@ -1975,34 +1780,6 @@ def cmd_switch(name: str, restart_codex: bool) -> int:
     else:
         print("start Codex manually if needed")
     return 0
-
-
-def restart_codex_app() -> bool:
-    running_app = None
-    running_exec_path = ""
-    try:
-        running_app = detect_running_app_name()
-    except Exception:
-        running_app = None
-    if sys.platform.startswith("win"):
-        try:
-            running_exec_path = _detect_running_codex_executable_windows() or ""
-        except Exception:
-            running_exec_path = ""
-    if running_app:
-        try:
-            stop_codex()
-            _log_runtime_safe("info", "restart stop_codex requested", {"running_app": running_app})
-        except Exception as e:
-            _log_runtime_safe("warn", "restart stop_codex failed", {"running_app": running_app, "error": str(e)})
-    started = False
-    try:
-        started = start_codex(preferred_app_name=running_app or "Codex", preferred_exec_path=running_exec_path)
-    except Exception as e:
-        _log_runtime_safe("warn", "restart start_codex exception", {"error": str(e)})
-        started = False
-    _log_runtime_safe("info", "restart final result", {"started": bool(started), "running_app": running_app, "running_exec_path": running_exec_path})
-    return started
 
 
 def cmd_run(name: str, command_args) -> int:
@@ -2547,11 +2324,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .usage-fill.midlow{background:var(--usage-midlow)}
     .usage-fill.mid{background:var(--usage-mid)}
     .usage-fill.good{background:var(--ok)}
-    .usage-cell-loading .usage-pct{min-width:72px}
-    .usage-meter.loading{position:relative;background:color-mix(in srgb,var(--surface-highest) 75%, var(--line))}
-    .usage-fill.shimmer{width:45%;background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--primary) 72%, white 10%), transparent);animation:usageShimmer 1.05s linear infinite}
-    .loading-text{color:var(--text-soft)}
-    @keyframes usageShimmer{from{transform:translateX(-140%)}to{transform:translateX(230%)}}
     .status-dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--text-soft);box-shadow:0 0 6px color-mix(in srgb,var(--text-soft) 30%, transparent)}
     .status-dot.active{background:var(--primary);box-shadow:0 0 10px var(--accent-glow)}.status-dot.warn{background:var(--warn)}.status-dot.danger{background:var(--danger)}
     .badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:1px 7px;font-size:11px;color:var(--text-soft)}
@@ -3281,21 +3053,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(n < 75) return "mid";
     return "good";
   }
-  function isUsageLoadingState(usage, rowError){
+  function renderUsageMeter(usage){
     const pct = usagePercentNumber(usage);
-    if(Number.isFinite(pct)) return false;
-    if(!rowError) return false;
-    const msg = String(rowError || "").toLowerCase();
-    return msg.includes("request failed") || msg.includes("timed out") || msg.includes("http ");
-  }
-  function renderUsageMeter(usage, loading=false){
-    const pct = usagePercentNumber(usage);
-    if(!Number.isFinite(pct)){
-      if(loading){
-        return `<div class="usage-cell usage-cell-loading"><span class="usage-pct loading-text">loading...</span><div class="usage-meter loading"><span class="usage-fill shimmer"></span></div></div>`;
-      }
-      return "<span>-</span>";
-    }
+    if(!Number.isFinite(pct)) return "<span>-</span>";
     const tone = usageFillClass(pct);
     const txtClass = usageClass(pct);
     return `<div class="usage-cell"><span class="usage-pct ${txtClass}">${pct}%</span><div class="usage-meter"><span class="usage-fill ${tone}" style="width:${pct}%"></span></div></div>`;
@@ -3455,8 +3215,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const b = byId("chainEditBackdrop", false);
     if(b) b.style.display = "flex";
   }
-  function fmtRemain(ts, withSeconds=false, loading=false){
-    if(!ts) return loading ? "loading..." : "unknown";
+  function fmtRemain(ts, withSeconds=false){
+    if(!ts) return "unknown";
     try {
       let sec = Math.max(0, Math.floor(Number(ts) - (Date.now()/1000)));
       const d = Math.floor(sec / 86400); sec %= 86400;
@@ -3471,16 +3231,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
       if (d > 0) return `${d}d ${h}h ${m}m ${s}s`;
       if (h > 0) return `${h}h ${m}m ${s}s`;
       return `${m}m ${s}s`;
-    } catch(_) { return loading ? "loading..." : "unknown"; }
+    } catch(_) { return "unknown"; }
   }
   function refreshRemainCountdowns(){
     document.querySelectorAll("td[data-remain-ts]").forEach((el) => {
       const raw = el.getAttribute("data-remain-ts");
       const ts = Number(raw);
       const withSeconds = el.getAttribute("data-remain-seconds") === "1";
-      const loading = el.getAttribute("data-remain-loading") === "1";
-      el.textContent = Number.isFinite(ts) && ts > 0 ? fmtRemain(ts, withSeconds, false) : (loading ? "loading..." : "unknown");
-      el.classList.toggle("loading-text", loading && !(Number.isFinite(ts) && ts > 0));
+      el.textContent = Number.isFinite(ts) && ts > 0 ? fmtRemain(ts, withSeconds) : "unknown";
     });
     updateAutoSwitchArmedUI();
   }
@@ -4047,7 +3805,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   }
 
   async function setEligibility(name, eligible){ await postApi("/api/auto-switch/account-eligibility", { name, eligible }); }
-  async function switchProfile(name){ await postApi("/api/switch",{name, no_restart:true, close_only:true}); await refreshAll(); }
+  async function switchProfile(name){ await postApi("/api/switch",{name}); await refreshAll(); }
 
   function renderEvents(items){ return items; }
 
@@ -4208,19 +3966,15 @@ def render_ui_html(default_interval: float, token: str) -> str:
     for(const p of rows){
       const tr=document.createElement("tr");
       const statusClass = p.is_current ? "active" : "";
-      const h5Loading = isUsageLoadingState(p.usage_5h, p.error);
-      const wLoading = isUsageLoadingState(p.usage_weekly, p.error);
-      const h5RemainTs = Number(p.usage_5h?.resets_at || 0) || "";
-      const wRemainTs = Number(p.usage_weekly?.resets_at || 0) || "";
       tr.innerHTML = `
         <td data-col="cur"><span class="status-dot ${statusClass}"></span></td>
         <td data-col="profile">${p.name}</td>
         <td data-col="email" class="email-cell" title="${(p.email || "-").replace(/"/g,'&quot;')}">${p.email || "-"}</td>
-        <td data-col="h5">${renderUsageMeter(p.usage_5h, h5Loading)}</td>
-        <td data-col="h5remain" class="reset-cell ${h5Loading ? "loading-text" : ""}" data-remain-ts="${h5RemainTs}" data-remain-seconds="1" data-remain-loading="${h5Loading ? "1" : "0"}">${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}</td>
+        <td data-col="h5">${renderUsageMeter(p.usage_5h)}</td>
+        <td data-col="h5remain" class="reset-cell" data-remain-ts="${Number(p.usage_5h?.resets_at || 0) || ""}" data-remain-seconds="1">${fmtRemain(p.usage_5h?.resets_at, true)}</td>
         <td data-col="h5reset" class="reset-cell">${fmtReset(p.usage_5h?.resets_at)}</td>
-        <td data-col="weekly">${renderUsageMeter(p.usage_weekly, wLoading)}</td>
-        <td data-col="weeklyremain" class="reset-cell ${wLoading ? "loading-text" : ""}" data-remain-ts="${wRemainTs}" data-remain-seconds="0" data-remain-loading="${wLoading ? "1" : "0"}">${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}</td>
+        <td data-col="weekly">${renderUsageMeter(p.usage_weekly)}</td>
+        <td data-col="weeklyremain" class="reset-cell" data-remain-ts="${Number(p.usage_weekly?.resets_at || 0) || ""}" data-remain-seconds="0">${fmtRemain(p.usage_weekly?.resets_at, false)}</td>
         <td data-col="weeklyreset" class="reset-cell">${fmtReset(p.usage_weekly?.resets_at)}</td>
         <td data-col="id" class="id-cell" title="${(p.account_id || "-").replace(/"/g,'&quot;')}">${p.account_id || "-"}</td>
         <td data-col="added" class="added-cell">${fmtSavedAt(p.saved_at || "-")}</td>
@@ -4253,8 +4007,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
           <div class="mobile-stats">
             <div class="mobile-stat"><span class="label">5H</span><span class="${h5Class}">${fmtUsagePct(p.usage_5h)}</span></div>
             <div class="mobile-stat"><span class="label">Weekly</span><span class="${wClass}">${fmtUsagePct(p.usage_weekly)}</span></div>
-            <div class="mobile-stat"><span class="label">5H Remain</span><span class="${h5Loading ? "loading-text" : ""}">${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}</span></div>
-            <div class="mobile-stat"><span class="label">W Remain</span><span class="${wLoading ? "loading-text" : ""}">${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}</span></div>
+            <div class="mobile-stat"><span class="label">5H Remain</span><span>${fmtRemain(p.usage_5h?.resets_at, true)}</span></div>
+            <div class="mobile-stat"><span class="label">W Remain</span><span>${fmtRemain(p.usage_weekly?.resets_at, false)}</span></div>
           </div>
         `;
         const openDetails = async () => {
@@ -4263,10 +4017,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
             `Email: ${p.email || "-"}`,
             `Current: ${p.is_current ? "yes" : "no"}`,
             `5H Usage: ${fmtUsagePct(p.usage_5h)}`,
-            `5H Remain: ${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}`,
+            `5H Remain: ${fmtRemain(p.usage_5h?.resets_at, true)}`,
             `5H Reset At: ${fmtReset(p.usage_5h?.resets_at)}`,
             `Weekly Usage: ${fmtUsagePct(p.usage_weekly)}`,
-            `Weekly Remain: ${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}`,
+            `Weekly Remain: ${fmtRemain(p.usage_weekly?.resets_at, false)}`,
             `Weekly Reset At: ${fmtReset(p.usage_weekly?.resets_at)}`,
             `Account ID: ${p.account_id || "-"}`,
             `Added: ${fmtSavedAt(p.saved_at || "-")}`,
@@ -4285,7 +4039,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         if(mobileSwitchBtn){
           mobileSwitchBtn.addEventListener("click", (ev) => {
             ev.stopPropagation();
-            runAction("local.switch", () => postApi("/api/switch", { name: mobileSwitchBtn.dataset.mobileSwitch, no_restart:true, close_only:true }));
+            runAction("local.switch", () => postApi("/api/switch", { name: mobileSwitchBtn.dataset.mobileSwitch }));
           });
         }
         const mobileRowActionsBtn = mrow.querySelector("button[data-mobile-row-actions]");
@@ -4300,7 +4054,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     applyColumnVisibility();
     refreshRemainCountdowns();
-    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runAction("local.switch", () => postApi("/api/switch", { name: btn.dataset.switch, no_restart:true, close_only:true }))));
+    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runAction("local.switch", () => postApi("/api/switch", { name: btn.dataset.switch }))));
     tbody.querySelectorAll("button[data-row-actions]").forEach(btn => btn.addEventListener("click", (e)=>{
       e.stopPropagation();
       openRowActionsModal(btn.dataset.rowActions);
@@ -4339,7 +4093,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     setError("");
     const list = await safeGet("/api/list");
-    const usage = await safeGet("/api/usage-local?timeout=3");
+    const usage = await safeGet("/api/usage-local");
     const config = await safeGet("/api/ui-config");
     const autoState = await safeGet("/api/auto-switch/state");
     const autoChain = await safeGet("/api/auto-switch/chain");
@@ -5697,27 +5451,10 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if not name:
                     return _json_error("MISSING_NAME", "profile name is required")
                 restart = not bool_value(body.get("no_restart"), False)
-                close_only = bool_value(body.get("close_only"), False)
-                if close_only and sys.platform.startswith("win"):
-                    try:
-                        stop_codex()
-                        _log_runtime_safe("info", "switch close_only stop requested", {"name": name})
-                    except Exception as e:
-                        _log_runtime_safe("warn", "switch close_only stop failed", {"name": name, "error": str(e)})
-                # Apply profile switch first, then restart asynchronously so the HTTP request can complete.
-                rc, out, err = _capture_fn(lambda: cmd_switch(name, restart_codex=False))
+                rc, out, err = _capture_fn(lambda: cmd_switch(name, restart_codex=restart))
                 payload = _command_result("local.switch", rc, out, err)
                 if rc != 0:
                     return _json_error("COMMAND_FAILED", "local switch failed", 400, payload)
-                if restart:
-                    def _deferred_restart():
-                        try:
-                            time.sleep(0.8)
-                            restart_codex_app()
-                        except Exception as e:
-                            _log_runtime_safe("warn", "deferred restart failed", {"error": str(e), "name": name})
-                    threading.Thread(target=_deferred_restart, daemon=True).start()
-                    _log_runtime_safe("info", "switch deferred restart scheduled", {"name": name})
                 push_event("switch-manual", f"manually switched to '{name}'")
                 return _json_ok(payload)
             if self.command == "POST" and path == "/api/ui-config":
