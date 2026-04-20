@@ -299,6 +299,43 @@ codex-account usage-local --watch --interval 3
 
 `--interval 3` means refresh every 3 seconds.
 
+## Auto-Switch Simulation Test
+
+Run a full terminal simulation of auto-switch logic with live tick-by-tick details:
+
+```bash
+./bin/cam-autoswitch-test
+```
+
+This default scenario intentionally drops current account 5H remaining from above `30%` to below it in one interval (for example `34% -> 28%`) so you can verify breach detection, warning arming, delay countdown, cooldown, and switch selection.
+
+Useful variants:
+
+```bash
+# slower "live playback" and full profile state on each tick
+./bin/cam-autoswitch-test --sleep-sec 0.6 --show-profiles-each-tick
+
+# custom threshold and delay/cooldown tuning
+./bin/cam-autoswitch-test --threshold-5h 30 --delay-ticks 1 --cooldown-ticks 2 --ticks 20
+```
+
+Run real account cycles every ~30 seconds (shows chain + candidate ranking + reasons):
+
+```bash
+# safe dry-run style (no app restart)
+./bin/cam-autoswitch-test --mode real --cycles 6 --cycle-sec 30 --no-restart
+
+# full real switch test (Codex app may close/reopen each cycle)
+./bin/cam-autoswitch-test --mode real --cycles 6 --cycle-sec 30 --force-switch
+
+# same as above, but auto-prepares eligibility/policy for testing
+./bin/cam-autoswitch-test --mode real --cycles 6 --cycle-sec 30 --force-switch --prepare-test
+```
+
+Tips:
+- Add `--color always` if your terminal is not auto-detecting ANSI colors.
+- `--force-switch` ignores threshold gate and switches whenever a candidate exists.
+
 ## JSON Interfaces
 
 - `codex-account usage-local --json`

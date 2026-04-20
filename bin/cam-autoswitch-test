@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Ensure one-command reliability even when system python is older than project requirement.
+if sys.version_info < (3, 11):
+    venv_py = ROOT / ".venv" / "bin" / "python"
+    if venv_py.exists():
+        os.execv(str(venv_py), [str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+from codex_account_manager.autoswitch_sim import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

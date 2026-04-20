@@ -6101,8 +6101,8 @@ def _trigger_breached(current_row: dict, cfg: dict) -> tuple[bool, dict]:
     use_weekly = True
     p5 = _remaining_pct(current_row, "usage_5h")
     pw = _remaining_pct(current_row, "usage_weekly")
-    h5_hit = use_h5 and p5 is not None and p5 < float(thr.get("h5_switch_pct", 20))
-    w_hit = use_weekly and pw is not None and pw < float(thr.get("weekly_switch_pct", 20))
+    h5_hit = use_h5 and p5 is not None and p5 <= float(thr.get("h5_switch_pct", 20))
+    w_hit = use_weekly and pw is not None and pw <= float(thr.get("weekly_switch_pct", 20))
     active_hits = []
     if use_h5:
         active_hits.append(h5_hit)
