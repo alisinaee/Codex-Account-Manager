@@ -43,7 +43,7 @@ CAM_CONFIG_FILE = CAM_DIR / "config.json"
 CAM_LOG_FILE = CAM_DIR / "ui.log"
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.6"
+DEFAULT_APP_VERSION = "0.0.7"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -809,6 +809,22 @@ def account_hint_from_auth(path: Path) -> str:
     return " | ".join(hints) if hints else "unknown"
 
 
+def account_email_from_auth(path: Path) -> str | None:
+    try:
+        data = load_json(path)
+    except Exception:
+        return None
+    id_token = data.get("id_token")
+    if not id_token and isinstance(data.get("tokens"), dict):
+        id_token = data["tokens"].get("id_token")
+    if isinstance(id_token, str) and id_token:
+        payload = decode_jwt_payload(id_token) or {}
+        email = payload.get("email")
+        if isinstance(email, str) and email.strip():
+            return email.strip().lower()
+    return None
+
+
 def account_id_from_auth(path: Path):
     try:
         data = load_json(path)
@@ -860,6 +876,23 @@ def find_same_principal_profiles(principal_id: str, exclude_name: str = ""):
             continue
         pid = profile_principal_id(p.name)
         if pid == principal_id:
+            matches.append(p.name)
+    return matches
+
+
+def find_same_email_profiles(email: str, exclude_name: str = "") -> list[str]:
+    target = (email or "").strip().lower()
+    if not target:
+        return []
+    matches: list[str] = []
+    for p in sorted([x for x in PROFILES_DIR.iterdir() if x.is_dir()]):
+        if exclude_name and p.name == exclude_name:
+            continue
+        auth_path = p / "auth.json"
+        if not auth_path.exists():
+            continue
+        p_email = account_email_from_auth(auth_path)
+        if p_email and p_email == target:
             matches.append(p.name)
     return matches
 
@@ -990,6 +1023,86 @@ def stop_codex() -> bool:
             break
         time.sleep(0.15)
     return touched
+
+
+def _windows_force_kill_codex_processes() -> int:
+    if not sys.platform.startswith("win"):
+        return 0
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if not ps:
+        return 0
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$targets=Get-Process | Where-Object {"
+        "$n=$_.ProcessName.ToLower();"
+        "$path='';"
+        "try { $path=$_.Path } catch {};"
+        "$p=$path.ToLower();"
+        "$n -like 'codex*' -or $n -like 'codexbar*' -or $n -like 'chatgpt*' -or $n -like 'openai*' -or "
+        "$p -like '*openai*codex*' -or $p -like '*chatgpt*'"
+        "};"
+        "$k=0;"
+        "foreach($t in $targets){"
+        "  try { Stop-Process -Id $t.Id -Force -ErrorAction Stop; $k++ } catch {}"
+        "};"
+        "Write-Output $k"
+    )
+    try:
+        proc = subprocess.run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=6)
+        if proc.returncode != 0:
+            return 0
+        out = (proc.stdout or "").strip()
+        return int(out) if out.isdigit() else 0
+    except Exception:
+        return 0
+
+
+def _windows_graceful_close_codex_windows() -> tuple[int, int]:
+    if not sys.platform.startswith("win"):
+        return 0, 0
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if not ps:
+        return 0, 0
+    # Close top-level Codex/ChatGPT windows gracefully, then report remaining windowed processes.
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$all=Get-Process | Where-Object {"
+        "$n=$_.ProcessName.ToLower();"
+        "$path='';"
+        "try { $path=$_.Path } catch {};"
+        "$p=$path.ToLower();"
+        "$n -like 'codex*' -or $n -like 'codexbar*' -or $n -like 'chatgpt*' -or "
+        "$p -like '*openai*codex*' -or $p -like '*chatgpt*'"
+        "};"
+        "$wins=@($all | Where-Object { $_.MainWindowHandle -ne 0 });"
+        "$attempt=[int]$wins.Count;"
+        "foreach($w in $wins){"
+        "  try { [void]$w.CloseMainWindow() } catch {}"
+        "};"
+        "Start-Sleep -Milliseconds 900;"
+        "$all2=Get-Process | Where-Object {"
+        "$n=$_.ProcessName.ToLower();"
+        "$path='';"
+        "try { $path=$_.Path } catch {};"
+        "$p=$path.ToLower();"
+        "$n -like 'codex*' -or $n -like 'codexbar*' -or $n -like 'chatgpt*' -or "
+        "$p -like '*openai*codex*' -or $p -like '*chatgpt*'"
+        "};"
+        "$alive=[int](@($all2 | Where-Object { $_.MainWindowHandle -ne 0 }).Count);"
+        "Write-Output ($attempt.ToString() + ',' + $alive.ToString())"
+    )
+    try:
+        proc = subprocess.run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=7)
+        if proc.returncode != 0:
+            return 0, 0
+        raw = (proc.stdout or "").strip().splitlines()
+        line = raw[-1].strip() if raw else "0,0"
+        left, right = (line.split(",", 1) + ["0"])[:2]
+        attempted = int(left.strip()) if left.strip().isdigit() else 0
+        alive = int(right.strip()) if right.strip().isdigit() else 0
+        return attempted, alive
+    except Exception:
+        return 0, 0
 
 
 def _configured_codex_app_path() -> Path | None:
@@ -1543,6 +1656,14 @@ def write_profile(name: str, source_auth: Path, source_label: str, overwrite: bo
     target_dir = PROFILES_DIR / name
     if target_dir.exists() and not overwrite:
         raise RuntimeError(f"Profile '{name}' already exists. Use --force to overwrite.")
+
+    source_email = account_email_from_auth(source_auth)
+    if source_email:
+        dup = find_same_email_profiles(source_email, exclude_name=name)
+        if dup:
+            raise RuntimeError(
+                f"Email '{source_email}' already exists in profile(s): {', '.join(dup)}. Use that profile instead."
+            )
 
     target_dir.mkdir(parents=True, exist_ok=True)
     target_auth = target_dir / "auth.json"
@@ -2511,8 +2632,20 @@ def render_ui_html(default_interval: float, token: str) -> str:
       background:linear-gradient(90deg,color-mix(in srgb,var(--primary) 94%, #fff 6%),color-mix(in srgb,var(--primary-container) 94%, #fff 6%));
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
     }
+    .btn-primary-danger{
+      background:linear-gradient(90deg,var(--danger),color-mix(in srgb,var(--danger) 80%, #6b0a0a 20%));
+      border:0;
+      color:#fff;
+      font-weight:700;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
+    }
+    .btn-primary-danger:hover{
+      background:linear-gradient(90deg,color-mix(in srgb,var(--danger) 92%, #fff 8%),color-mix(in srgb,var(--danger) 82%, #fff 18%));
+    }
     .btn-danger{color:var(--danger)}
     .btn-disabled,button:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+    .btn-progress{position:relative}
+    .btn-progress::after{content:"";display:inline-block;width:11px;height:11px;margin-left:8px;border-radius:999px;border:2px solid color-mix(in srgb,var(--on-primary) 70%, transparent);border-top-color:var(--on-primary);animation:spin .8s linear infinite;vertical-align:-2px}
     .toggle{display:inline-flex;align-items:center;gap:8px}
     .toggle input{appearance:none;width:38px;height:20px;border-radius:999px;background:var(--surface-highest);position:relative;border:1px solid var(--line);cursor:pointer}
     .toggle input::after{content:\"\";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:999px;background:#e5e2e1;transition:transform .15s ease}
@@ -3102,6 +3235,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let saveUiVisibleSince = 0;
   let saveUiHideTimer = null;
   let pendingAutoSwitchEnabled = null;
+  let switchInFlight = false;
+  let switchPendingName = "";
   let diagnosticsHooksInstalled = false;
   const MAX_OVERLAY_LOGS = 900;
   const LOG_COALESCE_WINDOW_MS = 3500;
@@ -3283,17 +3418,20 @@ def render_ui_html(default_interval: float, token: str) -> str:
   }
   function isUsageLoadingState(usage, rowError){
     const pct = usagePercentNumber(usage);
-    if(Number.isFinite(pct)) return false;
     if(!rowError) return false;
     const msg = String(rowError || "").toLowerCase();
-    return msg.includes("request failed") || msg.includes("timed out") || msg.includes("http ");
+    const transient = msg.includes("request failed") || msg.includes("timed out") || msg.includes("http ");
+    if(!transient) return false;
+    if(!Number.isFinite(pct)) return true;
+    const resetTs = Number(usage?.resets_at || 0);
+    return !(Number.isFinite(resetTs) && resetTs > 0);
   }
   function renderUsageMeter(usage, loading=false){
+    if(loading){
+      return `<div class="usage-cell usage-cell-loading"><span class="usage-pct loading-text">loading...</span><div class="usage-meter loading"><span class="usage-fill shimmer"></span></div></div>`;
+    }
     const pct = usagePercentNumber(usage);
     if(!Number.isFinite(pct)){
-      if(loading){
-        return `<div class="usage-cell usage-cell-loading"><span class="usage-pct loading-text">loading...</span><div class="usage-meter loading"><span class="usage-fill shimmer"></span></div></div>`;
-      }
       return "<span>-</span>";
     }
     const tone = usageFillClass(pct);
@@ -3725,7 +3863,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       stderr: (data.stderr || "").trim(),
     });
   }
-  async function runAction(title,fn){
+  async function runAction(title,fn,refreshOpts=null){
     setError("");
     const startedAt = Date.now();
     pushOverlayLog("ui", `action.start ${title}`);
@@ -3733,11 +3871,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
       const d = await fn();
       setCmdOut(title,d);
       pushOverlayLog("ui", `action.success ${title}`, { duration_ms: Date.now() - startedAt });
-      await refreshAll();
+      await refreshAll(refreshOpts || undefined);
+      return true;
     } catch(e){
       const msg = e?.message || String(e);
       pushOverlayLog("error", `action.fail ${title}`, { error: msg, duration_ms: Date.now() - startedAt });
       setError(msg);
+      return false;
     }
   }
   function exportDebugSnapshot(){
@@ -4028,6 +4168,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
       activeModalResolver = resolve;
       byId("modalTitle").textContent = opts.title || "Confirm";
       byId("modalBody").textContent = opts.body || "";
+      const okBtn = byId("modalOkBtn", false);
+      const cancelBtn = byId("modalCancelBtn", false);
+      if(okBtn) okBtn.textContent = opts.okText || "OK";
+      if(cancelBtn){
+        cancelBtn.textContent = opts.cancelText || "Cancel";
+        cancelBtn.style.display = opts.hideCancel ? "none" : "";
+      }
       const input = byId("modalInput");
       if(opts.input){
         input.style.display = "block";
@@ -4049,11 +4196,43 @@ def render_ui_html(default_interval: float, token: str) -> str:
   async function setEligibility(name, eligible){ await postApi("/api/auto-switch/account-eligibility", { name, eligible }); }
   const IS_WINDOWS_CLIENT = /windows/i.test((navigator && navigator.userAgent) || "");
   function switchRequestBody(name){
-    return IS_WINDOWS_CLIENT ? { name, close_only: true } : { name };
+    return IS_WINDOWS_CLIENT ? { name, no_restart: true } : { name };
   }
   async function switchProfile(name){
     await postApi("/api/switch", switchRequestBody(name));
-    await refreshAll();
+  }
+  function renderSwitchProgressState(){
+    if(latestData.usage && Array.isArray(latestData.usage.profiles)){
+      renderTable(latestData.usage);
+    }
+  }
+  async function runSwitchAction(name){
+    const target = String(name || "").trim();
+    if(!target) return;
+    if(switchInFlight){
+      return;
+    }
+    switchInFlight = true;
+    switchPendingName = target;
+    renderSwitchProgressState();
+    try{
+      const ok = await runAction("local.switch", () => switchProfile(target), { usageTimeoutSec: 1, usageForce: true });
+      if(ok){
+        setTimeout(() => { refreshAll({ usageTimeoutSec: 5, usageForce: true }).catch(() => {}); }, 450);
+        if(IS_WINDOWS_CLIENT){
+          await openModal({
+            title: "Switch Completed",
+            body: `Profile '${target}' was switched successfully.\\n\\nPlease close and reopen Codex app manually to continue with the new account.`,
+            okText: "Done",
+            hideCancel: true,
+          });
+        }
+      }
+    } finally {
+      switchInFlight = false;
+      switchPendingName = "";
+      renderSwitchProgressState();
+    }
   }
 
   function renderEvents(items){ return items; }
@@ -4219,6 +4398,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
       const wLoading = isUsageLoadingState(p.usage_weekly, p.error);
       const h5RemainTs = Number(p.usage_5h?.resets_at || 0) || "";
       const wRemainTs = Number(p.usage_weekly?.resets_at || 0) || "";
+      const switchTarget = switchInFlight && switchPendingName === p.name;
+      const disableSwitch = p.is_current || switchInFlight;
+      const wPct = usagePercentNumber(p.usage_weekly);
+      const badWeekly = Number.isFinite(wPct) && wPct <= 0;
       tr.innerHTML = `
         <td data-col="cur"><span class="status-dot ${statusClass}"></span></td>
         <td data-col="profile">${p.name}</td>
@@ -4233,7 +4416,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <td data-col="added" class="added-cell">${fmtSavedAt(p.saved_at || "-")}</td>
         <td data-col="note" class="note-cell">${p.same_principal ? '<span class="badge">same-principal</span>' : ''}</td>
         <td data-col="auto"><input type="checkbox" data-auto="${p.name}" ${p.auto_switch_eligible ? "checked" : ""} /></td>
-        <td data-col="actions"><div class="actions-cell"><button class="btn-primary ${p.is_current ? "btn-disabled" : ""}" data-switch="${p.name}" ${p.is_current ? "disabled" : ""}>Switch</button><button class="btn actions-menu-btn" data-row-actions="${p.name}">⋯</button></div></td>
+        <td data-col="actions"><div class="actions-cell"><button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${disableSwitch ? "btn-disabled" : ""} ${switchTarget ? "btn-progress" : ""}" data-switch="${p.name}" ${disableSwitch ? "disabled" : ""}>Switch</button><button class="btn actions-menu-btn" data-row-actions="${p.name}">⋯</button></div></td>
       `;
       tbody.appendChild(tr);
       if(mobileRows){
@@ -4252,7 +4435,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <span class="mobile-profile">${p.name || "-"}</span>
             </div>
             <div class="mobile-actions">
-              <button class="btn-primary ${p.is_current ? "btn-disabled" : ""}" data-mobile-switch="${p.name}" ${p.is_current ? "disabled" : ""}>Switch</button>
+              <button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
               <button class="btn actions-menu-btn" data-mobile-row-actions="${p.name}">⋯</button>
             </div>
           </div>
@@ -4292,7 +4475,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         if(mobileSwitchBtn){
           mobileSwitchBtn.addEventListener("click", (ev) => {
             ev.stopPropagation();
-            runAction("local.switch", () => switchProfile(mobileSwitchBtn.dataset.mobileSwitch));
+            runSwitchAction(mobileSwitchBtn.dataset.mobileSwitch);
           });
         }
         const mobileRowActionsBtn = mrow.querySelector("button[data-mobile-row-actions]");
@@ -4307,7 +4490,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     applyColumnVisibility();
     refreshRemainCountdowns();
-    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runAction("local.switch", () => switchProfile(btn.dataset.switch))));
+    tbody.querySelectorAll("button[data-switch]").forEach(btn => btn.addEventListener("click", () => runSwitchAction(btn.dataset.switch)));
     tbody.querySelectorAll("button[data-row-actions]").forEach(btn => btn.addEventListener("click", (e)=>{
       e.stopPropagation();
       openRowActionsModal(btn.dataset.rowActions);
@@ -4340,17 +4523,64 @@ def render_ui_html(default_interval: float, token: str) -> str:
     setControlValueIfPristine("asWeekly", String(a.thresholds?.weekly_switch_pct ?? 20));
   }
 
-  async function refreshAll(){
+  function extractEmailFromHint(hint){
+    const s = String(hint || "");
+    const left = s.split("|")[0].trim();
+    return left.includes("@") ? left : "";
+  }
+  function buildUsageLoadingSnapshot(prevUsage, listPayload, currentPayload, errorMsg){
+    const srcProfiles = [];
+    if(prevUsage && Array.isArray(prevUsage.profiles) && prevUsage.profiles.length){
+      for(const p of prevUsage.profiles){ srcProfiles.push({ ...p }); }
+    } else if(listPayload && Array.isArray(listPayload.profiles)){
+      for(const p of listPayload.profiles){
+        srcProfiles.push({
+          name: p.name,
+          email: extractEmailFromHint(p.account_hint),
+          account_id: p.account_id || "-",
+          usage_5h: { remaining_percent: null, resets_at: null, text: "-" },
+          usage_weekly: { remaining_percent: null, resets_at: null, text: "-" },
+          is_current: false,
+          same_principal: !!p.same_principal,
+          error: errorMsg || "request failed",
+          saved_at: p.saved_at || null,
+          auto_switch_eligible: !!p.auto_switch_eligible,
+        });
+      }
+    }
+    const currentEmail = (currentPayload && !currentPayload.__error) ? extractEmailFromHint(currentPayload.account_hint) : "";
+    const mapped = srcProfiles.map((p) => {
+      const keepCurrent = !!p.is_current;
+      const byEmail = currentEmail ? (String(p.email || "").toLowerCase() === currentEmail.toLowerCase()) : keepCurrent;
+      return {
+        ...p,
+        usage_5h: { remaining_percent: null, resets_at: null, text: "-" },
+        usage_weekly: { remaining_percent: null, resets_at: null, text: "-" },
+        is_current: !!byEmail,
+        error: errorMsg || p.error || "request failed",
+      };
+    });
+    const currentProfile = mapped.find((p) => p.is_current)?.name || null;
+    return { refreshed_at: new Date().toISOString(), current_profile: currentProfile, profiles: mapped };
+  }
+
+  async function refreshAll(opts){
     if(pendingConfigSaves > 0){
       try { await configSaveQueue; } catch(_) {}
     }
+    const usageTimeoutSec = Math.max(1, Number(opts?.usageTimeoutSec || 3));
+    const usageForce = !!opts?.usageForce;
+    const usagePath = `/api/usage-local?timeout=${encodeURIComponent(String(usageTimeoutSec))}${usageForce ? "&force=true" : ""}`;
     setError("");
-    const list = await safeGet("/api/list");
-    const usage = await safeGet("/api/usage-local?timeout=3");
-    const config = await safeGet("/api/ui-config");
-    const autoState = await safeGet("/api/auto-switch/state");
-    const autoChain = await safeGet("/api/auto-switch/chain");
-    const eventsPayload = await safeGet("/api/events?since_id="+encodeURIComponent(String(lastEventId)));
+    const [list, usage, config, autoState, autoChain, eventsPayload, current] = await Promise.all([
+      safeGet("/api/list"),
+      safeGet(usagePath),
+      safeGet("/api/ui-config"),
+      safeGet("/api/auto-switch/state"),
+      safeGet("/api/auto-switch/chain"),
+      safeGet("/api/events?since_id="+encodeURIComponent(String(lastEventId))),
+      safeGet("/api/current"),
+    ]);
     if(!config.__error){
       latestData.config=config;
       applyConfigToControls(config);
@@ -4364,7 +4594,15 @@ def render_ui_html(default_interval: float, token: str) -> str:
     } else {
       setError("config: " + config.__error);
     }
-    if(!usage.__error){ latestData.usage = usage; renderTable(usage); } else { setError((byId("error").textContent ? byId("error").textContent + "\\n" : "") + "usage: " + usage.__error); }
+    if(!usage.__error){
+      latestData.usage = usage;
+      renderTable(usage);
+    } else {
+      const fallbackUsage = buildUsageLoadingSnapshot(latestData.usage, (!list.__error ? list : latestData.list), current, usage.__error);
+      latestData.usage = fallbackUsage;
+      renderTable(fallbackUsage);
+      setError((byId("error").textContent ? byId("error").textContent + "\\n" : "") + "usage: " + usage.__error);
+    }
     if(!list.__error){ latestData.list = list; }
     if(!autoState.__error){
       latestData.autoState = autoState;
@@ -4454,6 +4692,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
         const name = (r&&r.ok) ? (r.value||"").trim() : "";
         if(!name){
           pushOverlayLog("ui", "ui.cancel add_account");
+          return;
+        }
+        const existing = Array.isArray(latestData.list?.profiles) ? latestData.list.profiles : [];
+        const taken = existing.some((p) => String(p?.name || "").toLowerCase() === name.toLowerCase());
+        if(taken){
+          setError(`Profile name '${name}' already exists. Choose a different name.`);
           return;
         }
         pushOverlayLog("ui", "ui.submit add_account", { profile: name });
@@ -5705,12 +5949,10 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     return _json_error("MISSING_NAME", "profile name is required")
                 restart = not bool_value(body.get("no_restart"), False)
                 close_only = bool_value(body.get("close_only"), False)
-                if close_only and sys.platform.startswith("win"):
-                    try:
-                        stop_codex()
-                        _log_runtime_safe("info", "switch close_only stop requested", {"name": name})
-                    except Exception as e:
-                        _log_runtime_safe("warn", "switch close_only stop failed", {"name": name, "error": str(e)})
+                # Windows: fully manual app lifecycle. Never auto close/reopen.
+                if sys.platform.startswith("win"):
+                    close_only = False
+                    restart = False
                 # Apply profile switch first, then restart asynchronously so the HTTP request can complete.
                 rc, out, err = _capture_fn(lambda: cmd_switch(name, restart_codex=False))
                 payload = _command_result("local.switch", rc, out, err)
