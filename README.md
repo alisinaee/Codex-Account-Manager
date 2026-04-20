@@ -260,6 +260,18 @@ codex-account ui-autostart install
 - Event timeline panel shows warnings, cancels, switches, and errors.
 - Section tooltips and collapsible `Guide & Help` are included.
 
+### Web UI Screenshot
+
+> Note: account emails are blurred in this image.
+
+![Codex Account Manager Web UI (emails blurred)](docs/assets/screenshots/web-ui-panel-blurred-emails.png)
+
+## Release Notes
+
+- Versioned release notes live in `docs/release-notes.md`.
+- In-app `Guide & Help -> Release Notes` syncs with GitHub Releases and falls back to `docs/release-notes.md`.
+- Keep `docs/release-notes.md` updated for each shipped version and notable `Unreleased` changes.
+
 ### New API Endpoints
 
 - `GET /api/ui-config`
@@ -269,6 +281,7 @@ codex-account ui-autostart install
 - `POST /api/auto-switch/run-once`
 - `POST /api/auto-switch/account-eligibility`
 - `GET /api/events`
+- `GET /api/release-notes`
 - `POST /api/notifications/test`
 
 ## Live Usage
