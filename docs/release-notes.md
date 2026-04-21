@@ -4,11 +4,39 @@ This file tracks user-visible changes by version.
 
 ## Unreleased
 
-### Accounts and Plan Metadata
+No unreleased entries yet.
+
+## 0.0.8
+
+### UI and Workflow Improvements
+
+- Improved light-theme toggle switch colors for better visibility/contrast.
+- Replaced the header Debug button icon with a clearer terminal-style glyph.
+- Increased the header Settings button size for better click/tap usability.
+- Increased inner size of Debug/Settings header icons while keeping equal button container sizes.
+- Improved manual `Refresh` button responsiveness so a single click triggers immediate visible refresh state.
+- Updated `Kill All` confirmation modal to use a red confirm action for clearer destructive intent.
+- Scoped `Kill All` shutdown to Codex Account Manager processes only (no Codex desktop/app shutdown side effects).
+- Reworked switch-row feedback so the entire row blinks slowly while a switch is in progress.
+- Added a post-switch drag/drop-style animation that moves the newly selected current row to the top after refresh completes.
+
+### Accounts and Metadata
 
 - Added `plan_type` and `is_paid` fields to `usage-local --json` profile rows.
 - Added `Plan` and `Paid` columns in the Accounts table.
 - Kept `Plan` and `Paid` hidden by default in column preferences (users can enable from `Columns`).
+
+### Auto-Switch and Selection Fixes
+
+- Fixed auto-arrange chain ranking so exhausted accounts are pushed to the end instead of appearing as next preferred switch targets.
+- Fixed candidate selection to skip accounts with `0%` remaining quota when auto-switch chooses the next account.
+- Fixed balanced-mode chain generation so stale manual-chain ordering no longer leaks into auto-arranged previews.
+- Fixed red switch-state rendering so accounts with `0%` on either `5H` or `Weekly` show the blocked visual state consistently.
+
+### macOS Switch Reliability
+
+- Restored the macOS switch flow to close and relaunch Codex instead of using the close-only path.
+- Improved macOS app relaunch reliability by preserving the detected app target and retrying launch when the app is still shutting down.
 
 ### Guide and Help
 
