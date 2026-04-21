@@ -8333,6 +8333,20 @@ def cmd_notify(action: str) -> int:
     return 1
 
 
+def _print_default_overview(parser: argparse.ArgumentParser) -> None:
+    print(f"codex-account v{APP_VERSION}")
+    print("Most useful commands:")
+    print("  codex-account status")
+    print("  codex-account list")
+    print("  codex-account current")
+    print("  codex-account switch <name>")
+    print("  codex-account add <name> --device-auth")
+    print("  codex-account ui")
+    print("  codex-account ui-service status")
+    print("")
+    parser.print_help()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Local Codex account profile switcher")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -8450,6 +8464,10 @@ def main() -> int:
 
     p_notify = sub.add_parser("notify", help="Notification helper commands")
     p_notify.add_argument("action", choices=["test"])
+
+    if len(sys.argv) <= 1:
+        _print_default_overview(parser)
+        return 0
 
     args = parser.parse_args()
 
