@@ -5,6 +5,7 @@ import collections
 import copy
 import contextlib
 import datetime as dt
+import difflib
 import hashlib
 import io
 import json
@@ -8333,36 +8334,112 @@ def cmd_notify(action: str) -> int:
     return 1
 
 
+class FriendlyArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:  # pragma: no cover - argparse exits
+        text = (message or "invalid arguments").strip()
+        self.print_usage(sys.stderr)
+        print(f"\nerror: {text}", file=sys.stderr)
+
+        if "invalid choice" in text and "choose from" in text:
+            bad = self._extract_invalid_choice(text)
+            commands = self._known_commands()
+            if bad and commands:
+                matches = difflib.get_close_matches(bad, commands, n=3, cutoff=0.4)
+                if matches:
+                    print("Did you mean:", file=sys.stderr)
+                    for item in matches:
+                        print(f"  {item}", file=sys.stderr)
+
+        cmd = Path(self.prog).name or self.prog
+        print(f"Run '{cmd} --help' to see available commands.", file=sys.stderr)
+        if " " in self.prog:
+            print(f"Run '{self.prog} --help' to see command options and examples.", file=sys.stderr)
+            print("", file=sys.stderr)
+            self.print_help(sys.stderr)
+        self.exit(2)
+
+    def _known_commands(self) -> list[str]:
+        for action in self._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return sorted(action.choices.keys())
+        return []
+
+    @staticmethod
+    def _extract_invalid_choice(message: str) -> str | None:
+        m = re.search(r"invalid choice: '([^']+)'", message)
+        if m:
+            return m.group(1).strip()
+        return None
+
+
 def _print_default_overview(parser: argparse.ArgumentParser) -> None:
     print(f"codex-account v{APP_VERSION}")
     print("Most useful commands:")
-    print("  codex-account status")
+    print("  codex-account add work --device-auth")
     print("  codex-account list")
+    print("  codex-account switch work")
     print("  codex-account current")
-    print("  codex-account switch <name>")
     print("  codex-account add <name> --device-auth")
-    print("  codex-account ui")
+    print("  codex-account usage-local --watch --interval 3")
+    print("  codex-account ui --no-open")
     print("  codex-account ui-service status")
     print("")
     parser.print_help()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Local Codex account profile switcher")
+    parser = FriendlyArgumentParser(
+        description="Local Codex account profile switcher",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Quick start:\n"
+            "  1) Add an account profile:\n"
+            "     codex-account add work --device-auth\n"
+            "  2) Check saved profiles:\n"
+            "     codex-account list\n"
+            "  3) Switch active account:\n"
+            "     codex-account switch work\n"
+            "  4) Verify active account:\n"
+            "     codex-account current\n"
+            "\n"
+            "Run 'codex-account <command> --help' for command-specific examples."
+        ),
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_save = sub.add_parser("save", help="Save current ~/.codex/auth.json as a named profile")
+    p_save = sub.add_parser(
+        "save",
+        help="Save current ~/.codex/auth.json as a named profile",
+        description="Save the current active auth file as a reusable local profile.",
+    )
     p_save.add_argument("name")
     p_save.add_argument("--force", action="store_true", help="Overwrite existing profile")
 
-    p_add = sub.add_parser("add", help="Run fresh browser login and save it directly as a profile")
+    p_add = sub.add_parser(
+        "add",
+        help="Run fresh browser login and save it directly as a profile",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Create a new profile by logging in with a temporary isolated CODEX_HOME.\n"
+            "Recommended for clean account onboarding."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  codex-account add work --device-auth\n"
+            "  codex-account add personal --timeout 600\n"
+            "  codex-account add team --force\n"
+            "\n"
+            "After add completes, switch to it with:\n"
+            "  codex-account switch <name>"
+        ),
+    )
     p_add.add_argument("name")
     p_add.add_argument("--timeout", type=int, default=300, help="Login timeout in seconds (default: 300)")
     p_add.add_argument("--force", action="store_true", help="Overwrite existing profile")
     p_add.add_argument("--keep-temp-home", action="store_true", help="Keep temporary CODEX_HOME for debugging")
     p_add.add_argument("--device-auth", action="store_true", help="Use device auth flow to reduce browser cookie auto-selection")
 
-    p_list = sub.add_parser("list", help="List saved profiles")
+    p_list = sub.add_parser("list", help="List saved profiles", description="List all saved local profiles.")
     p_list.add_argument("--json", action="store_true", help="Output structured JSON")
     p_usage_local = sub.add_parser("usage-local", help="Show usage per local profile (no dedupe)")
     p_usage_local.add_argument("--timeout", type=int, default=7, help="API timeout seconds per profile (default: 7)")
@@ -8375,10 +8452,26 @@ def main() -> int:
     p_usage.add_argument("--watch", action="store_true", help="Continuously refresh usage table")
     p_usage.add_argument("--interval", type=float, default=5.0, help="Watch refresh interval seconds (default: 5)")
     p_usage.add_argument("--json", action="store_true", help="Output structured JSON")
-    p_current = sub.add_parser("current", help="Show current active account hint")
+    p_current = sub.add_parser("current", help="Show current active account hint", description="Show the currently active account/profile hint.")
     p_current.add_argument("--json", action="store_true", help="Output structured JSON")
 
-    p_switch = sub.add_parser("switch", help="Switch active ~/.codex/auth.json to a saved profile")
+    p_switch = sub.add_parser(
+        "switch",
+        help="Switch active ~/.codex/auth.json to a saved profile",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Activate a saved profile by replacing ~/.codex/auth.json with that profile.\n"
+            "By default, Codex app restart hooks are attempted after switching."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  codex-account switch work\n"
+            "  codex-account switch personal --no-restart\n"
+            "\n"
+            "Find available profile names first:\n"
+            "  codex-account list"
+        ),
+    )
     p_switch.add_argument("name")
     p_switch.add_argument("--no-restart", action="store_true", help="Do not restart Codex after switch")
 
