@@ -54,7 +54,7 @@ CAM_LOG_MAX_BYTES = 2 * 1024 * 1024
 CAM_LOG_BACKUPS = 4
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.7"
+DEFAULT_APP_VERSION = "0.0.8"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -1405,9 +1405,11 @@ def start_codex(preferred_app_name: str = "", preferred_exec_path: str = "") -> 
         return False
     if sys.platform == "darwin":
         for app_name in app_order:
-            p = subprocess.run(["open", "-a", app_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if p.returncode == 0:
-                return True
+            for _ in range(3):
+                p = subprocess.run(["open", "-a", app_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if p.returncode == 0:
+                    return True
+                time.sleep(0.35)
         return False
     codex_bin = shutil.which("codex")
     if codex_bin:
@@ -2731,6 +2733,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
       --usage-low:#ff6b6b;
       --usage-midlow:#ff9f43;
       --usage-mid:#ffd16c;
+      --toggle-track-off:var(--surface-highest);
+      --toggle-track-on:var(--accent-soft);
+      --toggle-knob-off:#e5e2e1;
+      --toggle-knob-on:var(--primary);
       --log-ts:#7e8b90;
       --log-info:#b7e3ff;
       --log-warn:#ffd16c;
@@ -2740,15 +2746,15 @@ def render_ui_html(default_interval: float, token: str) -> str:
       --log-detail:#aab7bc;
     }
     [data-theme=\"light\"]{
-      --surface:#edf1f5; --surface-low:#ffffff; --surface-card:#f6f9fc; --surface-high:#eaf0f5; --surface-highest:#dfe7ef; --surface-black:#f5f8fb;
-      --text:#17202a; --text-soft:#4c5968; --line:rgba(46,58,72,.2);
+      --surface:#f3f6fa; --surface-low:#ffffff; --surface-card:#ffffff; --surface-high:#f5f8fc; --surface-highest:#e9eef5; --surface-black:#f8fbff;
+      --text:#16202b; --text-soft:#4a5868; --line:rgba(46,58,72,.18);
       --primary:#0d8a44; --primary-container:#2fc56f; --on-primary:#02260f;
       --ok:#0d8a44; --warn:#9a6e00; --danger:#b4232c;
       --ambient:0 12px 34px rgba(20,28,40,.08);
       --bg-grad:radial-gradient(1100px 500px at 85% -20%, rgba(17,153,75,.08), transparent 65%), radial-gradient(900px 420px at 10% 0%, rgba(172,125,0,.05), transparent 70%);
       --topbar-bg:rgba(255,255,255,.94);
-      --line-soft:rgba(46,58,72,.25);
-      --line-strong:rgba(46,58,72,.34);
+      --line-soft:rgba(46,58,72,.22);
+      --line-strong:rgba(46,58,72,.3);
       --accent-soft:rgba(13,138,68,.18);
       --accent-border:rgba(13,138,68,.34);
       --accent-glow:rgba(13,138,68,.28);
@@ -2767,8 +2773,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
       --danger-ring:rgba(180,35,44,.4);
       --danger-inset:rgba(180,35,44,.15);
       --danger-soft:#a91f29;
-      --danger-bg:rgba(180,35,44,.1);
-      --danger-bg-hover:rgba(180,35,44,.15);
+      --danger-bg:rgba(180,35,44,.08);
+      --danger-bg-hover:rgba(180,35,44,.13);
       --danger-banner-bg:rgba(180,35,44,.12);
       --danger-banner-border:rgba(180,35,44,.38);
       --danger-banner-text:#8b1d27;
@@ -2783,6 +2789,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
       --usage-low:#b4232c;
       --usage-midlow:#b45309;
       --usage-mid:#8a6400;
+      --toggle-track-off:#c8d4e0;
+      --toggle-track-on:#47b875;
+      --toggle-knob-off:#f8fbff;
+      --toggle-knob-on:#ffffff;
       --log-ts:#62707d;
       --log-info:#0f5f9f;
       --log-warn:#8a6400;
@@ -2870,7 +2880,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       border-radius:var(--radius);
       background:var(--surface-highest);
       color:var(--text-soft);
-      font-size:16px;
+      font-size:15px;
       cursor:pointer;
       transition:background .15s,color .15s,border-color .15s;
     }
@@ -2890,7 +2900,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
       cursor:pointer;
       transition:background .15s,color .15s,border-color .15s;
     }
-    .header-icon-btn svg{width:16px;height:16px;display:block;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    .header-icon-btn svg,.settings-toggle-btn svg{width:18px;height:18px;display:block;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    #debugIconBtn svg,#settingsToggleBtn svg{width:32px;height:32px;stroke:none;fill:currentColor;transform:scale(1.2);transform-origin:center}
     .header-icon-btn:hover{background:var(--surface-high);color:var(--text)}
     .header-icon-btn.active{color:var(--primary);border-color:var(--accent-border)}
     .page-head{margin-top:8px;padding:16px 18px;background:var(--surface-low);border-radius:var(--radius);display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
@@ -2945,6 +2956,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .setting-row.metric .stepper{margin-left:auto}
     .btn-block{width:100%;display:flex;align-items:center;justify-content:center}
     .settings-footer-btn{margin-top:auto}
+    .settings-footer-actions{
+      margin-top:auto;
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:8px;
+      width:100%;
+    }
+    .settings-footer-actions .settings-footer-btn{margin-top:0}
     .exec-actions{
       margin-top:auto;
       display:grid;
@@ -3049,12 +3068,43 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .btn-primary-danger{
       background:linear-gradient(90deg,var(--danger),color-mix(in srgb,var(--danger) 80%, #6b0a0a 20%));
       border:0;
-      color:#000;
+      color:#fff;
       font-weight:700;
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
     }
     .btn-primary-danger:hover{
       background:linear-gradient(90deg,color-mix(in srgb,var(--danger) 92%, #fff 8%),color-mix(in srgb,var(--danger) 82%, #fff 18%));
+    }
+    [data-theme=\"light\"] .btn:not(.btn-primary):not(.btn-primary-danger),
+    [data-theme=\"light\"] button:not(.btn-primary):not(.btn-primary-danger){
+      background:#edf3f9;
+      border-color:rgba(46,58,72,.24);
+    }
+    [data-theme=\"light\"] .btn:not(.btn-primary):not(.btn-primary-danger):hover,
+    [data-theme=\"light\"] button:not(.btn-primary):not(.btn-primary-danger):hover{
+      background:#e4ecf4;
+    }
+    [data-theme=\"light\"] .btn-primary{
+      background:linear-gradient(90deg,var(--primary),var(--primary-container));
+      color:var(--on-primary);
+    }
+    [data-theme=\"light\"] .btn-primary:hover{
+      background:linear-gradient(90deg,color-mix(in srgb,var(--primary) 94%, #fff 6%),color-mix(in srgb,var(--primary-container) 94%, #fff 6%));
+    }
+    [data-theme=\"light\"] .btn-primary{
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.14);
+    }
+    [data-theme=\"light\"] .btn-primary-danger{
+      background:linear-gradient(90deg,#c72231,#a31221);
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);
+    }
+    [data-theme=\"light\"] .btn-primary-danger:hover{
+      background:linear-gradient(90deg,#d02b3a,#ab1624);
+    }
+    [data-theme=\"light\"] .btn-danger{
+      color:#a81f2a;
+      background:rgba(180,35,44,.08);
+      border-color:rgba(180,35,44,.28);
     }
     .btn-danger{color:var(--danger)}
     .btn-disabled,button:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
@@ -3062,9 +3112,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .btn-progress{color:transparent !important}
     .btn-progress::after{content:"";position:absolute;left:50%;top:50%;width:12px;height:12px;margin-left:-6px;margin-top:-6px;border-radius:999px;border:2px solid color-mix(in srgb,var(--on-primary) 70%, transparent);border-top-color:var(--on-primary);animation:spin .8s linear infinite}
     .toggle{display:inline-flex;align-items:center;gap:8px}
-    .toggle input{appearance:none;width:38px;height:20px;border-radius:999px;background:var(--surface-highest);position:relative;border:1px solid var(--line);cursor:pointer}
-    .toggle input::after{content:\"\";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:999px;background:#e5e2e1;transition:transform .15s ease}
-    .toggle input:checked{background:var(--accent-soft)}.toggle input:checked::after{transform:translateX(18px);background:var(--primary)}
+    .toggle input{appearance:none;width:38px;height:20px;border-radius:999px;background:var(--toggle-track-off);position:relative;border:1px solid var(--line);cursor:pointer}
+    .toggle input::after{content:\"\";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:999px;background:var(--toggle-knob-off);box-shadow:0 1px 2px rgba(0,0,0,.18);transition:transform .15s ease}
+    .toggle input:checked{background:var(--toggle-track-on)}.toggle input:checked::after{transform:translateX(18px);background:var(--toggle-knob-on)}
     input,select{background:var(--surface-highest);border:1px solid var(--line);color:var(--text);border-radius:var(--radius);padding:7px 8px}
     .stepper{display:inline-flex;align-items:center;gap:6px}.stepper input{width:66px;text-align:center;background:var(--surface-black);border:1px solid var(--line);border-radius:var(--radius);padding:6px 4px;appearance:textfield;-moz-appearance:textfield;font-family:\"JetBrains Mono\",monospace}
     .stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
@@ -3079,7 +3129,26 @@ def render_ui_html(default_interval: float, token: str) -> str:
     th.no-sort{cursor:default}
     th.sorted{color:var(--text)}
     .sort-indicator{display:inline-block;margin-left:6px;font-size:10px;opacity:.85;vertical-align:middle}
-    tbody tr{background:var(--surface-card)} tbody tr:nth-child(even){background:var(--surface-high)} tbody tr:hover{background:var(--surface-highest)}
+    tbody tr{background:var(--surface-card);transition:background .18s ease, box-shadow .18s ease, transform .18s ease} tbody tr:nth-child(even){background:var(--surface-high)} tbody tr:hover{background:var(--surface-highest)}
+    tbody tr.switch-row-pending{
+      animation:rowPendingPulse 1.5s ease-in-out infinite;
+      box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 32%, transparent);
+    }
+    @keyframes rowPendingPulse{
+      0%,100%{
+        background:color-mix(in srgb,var(--surface-card) 90%, transparent);
+        box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 18%, transparent);
+      }
+      50%{
+        background:color-mix(in srgb,var(--primary) 12%, var(--surface-high));
+        box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 42%, transparent), 0 0 18px color-mix(in srgb,var(--accent-glow) 32%, transparent);
+      }
+    }
+    tbody tr.switch-row-activated{animation:rowActivatePulse .95s ease-out 1}
+    @keyframes rowActivatePulse{
+      0%{box-shadow:inset 0 0 0 9999px color-mix(in srgb,var(--primary) 22%, transparent),0 8px 28px color-mix(in srgb,var(--accent-glow) 24%, transparent)}
+      100%{box-shadow:inset 0 0 0 9999px transparent,0 0 0 transparent}
+    }
     tbody td{font-size:13px}
     .email-cell{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .reset-cell,.added-cell{white-space:nowrap;font-size:12px}.id-cell{max-width:320px;word-break:break-word;line-height:1.2;font-size:12px}.note-cell{white-space:nowrap}
@@ -3413,14 +3482,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <div class=\"app-version\">v__UI_VERSION__</div>
         <button id=\"themeIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Theme: auto\" aria-label=\"Cycle theme\">◐</button>
         <button id=\"debugIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Debug mode\" aria-label=\"Toggle debug mode\">
-          <svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\">
-            <path d=\"M9 6l-2-2M15 6l2-2\"/>
-            <path d=\"M8.5 10.5h7\"/>
-            <path d=\"M12 8c3 0 5 2.2 5 5v2.5a5 5 0 1 1-10 0V13c0-2.8 2-5 5-5Z\"/>
-            <path d=\"M5 12H3M21 12h-2M5 16H3M21 16h-2\"/>
+          <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\" focusable=\"false\">
+            <path d=\"M1.8 2.2h12.4c.66 0 1.2.54 1.2 1.2v9.2c0 .66-.54 1.2-1.2 1.2H1.8c-.66 0-1.2-.54-1.2-1.2V3.4c0-.66.54-1.2 1.2-1.2z\"/>
+            <path d=\"M4.1 5.1l2.2 2-2.2 2v-4z\" fill=\"var(--surface-highest)\"/>
+            <rect x=\"7.4\" y=\"8.4\" width=\"4.4\" height=\"1.3\" rx=\"0.65\" fill=\"var(--surface-highest)\"/>
           </svg>
         </button>
-        <button id=\"settingsToggleBtn\" class=\"settings-toggle-btn\" type=\"button\" title=\"Hide settings\" aria-label=\"Toggle settings\" aria-pressed=\"false\">⚙</button>
+        <button id=\"settingsToggleBtn\" class=\"settings-toggle-btn\" type=\"button\" title=\"Hide settings\" aria-label=\"Toggle settings\" aria-pressed=\"false\">
+          <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\" focusable=\"false\">
+            <path d=\"M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.46 1.46 0 0 1-2.105.872l-.31-.17c-1.25-.69-2.65.71-1.96 1.96l.17.31a1.46 1.46 0 0 1-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.46 1.46 0 0 1 .872 2.105l-.17.31c-.69 1.25.71 2.65 1.96 1.96l.31-.17a1.46 1.46 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.46 1.46 0 0 1 2.105-.872l.31.17c1.25.69 2.65-.71 1.96-1.96l-.17-.31a1.46 1.46 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.46 1.46 0 0 1-.872-2.105l.17-.31c.69-1.25-.71-2.65-1.96-1.96l-.31.17a1.46 1.46 0 0 1-2.105-.872l-.1-.34zM8 10.3A2.3 2.3 0 1 1 8 5.7a2.3 2.3 0 0 1 0 4.6z\"/>
+          </svg>
+        </button>
       </div>
     </section>
     <select id=\"themeSelect\" style=\"display:none\"><option value=\"auto\">Auto</option><option value=\"dark\">Dark</option><option value=\"light\">Light</option></select>
@@ -3440,7 +3512,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
             <span class=\"setting-label\">Refresh Interval (sec)</span>
             <div class=\"stepper\" data-stepper><button id=\"intervalDec\" data-stepper-dec type=\"button\">-</button><input id=\"intervalInput\" type=\"number\" min=\"1\" step=\"1\" value=\"__INTERVAL_INT__\" /><button id=\"intervalInc\" data-stepper-inc type=\"button\">+</button></div>
           </div>
-          <button id=\"refreshBtn\" class=\"btn btn-block settings-footer-btn\">Refresh</button>
+          <div class=\"settings-footer-actions\">
+            <button id=\"refreshBtn\" class=\"btn btn-block settings-footer-btn\">Refresh</button>
+            <button id=\"killAllBtn\" class=\"btn btn-block settings-footer-btn btn-primary-danger\">Kill All</button>
+          </div>
         </section>
 
         <section class=\"control-card notify-card settings-card\">
@@ -3480,7 +3555,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
           <div class=\"exec-actions\">
             <button id=\"asRunSwitchBtn\" class=\"btn btn-block settings-footer-btn\">Run Switch</button>
             <button id=\"asRapidTestBtn\" class=\"btn btn-block settings-footer-btn\">Rapid Test</button>
-            <button id=\"asForceStopBtn\" class=\"btn btn-block settings-footer-btn btn-danger\">Force Stop</button>
+            <button id=\"asForceStopBtn\" class=\"btn btn-block settings-footer-btn btn-danger\">Stop Tests</button>
             <button id=\"asTestAutoSwitchBtn\" class=\"btn btn-block settings-footer-btn\">Test Auto Switch</button>
           </div>
         </div>
@@ -3589,7 +3664,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
           <section class=\"guide-block\">
             <h4>Auto-Switch Rules</h4>
             <ul>
-              <li><b>Execution</b>: toggle <b>Enabled</b>, set <b>Delay (sec)</b>, run <b>Run Switch</b>/<b>Rapid Test</b>/<b>Force Stop</b>/<b>Test Auto Switch</b>.</li>
+              <li><b>Execution</b>: toggle <b>Enabled</b>, set <b>Delay (sec)</b>, run <b>Run Switch</b>/<b>Rapid Test</b>/<b>Stop Tests</b>/<b>Test Auto Switch</b>.</li>
               <li><b>Selection Policy</b>: choose ranking mode and set switch thresholds.</li>
               <li><b>Switch Chain Preview</b> shows current order; <b>Edit</b> supports manual reorder.</li>
               <li><b>Auto Arrange</b> recalculates chain ordering from current usage.</li>
@@ -4320,12 +4395,37 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const method = String(options?.method || "GET").toUpperCase();
     const startedAt = Date.now();
     const shouldTrace = shouldTraceRequest(path, method);
+    const timeoutMsRaw = Number(options?.timeoutMs || 0);
+    const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(0, Math.floor(timeoutMsRaw)) : 0;
     if(shouldTrace) pushOverlayLog("ui", `api.request ${method} ${path}`);
     let res;
+    let timeoutHandle = null;
+    let timeoutController = null;
+    const fetchOptions = { ...options };
+    delete fetchOptions.timeoutMs;
+    if(timeoutMs > 0){
+      timeoutController = new AbortController();
+      const callerSignal = options?.signal || null;
+      if(callerSignal){
+        if(callerSignal.aborted){
+          timeoutController.abort();
+        } else {
+          callerSignal.addEventListener("abort", () => timeoutController && timeoutController.abort(), { once: true });
+        }
+      }
+      fetchOptions.signal = timeoutController.signal;
+      timeoutHandle = setTimeout(() => {
+        try { timeoutController && timeoutController.abort(); } catch(_) {}
+      }, timeoutMs);
+    }
     try {
-      res = await fetch(path, options);
+      res = await fetch(path, fetchOptions);
     } catch(e){
+      if(timeoutHandle) clearTimeout(timeoutHandle);
       if(e && e.name === "AbortError"){
+        if(timeoutMs > 0){
+          throw new Error(`timeout after ${Math.round(timeoutMs/1000)}s`);
+        }
         throw e;
       }
       pushOverlayLog("error", `api.network ${method} ${path}`, {
@@ -4334,6 +4434,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       });
       throw e;
     }
+    if(timeoutHandle) clearTimeout(timeoutHandle);
     const body = await res.json().catch(() => ({ok:false,error:{message:"bad json"}}));
     if(!res.ok || !body.ok){
       const code = body?.error?.code || "";
@@ -4370,7 +4471,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   async function safeGet(path, options={}){
     try { return await callApi(path, options); }
     catch(e){
-      if(e && e.name === "AbortError") return { __aborted: true };
+      if(e && e.name === "AbortError") return { __aborted: true, __error: "request aborted" };
       return {__error:e.message};
     }
   }
@@ -4664,6 +4765,43 @@ def render_ui_html(default_interval: float, token: str) -> str:
     });
     return [...current.map(x=>x.r), ...others.map(x=>x.r)];
   }
+  function waitMs(ms){
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+  }
+  async function animateSwitchRowToTop(name, fromRect=null){
+    const tbody = byId("rows", false);
+    if(!tbody) return;
+    const source = tbody.querySelector(`tr[data-row-name="${CSS.escape(String(name || ""))}"]`);
+    if(!source) return;
+    if(fromRect && Number.isFinite(fromRect.top) && Number.isFinite(fromRect.left)){
+      const dstRect = source.getBoundingClientRect();
+      const dx = fromRect.left - dstRect.left;
+      const dy = fromRect.top - dstRect.top;
+      if(Math.abs(dx) > 2 || Math.abs(dy) > 2){
+        source.style.position = "relative";
+        source.style.zIndex = "3";
+        source.style.transition = "none";
+        source.style.transform = `translate(${dx}px, ${dy}px)`;
+        source.style.boxShadow = "0 14px 34px color-mix(in srgb,var(--accent-glow) 34%, transparent)";
+        void source.offsetWidth;
+        source.classList.add("switch-row-activated");
+        source.style.transition = "transform .72s cubic-bezier(0.2, 0.9, 0.2, 1), box-shadow .72s ease";
+        source.style.transform = "translate(0, 0)";
+        source.style.boxShadow = "0 10px 22px color-mix(in srgb,var(--accent-glow) 18%, transparent)";
+        await waitMs(760);
+        source.classList.remove("switch-row-activated");
+        source.style.transition = "";
+        source.style.transform = "";
+        source.style.boxShadow = "";
+        source.style.position = "";
+        source.style.zIndex = "";
+        return;
+      }
+    }
+    source.classList.add("switch-row-activated");
+    await waitMs(240);
+    source.classList.remove("switch-row-activated");
+  }
   function renderSortIndicators(){
     document.querySelectorAll("th[data-sort]").forEach((th) => {
       const key = th.dataset.sort;
@@ -4898,9 +5036,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
       byId("modalBody").textContent = opts.body || "";
       const okBtn = byId("modalOkBtn", false);
       const cancelBtn = byId("modalCancelBtn", false);
-      if(okBtn) okBtn.textContent = opts.okText || "OK";
+      if(okBtn){
+        okBtn.textContent = opts.okText || "OK";
+        okBtn.className = `btn ${opts.okClass || "btn-primary"}`;
+      }
       if(cancelBtn){
         cancelBtn.textContent = opts.cancelText || "Cancel";
+        cancelBtn.className = `btn ${opts.cancelClass || ""}`.trim() || "btn";
         cancelBtn.style.display = opts.hideCancel ? "none" : "";
       }
       const input = byId("modalInput");
@@ -4922,9 +5064,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
   }
 
   async function setEligibility(name, eligible){ await postApi("/api/auto-switch/account-eligibility", { name, eligible }); }
-  const IS_WINDOWS_CLIENT = /windows/i.test((navigator && navigator.userAgent) || "");
+  const IS_MAC_CLIENT = /mac os|macintosh/i.test((navigator && navigator.userAgent) || "");
   function switchRequestBody(name){
-    return IS_WINDOWS_CLIENT ? { name, close_only: true } : { name };
+    if(IS_MAC_CLIENT) return { name };
+    return { name, close_only: true, no_restart: true };
   }
   async function switchProfile(name){
     await postApi("/api/switch", switchRequestBody(name));
@@ -4940,14 +5083,24 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(switchInFlight){
       return;
     }
+    let startRect = null;
+    try{
+      const row = byId("rows", false)?.querySelector(`tr[data-row-name="${CSS.escape(target)}"]`);
+      if(row){
+        const rect = row.getBoundingClientRect();
+        startRect = { left: rect.left, top: rect.top };
+      }
+    } catch(_) {}
     switchInFlight = true;
     switchPendingName = target;
     renderSwitchProgressState();
     try{
-      const ok = await runAction("local.switch", () => switchProfile(target), { usageTimeoutSec: 1, usageForce: true });
-      if(ok){
-        setTimeout(() => { refreshAll({ usageTimeoutSec: 5, usageForce: true }).catch(() => {}); }, 450);
-      }
+      await switchProfile(target);
+      await refreshAll({ usageTimeoutSec: 8, usageForce: true, showLoading: false });
+      switchInFlight = false;
+      renderSwitchProgressState();
+      await waitMs(70);
+      await animateSwitchRowToTop(target, startRect);
     } finally {
       switchInFlight = false;
       switchPendingName = "";
@@ -5108,22 +5261,71 @@ def render_ui_html(default_interval: float, token: str) -> str:
   function renderTable(usage){
     const tbody = byId("rows"); tbody.innerHTML="";
     const mobileRows = byId("mobileRows", false); if(mobileRows) mobileRows.innerHTML = "";
-    const mapped = (usage?.profiles || []).map(p => ({...p, saved_at_ts: p.saved_at ? Date.parse(p.saved_at) || 0 : 0 }));
-    const rows = applySort(mapped);
+    const mappedUsage = (usage?.profiles || []).map(p => ({...p, saved_at_ts: p.saved_at ? Date.parse(p.saved_at) || 0 : 0 }));
+    const mappedFallback = (latestData?.list?.profiles || []).map(p => ({
+      name: p?.name || "",
+      email: "",
+      account_id: p?.account_id || "",
+      usage_5h: { remaining_percent: null, resets_at: null, text: "-" },
+      usage_weekly: { remaining_percent: null, resets_at: null, text: "-" },
+      plan_type: null,
+      is_paid: null,
+      is_current: false,
+      same_principal: !!p?.same_principal,
+      error: null,
+      saved_at: p?.saved_at || null,
+      auto_switch_eligible: !!p?.auto_switch_eligible,
+      loading_usage: true,
+      saved_at_ts: p?.saved_at ? Date.parse(p.saved_at) || 0 : 0,
+    }));
+    const rows = applySort(mappedUsage.length ? mappedUsage : mappedFallback);
+    const appendMinimalRows = () => {
+      const base = (latestData?.list?.profiles || []).map((p) => ({
+        name: p?.name || "-",
+        account_id: p?.account_id || "-",
+        saved_at: p?.saved_at || null,
+      }));
+      for(const p of base){
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td data-col="cur"><span class="status-dot"></span></td>
+          <td data-col="profile">${escHtml(p.name)}</td>
+          <td data-col="email" class="email-cell">loading...</td>
+          <td data-col="h5">${renderUsageMeter(null, true, false)}</td>
+          <td data-col="h5remain" class="reset-cell loading-text">loading...</td>
+          <td data-col="h5reset" class="reset-cell">-</td>
+          <td data-col="weekly">${renderUsageMeter(null, true, false)}</td>
+          <td data-col="weeklyremain" class="reset-cell loading-text">loading...</td>
+          <td data-col="weeklyreset" class="reset-cell">-</td>
+          <td data-col="plan">-</td>
+          <td data-col="paid">-</td>
+          <td data-col="id" class="id-cell" title="${escHtml(p.account_id)}">${escHtml(p.account_id)}</td>
+          <td data-col="added" class="added-cell">${fmtSavedAt(p.saved_at || "-")}</td>
+          <td data-col="note" class="note-cell"></td>
+          <td data-col="auto"><input type="checkbox" disabled /></td>
+          <td data-col="actions"><div class="actions-cell"><button class="btn btn-disabled" disabled>Switch</button><button class="btn actions-menu-btn btn-disabled" disabled>⋯</button></div></td>
+        `;
+        tbody.appendChild(tr);
+      }
+    };
     for(const p of rows){
-      const tr=document.createElement("tr");
-      const statusClass = p.is_current ? "active" : "";
-      const h5Loading = isUsageLoadingState(p.usage_5h, p.error, p.loading_usage);
-      const wLoading = isUsageLoadingState(p.usage_weekly, p.error, p.loading_usage);
-      const h5Flash = shouldBlinkUsage(p.name, "h5", h5Loading);
-      const wFlash = shouldBlinkUsage(p.name, "weekly", wLoading);
-      const h5RemainTs = Number(p.usage_5h?.resets_at || 0) || "";
-      const wRemainTs = Number(p.usage_weekly?.resets_at || 0) || "";
-      const switchTarget = switchInFlight && switchPendingName === p.name;
-      const disableSwitch = p.is_current || switchInFlight;
-      const wPct = usagePercentNumber(p.usage_weekly);
-      const badWeekly = Number.isFinite(wPct) && wPct <= 0;
-      tr.innerHTML = `
+      try{
+        const tr=document.createElement("tr");
+        tr.dataset.rowName = p.name || "";
+        const statusClass = p.is_current ? "active" : "";
+        const h5Loading = isUsageLoadingState(p.usage_5h, p.error, p.loading_usage);
+        const wLoading = isUsageLoadingState(p.usage_weekly, p.error, p.loading_usage);
+        const h5Flash = shouldBlinkUsage(p.name, "h5", h5Loading);
+        const wFlash = shouldBlinkUsage(p.name, "weekly", wLoading);
+        const h5RemainTs = Number(p.usage_5h?.resets_at || 0) || "";
+        const wRemainTs = Number(p.usage_weekly?.resets_at || 0) || "";
+        const switchTarget = switchInFlight && switchPendingName === p.name;
+        if(switchTarget) tr.classList.add("switch-row-pending");
+        const h5Pct = usagePercentNumber(p.usage_5h);
+        const wPct = usagePercentNumber(p.usage_weekly);
+        const quotaBlocked = (Number.isFinite(h5Pct) && h5Pct <= 0) || (Number.isFinite(wPct) && wPct <= 0);
+        const disableSwitch = p.is_current || switchInFlight;
+        tr.innerHTML = `
         <td data-col="cur"><span class="status-dot ${statusClass}"></span></td>
         <td data-col="profile">${p.name}</td>
         <td data-col="email" class="email-cell" title="${(p.email || "-").replace(/"/g,'&quot;')}">${p.email || "-"}</td>
@@ -5139,10 +5341,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <td data-col="added" class="added-cell">${fmtSavedAt(p.saved_at || "-")}</td>
         <td data-col="note" class="note-cell">${p.same_principal ? '<span class="badge">same-principal</span>' : ''}</td>
         <td data-col="auto"><input type="checkbox" data-auto="${p.name}" ${p.auto_switch_eligible ? "checked" : ""} /></td>
-        <td data-col="actions"><div class="actions-cell"><button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${disableSwitch ? "btn-disabled" : ""} ${switchTarget ? "btn-progress" : ""}" data-switch="${p.name}" ${disableSwitch ? "disabled" : ""}>Switch</button><button class="btn actions-menu-btn" data-row-actions="${p.name}">⋯</button></div></td>
+        <td data-col="actions"><div class="actions-cell"><button class="${quotaBlocked ? "btn-primary-danger" : "btn-primary"} ${disableSwitch ? "btn-disabled" : ""} ${switchTarget ? "btn-progress" : ""}" data-switch="${p.name}" ${disableSwitch ? "disabled" : ""}>Switch</button><button class="btn actions-menu-btn" data-row-actions="${p.name}">⋯</button></div></td>
       `;
-      tbody.appendChild(tr);
-      if(mobileRows){
+        tbody.appendChild(tr);
+        if(mobileRows){
         const h5PctVal = usagePercentNumber(p.usage_5h);
         const wPctVal = usagePercentNumber(p.usage_weekly);
         const h5Class = usageClass(h5PctVal);
@@ -5158,7 +5360,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <span class="mobile-profile">${p.name || "-"}</span>
             </div>
             <div class="mobile-actions">
-              <button class="${badWeekly ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
+              <button class="${quotaBlocked ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
               <button class="btn actions-menu-btn" data-mobile-row-actions="${p.name}">⋯</button>
             </div>
           </div>
@@ -5210,8 +5412,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
             openRowActionsModal(mobileRowActionsBtn.dataset.mobileRowActions);
           });
         }
-        mobileRows.appendChild(mrow);
+          mobileRows.appendChild(mrow);
+        }
+      } catch(e){
+        pushOverlayLog("error", "render.row_failed", { name: p?.name || "", error: e?.message || String(e) });
       }
+    }
+    if(tbody.children.length === 0){
+      appendMinimalRows();
     }
     applyColumnVisibility();
     refreshRemainCountdowns();
@@ -5349,7 +5557,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(pendingConfigSaves > 0){
       try { await configSaveQueue; } catch(_) {}
     }
-    const usageTimeoutSec = Math.max(1, Number(runOpts?.usageTimeoutSec || 3));
+    const usageTimeoutSec = Math.max(1, Number(runOpts?.usageTimeoutSec || 8));
     const usageForce = !!runOpts?.usageForce;
     const usagePath = `/api/usage-local?timeout=${encodeURIComponent(String(usageTimeoutSec))}${usageForce ? "&force=true" : ""}`;
     setError("");
@@ -5363,11 +5571,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     try{
       const phase1Started = Date.now();
-      const [config, autoState, current, list] = await Promise.all([
-        safeGet("/api/ui-config"),
-        safeGet("/api/auto-switch/state"),
-        safeGet("/api/current"),
-        safeGet("/api/list"),
+      const phase1TimeoutMs = Math.max(2000, Number(runOpts?.phase1TimeoutMs || 4500));
+      let [config, autoState, current, list] = await Promise.all([
+        safeGet("/api/ui-config", { timeoutMs: phase1TimeoutMs }),
+        safeGet("/api/auto-switch/state", { timeoutMs: phase1TimeoutMs }),
+        safeGet("/api/current", { timeoutMs: phase1TimeoutMs }),
+        safeGet("/api/list", { timeoutMs: phase1TimeoutMs }),
       ]);
       if(!config.__error){
         latestData.config = config;
@@ -5390,6 +5599,23 @@ def render_ui_html(default_interval: float, token: str) -> str:
       }
       if(!list.__error){
         latestData.list = list;
+      } else {
+        const listRetry = await safeGet("/api/list", { timeoutMs: 12000 });
+        if(!listRetry.__error){
+          list = listRetry;
+          latestData.list = listRetry;
+          pushOverlayLog("ui", "refresh.list.retry.success");
+        }
+      }
+      if(!current.__error){
+        latestData.current = current;
+      } else {
+        const currentRetry = await safeGet("/api/current", { timeoutMs: 8000 });
+        if(!currentRetry.__error){
+          current = currentRetry;
+          latestData.current = currentRetry;
+          pushOverlayLog("ui", "refresh.current.retry.success");
+        }
       }
       pushOverlayLog("ui", "refresh.phase1", { duration_ms: Date.now() - phase1Started });
 
@@ -5404,7 +5630,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
           const pendingUsage = buildUsageLoadingSnapshot(
             latestData.usage,
             latestData.list,
-            current,
+            latestData.current || current,
             "request pending",
             true,
           );
@@ -5412,10 +5638,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
           renderTable(pendingUsage);
         }
       }
+      const phase2TimeoutMs = Math.max(4000, Number(runOpts?.phase2TimeoutMs || 12000));
       const [usage, autoChain, eventsPayload] = await Promise.all([
-        safeGet(usagePath),
-        safeGet("/api/auto-switch/chain"),
-        safeGet("/api/events?since_id="+encodeURIComponent(String(lastEventId))),
+        safeGet(usagePath, { timeoutMs: Math.max(phase2TimeoutMs, (usageTimeoutSec + 4) * 1000) }),
+        safeGet("/api/auto-switch/chain", { timeoutMs: phase2TimeoutMs }),
+        safeGet("/api/events?since_id="+encodeURIComponent(String(lastEventId)), { timeoutMs: phase2TimeoutMs }),
       ]);
       usageFetchBlinkActive = false;
       if(!usage.__error){
@@ -5434,11 +5661,26 @@ def render_ui_html(default_interval: float, token: str) -> str:
           latestData.usage = sessionUsageCache;
           renderTable(sessionUsageCache);
         } else {
-          const fallbackUsage = buildUsageLoadingSnapshot(latestData.usage, latestData.list, current, usage.__error);
+          const fallbackUsage = buildUsageLoadingSnapshot(latestData.usage, latestData.list, latestData.current || current, usage.__error);
           latestData.usage = fallbackUsage;
           renderTable(fallbackUsage);
         }
         setError((byId("error").textContent ? byId("error").textContent + "\\n" : "") + "usage: " + usage.__error);
+      }
+      const renderedRows = byId("rows", false)?.children?.length || 0;
+      if(renderedRows === 0 && latestData.list && Array.isArray(latestData.list.profiles) && latestData.list.profiles.length){
+        const forcedSnapshot = buildUsageLoadingSnapshot(
+          latestData.usage,
+          latestData.list,
+          latestData.current || current,
+          "request pending",
+          true,
+        );
+        if(forcedSnapshot && Array.isArray(forcedSnapshot.profiles) && forcedSnapshot.profiles.length){
+          latestData.usage = forcedSnapshot;
+          renderTable(forcedSnapshot);
+          pushOverlayLog("ui", "refresh.rows.forced_from_list", { count: forcedSnapshot.profiles.length });
+        }
       }
       if(!autoChain.__error){
         latestData.autoChain = autoChain;
@@ -5521,7 +5763,56 @@ def render_ui_html(default_interval: float, token: str) -> str:
           loadGuideReleaseNotes(true).catch(() => {});
         });
       }
-      byId("refreshBtn").addEventListener("click", () => refreshAll({ showLoading: true, clearUsageCache: true }));
+      byId("refreshBtn").addEventListener("click", async () => {
+        const btn = byId("refreshBtn", false);
+        const prev = btn ? (btn.textContent || "Refresh") : "Refresh";
+        if(btn){
+          btn.disabled = true;
+          btn.textContent = "Refreshing...";
+        }
+        try{
+          const waitStart = Date.now();
+          while(refreshRunning && (Date.now() - waitStart) < 8000){
+            await waitMs(60);
+          }
+          await refreshAll({ showLoading: true, clearUsageCache: true });
+        } finally {
+          if(btn){
+            btn.disabled = false;
+            btn.textContent = prev;
+          }
+        }
+      });
+      byId("killAllBtn").addEventListener("click", async ()=>{
+        const ask = await openModal({
+          title: "Kill All",
+          body: "Stop all Codex Account Manager processes and close this page?\\n\\nThis will force-stop current operations.",
+          okText: "Kill All",
+          okClass: "btn-primary-danger",
+          cancelText: "Cancel",
+        });
+        if(!ask || !ask.ok) return;
+        const btn = byId("killAllBtn", false);
+        const prev = btn ? (btn.textContent || "Kill All") : "Kill All";
+        if(btn){
+          btn.disabled = true;
+          btn.textContent = "Killing...";
+        }
+        setError("");
+        try{
+          await postApi("/api/system/kill-all", {});
+          setTimeout(() => {
+            try { window.close(); } catch(_) {}
+            try { location.replace("about:blank"); } catch(_) {}
+          }, 160);
+        } catch(e){
+          setError(e?.message || String(e));
+          if(btn){
+            btn.disabled = false;
+            btn.textContent = prev;
+          }
+        }
+      });
       byId("themeSelect").addEventListener("change", async (e) => { applyTheme(e.target.value); await saveUiConfigPatch({ ui: { theme: e.target.value } }); });
       const themeBtn = byId("themeIconBtn", false);
       if(themeBtn){
@@ -5659,7 +5950,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       });
       byId("asRunSwitchBtn").addEventListener("click", ()=> runAction("auto_switch.run_switch", ()=>postApi("/api/auto-switch/run-switch", {})));
       byId("asRapidTestBtn").addEventListener("click", ()=> runAction("auto_switch.rapid_test", ()=>postApi("/api/auto-switch/rapid-test", {})));
-      byId("asForceStopBtn").addEventListener("click", ()=> runAction("auto_switch.stop", ()=>postApi("/api/auto-switch/stop", {})));
+      byId("asForceStopBtn").addEventListener("click", ()=> runAction("auto_switch.stop_tests", ()=>postApi("/api/auto-switch/stop-tests", {})));
       byId("asTestAutoSwitchBtn").addEventListener("click", async ()=>{
         const ask = await openModal({
           title: "Test Auto Switch",
@@ -6074,6 +6365,8 @@ def _candidate_score(row: dict, cfg: dict) -> tuple[float, tuple]:
     mode = auto.get("ranking_mode", "balanced")
     r5 = _remaining_pct(row, "usage_5h")
     rw = _remaining_pct(row, "usage_weekly")
+    exhausted_5h = r5 is not None and float(r5) <= 0.0
+    exhausted_weekly = rw is not None and float(rw) <= 0.0
     r5n = float(r5 if r5 is not None else 0.0)
     rwn = float(rw if rw is not None else 0.0)
     s5 = _reset_score(((row.get("usage_5h") or {}).get("resets_at")), 5.0 * 3600.0)
@@ -6084,7 +6377,13 @@ def _candidate_score(row: dict, cfg: dict) -> tuple[float, tuple]:
         score = rwn
     else:
         score = 0.40 * r5n + 0.35 * rwn + 0.15 * s5 + 0.10 * sw
+    if exhausted_5h:
+        score -= 1000.0
+    if exhausted_weekly:
+        score -= 800.0
     tie = (
+        1 if not exhausted_5h else 0,
+        1 if not exhausted_weekly else 0,
         rwn,
         r5n,
         _normalized_saved_at_ts(row.get("saved_at")),
@@ -6137,7 +6436,13 @@ def _choose_auto_switch_candidate(usage_payload: dict, cfg: dict):
             continue
         if same_policy == "skip" and bool(r.get("same_principal")):
             continue
-        if _remaining_pct(r, "usage_5h") is None and _remaining_pct(r, "usage_weekly") is None:
+        rem_5h = _remaining_pct(r, "usage_5h")
+        rem_weekly = _remaining_pct(r, "usage_weekly")
+        if rem_5h is None and rem_weekly is None:
+            continue
+        if rem_5h is not None and rem_5h <= 0:
+            continue
+        if rem_weekly is not None and rem_weekly <= 0:
             continue
         score, tie = _candidate_score(r, cfg)
         cands.append((score, tie, r))
@@ -6219,32 +6524,18 @@ def _ordered_chain_names(usage_payload: dict, cfg: dict) -> list[str]:
             if bool(r.get("is_current")) and r.get("name"):
                 current_name = str(r.get("name"))
                 break
-    row_by_name: dict[str, dict] = {}
     ranked: list[tuple[float, tuple, dict]] = []
     for r in rows:
         name = r.get("name")
         if not name:
             continue
-        name_s = str(name)
-        row_by_name[name_s] = r
-        if current_name and name_s == current_name:
+        if current_name and str(name) == current_name:
             continue
         score, tie = _candidate_score(r, cfg)
         ranked.append((score, tie, r))
     ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    fallback = ([str(current_name)] if current_name else []) + [str(x[2].get("name")) for x in ranked if x[2].get("name")]
-    manual = _manual_chain_from_cfg(cfg)
-    merged: list[str] = []
-    seen = set()
-    for nm in manual:
-        if nm in row_by_name and nm not in seen:
-            seen.add(nm)
-            merged.append(nm)
-    for nm in fallback:
-        if nm in row_by_name and nm not in seen:
-            seen.add(nm)
-            merged.append(nm)
-    return merged
+    chain = ([str(current_name)] if current_name else []) + [str(x[2].get("name")) for x in ranked if x[2].get("name")]
+    return chain
 
 
 def _manual_live_queue(usage_payload: dict, cfg: dict) -> list[str]:
@@ -6319,7 +6610,13 @@ def _manual_live_queue(usage_payload: dict, cfg: dict) -> list[str]:
                 continue
             if same_policy == "skip" and bool(r.get("same_principal")):
                 continue
-            if _remaining_pct(r, "usage_5h") is None and _remaining_pct(r, "usage_weekly") is None:
+            rem_5h = _remaining_pct(r, "usage_5h")
+            rem_weekly = _remaining_pct(r, "usage_weekly")
+            if rem_5h is None and rem_weekly is None:
+                continue
+            if rem_5h is not None and rem_5h <= 0:
+                continue
+            if rem_weekly is not None and rem_weekly <= 0:
                 continue
             elig.add(nm)
         for nm in dropped:
@@ -6428,6 +6725,8 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
         "rapid_test_stop": threading.Event(),
         "rapid_test_wait_sec": None,
         "rapid_test_step": 0,
+        "test_run_active": False,
+        "test_stop": threading.Event(),
         "switch_lock": threading.RLock(),
         "switch_in_flight": False,
         "switch_target": "",
@@ -6596,6 +6895,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             "rapid_test_started_at_text": epoch_to_text(runtime.get("rapid_test_started_at")),
             "rapid_test_wait_sec": runtime.get("rapid_test_wait_sec"),
             "rapid_test_step": int(runtime.get("rapid_test_step") or 0),
+            "test_run_active": bool(runtime.get("test_run_active", False)),
         }
 
     def _run_rapid_test():
@@ -6888,7 +7188,8 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 error_rows = 0
                 profile_rows = result.get("profiles", []) if isinstance(result, dict) else []
                 for row in profile_rows if isinstance(profile_rows, list) else []:
-                    if isinstance(row, dict) and str(row.get("error", "")).strip():
+                    err_val = row.get("error") if isinstance(row, dict) else None
+                    if isinstance(err_val, str) and err_val.strip():
                         error_rows += 1
                 if duration_ms >= 1200:
                     log_runtime(
@@ -6931,18 +7232,21 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     return _json_error("MISSING_NAME", "profile name is required")
                 restart = not bool_value(body.get("no_restart"), False)
                 close_only = bool_value(body.get("close_only"), False)
+                if close_only:
+                    restart = False
                 preferred_restart_app = ""
                 preferred_restart_exec = ""
-                if restart and sys.platform.startswith("win"):
+                if restart:
                     try:
                         preferred_restart_app = detect_running_app_name() or ""
                     except Exception:
                         preferred_restart_app = ""
+                if restart and sys.platform.startswith("win"):
                     try:
                         preferred_restart_exec = _detect_running_codex_executable_windows() or ""
                     except Exception:
                         preferred_restart_exec = ""
-                if close_only and sys.platform.startswith("win"):
+                if close_only:
                     try:
                         stop_codex()
                         _log_runtime_safe(
@@ -7008,11 +7312,68 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 cfg = config_service.patch({"auto_switch": {"enabled": False}})
                 invalidate_usage_cache("auto-switch-stop")
                 runtime["rapid_test_stop"].set()
+                runtime["test_stop"].set()
                 runtime["pending_warning"] = None
                 runtime["pending_switch_due_at"] = None
                 runtime["last_switch_ts"] = None
                 push_event("auto-switch-stop", "auto-switch force-stopped and pending state cleared")
                 return _json_ok({"enabled": False, "runtime": auto_switch_state_payload(load_cam_config()), "config": cfg})
+            if self.command == "POST" and path == "/api/auto-switch/stop-tests":
+                runtime["rapid_test_stop"].set()
+                runtime["test_stop"].set()
+                push_event("auto-switch-stop-tests", "test flows stop requested")
+                return _json_ok({"stopped": True, "runtime": auto_switch_state_payload(load_cam_config())})
+            if self.command == "POST" and path == "/api/system/kill-all":
+                cfg = config_service.patch({"auto_switch": {"enabled": False}})
+                invalidate_usage_cache("system-kill-all")
+                runtime["rapid_test_stop"].set()
+                runtime["test_stop"].set()
+                runtime["pending_warning"] = None
+                runtime["pending_switch_due_at"] = None
+                runtime["last_switch_ts"] = None
+                runtime["stop_event"].set()
+                push_event("system-kill-all", "kill-all requested from UI")
+
+                current_pid = os.getpid()
+                target_port = int(port)
+                candidate_pids: set[int] = set()
+                info = read_ui_pid_info() or {}
+                pid_from_file = info.get("pid")
+                if isinstance(pid_from_file, int) and pid_from_file > 0:
+                    candidate_pids.add(pid_from_file)
+                for listener_pid in _pids_listening_on_port(target_port):
+                    if isinstance(listener_pid, int) and listener_pid > 0:
+                        candidate_pids.add(listener_pid)
+
+                def _deferred_shutdown():
+                    time.sleep(0.45)
+                    try:
+                        _kill_cam_processes(exclude_pids={current_pid})
+                    except Exception:
+                        pass
+                    for pid in sorted(candidate_pids):
+                        if pid == current_pid:
+                            continue
+                        try:
+                            stop_ui_process(int(pid))
+                        except Exception:
+                            pass
+                    try:
+                        clear_ui_pid_info()
+                    except Exception:
+                        pass
+                    try:
+                        if sys.platform.startswith("win"):
+                            subprocess.run(["taskkill", "/PID", str(current_pid), "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        else:
+                            os.kill(current_pid, signal.SIGTERM)
+                    except Exception:
+                        pass
+                    time.sleep(0.3)
+                    os._exit(0)
+
+                threading.Thread(target=_deferred_shutdown, daemon=True).start()
+                return _json_ok({"scheduled": True, "will_close_page": True, "port": target_port, "config": cfg})
             if self.command == "POST" and path == "/api/auto-switch/rapid-test":
                 if runtime.get("rapid_test_active"):
                     return _json_error("RAPID_TEST_BUSY", "rapid test is already running", 409)
@@ -7142,6 +7503,8 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 cfg_before = load_cam_config()
                 auto_before = copy.deepcopy(cfg_before.get("auto_switch") or {})
                 start_id = int(runtime.get("next_event_id", 1)) - 1
+                runtime["test_run_active"] = True
+                runtime["test_stop"].clear()
                 push_event("auto-switch-test", "auto-switch test started", {"threshold_5h": threshold_5h, "timeout_sec": timeout_sec})
                 try:
                     cfg_test = load_cam_config()
@@ -7157,6 +7520,18 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     deadline = time.time() + timeout_sec
                     switched_ev = None
                     while time.time() < deadline:
+                        if runtime["test_stop"].is_set():
+                            push_event("auto-switch-test", "auto-switch test stopped by user")
+                            return _json_ok(
+                                {
+                                    "switched": False,
+                                    "stopped": True,
+                                    "event": None,
+                                    "events": [ev for ev in runtime["events"] if int(ev.get("id", 0)) > start_id][-30:],
+                                    "used_threshold_5h": threshold_5h,
+                                    "timeout_sec": timeout_sec,
+                                }
+                            )
                         for ev in runtime["events"]:
                             eid = int(ev.get("id", 0))
                             if eid <= start_id:
@@ -7193,6 +7568,8 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     cfg_restore = load_cam_config()
                     cfg_restore["auto_switch"] = auto_before
                     save_cam_config(cfg_restore)
+                    runtime["test_run_active"] = False
+                    runtime["test_stop"].clear()
             if self.command == "POST" and path == "/api/local/save":
                 name = str(body.get("name", "")).strip()
                 if not name:
@@ -7546,6 +7923,65 @@ def stop_ui_process(pid: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def _kill_cam_processes(exclude_pids: set[int] | None = None) -> int:
+    excludes = set(exclude_pids or set())
+    killed = 0
+    if sys.platform.startswith("win"):
+        ps = shutil.which("powershell") or shutil.which("pwsh")
+        if not ps:
+            return 0
+        script = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "$targets=Get-CimInstance Win32_Process | Where-Object {"
+            "$cmd=($_.CommandLine + '').ToLower();"
+            "$cmd -like '*codex_account_manager*' -or $cmd -like '*bin\\\\codex-account*' -or $cmd -like '*codex-account ui*' -or $cmd -like '*codex-account ui-service*'"
+            "};"
+            "$k=0;"
+            "foreach($t in $targets){"
+            "  try { Stop-Process -Id $t.ProcessId -Force -ErrorAction Stop; $k++ } catch {}"
+            "};"
+            "Write-Output $k"
+        )
+        try:
+            proc = subprocess.run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=6)
+            if proc.returncode == 0:
+                out = (proc.stdout or "").strip()
+                return int(out) if out.isdigit() else 0
+        except Exception:
+            return 0
+        return 0
+
+    try:
+        p = subprocess.run(["ps", "-eo", "pid=,command="], capture_output=True, text=True, timeout=4)
+        if p.returncode != 0:
+            return 0
+        for line in (p.stdout or "").splitlines():
+            row = line.strip()
+            if not row:
+                continue
+            parts = row.split(None, 1)
+            if not parts or not parts[0].isdigit():
+                continue
+            pid = int(parts[0])
+            if pid in excludes or pid == os.getpid():
+                continue
+            cmd = parts[1].lower() if len(parts) > 1 else ""
+            if (
+                "codex_account_manager" in cmd
+                or "bin/codex-account" in cmd
+                or "codex-account ui" in cmd
+                or "codex-account ui-service" in cmd
+            ):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    killed += 1
+                except Exception:
+                    pass
+    except Exception:
+        return killed
+    return killed
 
 
 def wait_ui_stopped(host: str, port: int, timeout_sec: float = 6.0) -> bool:

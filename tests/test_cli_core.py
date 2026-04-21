@@ -167,6 +167,33 @@ class CliCoreTests(unittest.TestCase):
         self.assertTrue(breached)
         self.assertTrue(detail["h5_hit"])
 
+    def test_choose_auto_switch_candidate_skips_exhausted_quota_accounts(self):
+        cfg = {"auto_switch": {"ranking_mode": "balanced"}}
+        payload = {
+            "current_profile": "acc1",
+            "profiles": [
+                {"name": "acc1", "auto_switch_eligible": True, "usage_5h": {"remaining_percent": 12}, "usage_weekly": {"remaining_percent": 70}},
+                {"name": "acc2", "auto_switch_eligible": True, "usage_5h": {"remaining_percent": 0}, "usage_weekly": {"remaining_percent": 95}},
+                {"name": "acc3", "auto_switch_eligible": True, "usage_5h": {"remaining_percent": 90}, "usage_weekly": {"remaining_percent": 80}},
+            ],
+        }
+        cand = cli._choose_auto_switch_candidate(payload, cfg)
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand.get("name"), "acc3")
+
+    def test_ordered_chain_balanced_mode_ignores_manual_chain_override(self):
+        cfg = {"auto_switch": {"ranking_mode": "balanced", "manual_chain": ["acc1", "acc2", "acc3"]}}
+        payload = {
+            "current_profile": "acc1",
+            "profiles": [
+                {"name": "acc1", "usage_5h": {"remaining_percent": 10}, "usage_weekly": {"remaining_percent": 50}},
+                {"name": "acc2", "usage_5h": {"remaining_percent": 20}, "usage_weekly": {"remaining_percent": 20}},
+                {"name": "acc3", "usage_5h": {"remaining_percent": 95}, "usage_weekly": {"remaining_percent": 95}},
+            ],
+        }
+        chain = cli._ordered_chain_names(payload, cfg)
+        self.assertEqual(chain, ["acc1", "acc3", "acc2"])
+
 
 if __name__ == "__main__":
     unittest.main()
