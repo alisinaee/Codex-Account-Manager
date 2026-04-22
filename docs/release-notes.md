@@ -6,6 +6,29 @@ This file tracks user-visible changes by version.
 
 No unreleased entries yet.
 
+## 0.0.10
+
+### UI and Workflow Refresh
+
+- Merged Add Account into a single dialog that captures the profile name, explains login modes, and keeps device-login URL/code actions in one place.
+- Split panel refresh behavior into `Current Account Auto Refresh` and `Auto Refresh All`, with the all-accounts path sweeping accounts one by one instead of batch-refreshing everything every tick.
+- Added a toolbar `Restart` action in the panel, kept `Refresh` as the manual full-sync action, and refined button color semantics for refresh/restart/remove flows in both dark and light themes.
+- Improved in-panel spacing and density for refresh controls, alarm thresholds, and switch thresholds to better use available card space.
+
+### Table, Row Actions, and Guidance
+
+- Added broader tooltip coverage across panel controls, account actions, headers, and dialogs to explain visible UI behavior without opening docs.
+- Updated destructive row actions and account-toolbar destructive buttons to render with clearer red warning semantics.
+- Improved light-theme status-dot visibility and inactive-dot styling for the `STS` column.
+- Refreshed in-app `Guide & Help` content so it matches the current controls, refresh model, login flow, and auth-handling behavior.
+
+### Current Account and Auth Reliability
+
+- Fixed current-account detection so the active Codex account is resolved correctly even when live tokens rotate and the saved profile snapshot is not byte-identical.
+- Fixed current-row usage fetching to read from the live active auth session instead of a stale saved profile snapshot.
+- Added automatic sync from the live active auth back into the matching saved profile snapshot after a healthy current-account usage refresh, reducing stale-token drift for future refreshes.
+- Replaced misleading `0% / unknown` failure states for broken auth rows with clearer auth-error signaling such as `auth expired`.
+
 ## 0.0.8
 
 ### UI and Workflow Improvements

@@ -55,7 +55,7 @@ CAM_LOG_MAX_BYTES = 2 * 1024 * 1024
 CAM_LOG_BACKUPS = 4
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.9"
+DEFAULT_APP_VERSION = "0.0.10"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
@@ -180,8 +180,10 @@ DEFAULT_CAM_CONFIG = {
     "ui": {
         "theme": "auto",
         "advanced_mode": False,
-        "auto_refresh": True,
-        "refresh_interval_sec": 5,
+        "current_auto_refresh_enabled": True,
+        "current_refresh_interval_sec": 5,
+        "all_auto_refresh_enabled": False,
+        "all_refresh_interval_min": 5,
         "debug_mode": False,
     },
     "notifications": {
@@ -648,14 +650,21 @@ def clamp_float(value, default: float, minimum: float = 0.0, maximum: float = 1e
 
 def sanitize_cam_config(raw: dict) -> dict:
     cfg = copy.deepcopy(DEFAULT_CAM_CONFIG)
+    raw_ui = raw.get("ui", {}) if isinstance(raw, dict) and isinstance(raw.get("ui"), dict) else {}
     if isinstance(raw, dict):
         deep_merge(cfg, raw)
 
     ui = cfg.get("ui", {})
     ui["theme"] = ui.get("theme") if ui.get("theme") in ("dark", "light", "auto") else "auto"
     ui["advanced_mode"] = bool(ui.get("advanced_mode", False))
-    ui["auto_refresh"] = bool(ui.get("auto_refresh", True))
-    ui["refresh_interval_sec"] = clamp_int(ui.get("refresh_interval_sec"), 5, minimum=1, maximum=3600)
+    legacy_auto_refresh = bool(raw_ui.get("auto_refresh", True))
+    legacy_refresh_interval = clamp_int(raw_ui.get("refresh_interval_sec"), 5, minimum=1, maximum=3600)
+    ui["current_auto_refresh_enabled"] = bool(raw_ui.get("current_auto_refresh_enabled", legacy_auto_refresh))
+    ui["current_refresh_interval_sec"] = clamp_int(raw_ui.get("current_refresh_interval_sec"), legacy_refresh_interval, minimum=1, maximum=3600)
+    ui["all_auto_refresh_enabled"] = bool(raw_ui.get("all_auto_refresh_enabled", ui.get("all_auto_refresh_enabled", False)))
+    ui["all_refresh_interval_min"] = clamp_int(raw_ui.get("all_refresh_interval_min"), 5, minimum=1, maximum=60)
+    ui.pop("auto_refresh", None)
+    ui.pop("refresh_interval_sec", None)
     ui["debug_mode"] = bool(ui.get("debug_mode", False))
     cfg["ui"] = ui
 
@@ -1901,6 +1910,47 @@ def write_profile(name: str, source_auth: Path, source_label: str, overwrite: bo
     print(f"account: {meta['account_hint']}")
 
 
+def sync_profile_auth_snapshot(name: str, source_auth: Path, source_label: str | None = None) -> bool:
+    name = (name or "").strip()
+    if not name or not source_auth.exists():
+        return False
+    target_dir = PROFILES_DIR / name
+    if not target_dir.exists():
+        return False
+    target_auth = target_dir / "auth.json"
+    try:
+        source_canonical = json.dumps(load_json(source_auth), sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return False
+    try:
+        target_canonical = json.dumps(load_json(target_auth), sort_keys=True, separators=(",", ":")) if target_auth.exists() else None
+    except Exception:
+        target_canonical = None
+    if target_canonical == source_canonical:
+        return False
+    shutil.copy2(source_auth, target_auth)
+    _set_private_permissions(target_auth)
+
+    meta_path = target_dir / "meta.json"
+    meta: dict = {}
+    if meta_path.exists():
+        try:
+            loaded = load_json(meta_path)
+            if isinstance(loaded, dict):
+                meta = loaded
+        except Exception:
+            meta = {}
+    meta["name"] = name
+    meta["account_hint"] = account_hint_from_auth(target_auth)
+    meta["source_auth"] = source_label or str(source_auth)
+    meta["last_synced_at"] = dt.datetime.now().isoformat()
+    if not meta.get("saved_at"):
+        meta["saved_at"] = dt.datetime.now().isoformat()
+    with meta_path.open("w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    return True
+
+
 def cmd_save(name: str, overwrite: bool) -> int:
     ensure_dirs()
     if not AUTH_FILE.exists():
@@ -2047,11 +2097,9 @@ def cmd_list(as_json: bool = False) -> int:
     return 0
 
 
-def collect_usage_local_data(timeout_sec: int, config: dict | None = None):
+def _build_usage_profile_context(config: dict | None = None):
     ensure_dirs()
     profiles = sorted([p for p in PROFILES_DIR.iterdir() if p.is_dir()])
-    if not profiles:
-        return {"refreshed_at": dt.datetime.now().isoformat(), "current_profile": None, "profiles": []}
     cfg = config if isinstance(config, dict) else load_cam_config()
     eligibility = ((cfg.get("profiles") or {}).get("eligibility") or {})
 
@@ -2063,6 +2111,22 @@ def collect_usage_local_data(timeout_sec: int, config: dict | None = None):
             return None
 
     active_canonical = canonical_auth(AUTH_FILE) if AUTH_FILE.exists() else None
+    active_principal_id = None
+    active_email = ""
+    if AUTH_FILE.exists():
+        try:
+            active_data = load_json(AUTH_FILE)
+            active_principal_id = _principal_id_from_data(active_data)
+            tokens = active_data.get("tokens", {}) if isinstance(active_data.get("tokens"), dict) else {}
+            id_token = tokens.get("id_token") or active_data.get("id_token")
+            if isinstance(id_token, str) and id_token:
+                payload = decode_jwt_payload(id_token) or {}
+                maybe_email = payload.get("email")
+                if maybe_email:
+                    active_email = str(maybe_email).strip().lower()
+        except Exception:
+            active_principal_id = None
+            active_email = ""
     principal_counts: dict[str, int] = {}
     profile_meta: dict[str, dict] = {}
     for p in profiles:
@@ -2094,54 +2158,104 @@ def collect_usage_local_data(timeout_sec: int, config: dict | None = None):
             principal_counts[pid] = principal_counts.get(pid, 0) + 1
         profile_meta[p.name] = entry
 
-    json_rows = []
     current_profile = None
     for p in profiles:
-        auth_path = p / "auth.json"
-        meta_path = p / "meta.json"
-        entry = profile_meta.get(p.name) or {}
-        display_email = entry.get("email", "-")
-        saved_at = None
-        if meta_path.exists():
-            try:
-                meta = load_json(meta_path)
-                saved_at = meta.get("saved_at")
-            except Exception:
-                saved_at = None
-        account_id = str(entry.get("account_id", "-") or "-")
-        principal_id = entry.get("principal_id")
-        usage_5h, usage_weekly, plan_type, is_paid, err = fetch_usage_from_auth(auth_path, timeout_sec=timeout_sec)
-        cell_5h = format_usage_cell(*(usage_5h or (None, None)))
-        cell_weekly = format_usage_cell(*(usage_weekly or (None, None)))
-        profile_canonical = entry.get("canonical")
-        is_current = bool(active_canonical is not None and profile_canonical and profile_canonical == active_canonical)
-        if is_current:
+        profile_canonical = (profile_meta.get(p.name) or {}).get("canonical")
+        if active_canonical is not None and profile_canonical and profile_canonical == active_canonical:
             current_profile = p.name
-        same = bool(principal_id and int(principal_counts.get(str(principal_id), 0)) > 1)
-        json_rows.append(
-            {
-                "name": p.name,
-                "email": display_email,
-                "account_id": account_id,
-                "usage_5h": {
-                    "remaining_percent": usage_5h[0] if usage_5h else None,
-                    "resets_at": usage_5h[1] if usage_5h else None,
-                    "text": cell_5h,
-                },
-                "usage_weekly": {
-                    "remaining_percent": usage_weekly[0] if usage_weekly else None,
-                    "resets_at": usage_weekly[1] if usage_weekly else None,
-                    "text": cell_weekly,
-                },
-                "plan_type": plan_type,
-                "is_paid": is_paid,
-                "is_current": is_current,
-                "same_principal": same,
-                "error": err or None,
-                "saved_at": saved_at,
-                "auto_switch_eligible": bool(eligibility.get(p.name, False)),
-            }
-        )
+            break
+    if current_profile is None and active_principal_id:
+        for p in profiles:
+            if str((profile_meta.get(p.name) or {}).get("principal_id") or "") == str(active_principal_id):
+                current_profile = p.name
+                break
+    if current_profile is None and active_email:
+        for p in profiles:
+            profile_email = str((profile_meta.get(p.name) or {}).get("email") or "").strip().lower()
+            if profile_email and profile_email == active_email:
+                current_profile = p.name
+                break
+
+    return {
+        "profiles": profiles,
+        "cfg": cfg,
+        "eligibility": eligibility,
+        "profile_meta": profile_meta,
+        "principal_counts": principal_counts,
+        "current_profile": current_profile,
+    }
+
+
+def _build_usage_profile_row(profile_dir: Path, context: dict, timeout_sec: int) -> dict:
+    cfg = context.get("cfg") or {}
+    eligibility = context.get("eligibility") or {}
+    profile_meta = context.get("profile_meta") or {}
+    principal_counts = context.get("principal_counts") or {}
+    current_profile = str(context.get("current_profile") or "")
+    p = profile_dir
+    auth_path = p / "auth.json"
+    if current_profile and p.name == current_profile and AUTH_FILE.exists():
+        # The active Codex session may refresh tokens after a switch, so the live auth
+        # file is more accurate than the saved profile snapshot for the current row.
+        auth_path = AUTH_FILE
+    meta_path = p / "meta.json"
+    entry = profile_meta.get(p.name) or {}
+    display_email = entry.get("email", "-")
+    saved_at = None
+    if meta_path.exists():
+        try:
+            meta = load_json(meta_path)
+            saved_at = meta.get("saved_at")
+        except Exception:
+            saved_at = None
+    account_id = str(entry.get("account_id", "-") or "-")
+    principal_id = entry.get("principal_id")
+    usage_5h, usage_weekly, plan_type, is_paid, err = fetch_usage_from_auth(auth_path, timeout_sec=timeout_sec)
+    if current_profile and p.name == current_profile and auth_path == AUTH_FILE and err is None:
+        try:
+            sync_profile_auth_snapshot(p.name, AUTH_FILE, str(AUTH_FILE))
+        except Exception:
+            pass
+    cell_5h = format_usage_cell(*(usage_5h or (None, None)))
+    cell_weekly = format_usage_cell(*(usage_weekly or (None, None)))
+    same = bool(principal_id and int(principal_counts.get(str(principal_id), 0)) > 1)
+    return {
+        "name": p.name,
+        "email": display_email,
+        "account_id": account_id,
+        "usage_5h": {
+            "remaining_percent": usage_5h[0] if usage_5h else None,
+            "resets_at": usage_5h[1] if usage_5h else None,
+            "text": cell_5h,
+        },
+        "usage_weekly": {
+            "remaining_percent": usage_weekly[0] if usage_weekly else None,
+            "resets_at": usage_weekly[1] if usage_weekly else None,
+            "text": cell_weekly,
+        },
+        "plan_type": plan_type,
+        "is_paid": is_paid,
+        "is_current": bool(current_profile and p.name == current_profile),
+        "same_principal": same,
+        "error": err or None,
+        "saved_at": saved_at,
+        "auto_switch_eligible": bool(eligibility.get(p.name, False)),
+    }
+
+
+def collect_usage_local_data(timeout_sec: int, config: dict | None = None, profile_names: list[str] | None = None):
+    context = _build_usage_profile_context(config=config)
+    profiles = context.get("profiles") or []
+    current_profile = context.get("current_profile")
+    if not profiles:
+        return {"refreshed_at": dt.datetime.now().isoformat(), "current_profile": None, "profiles": []}
+    selected_names = None
+    if profile_names is not None:
+        selected_names = {str(name).strip() for name in profile_names if str(name).strip()}
+    selected_profiles = [p for p in profiles if selected_names is None or p.name in selected_names]
+    json_rows = []
+    for p in selected_profiles:
+        json_rows.append(_build_usage_profile_row(p, context, timeout_sec))
     return {"refreshed_at": dt.datetime.now().isoformat(), "current_profile": current_profile, "profiles": json_rows}
 
 
@@ -2955,6 +3069,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .control-card,.rules-col{background:var(--surface-card);border:1px solid var(--line);border-radius:var(--radius);padding:12px;display:flex;flex-direction:column;gap:10px}
     .group-title,.rules-title{font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.12em}
     .settings-card{padding:14px 14px 12px;gap:12px}
+    .notify-card{
+      display:grid;
+      grid-template-rows:auto minmax(48px,1fr) auto;
+      align-content:stretch;
+    }
     .settings-card .group-title{
       font-family:Inter,"Segoe UI",-apple-system,sans-serif;
       font-size:14px;
@@ -2970,6 +3089,25 @@ def render_ui_html(default_interval: float, token: str) -> str:
       justify-content:space-between;
       gap:12px;
       padding:0 2px;
+    }
+    .refresh-setting-row{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      align-items:center;
+      column-gap:16px;
+    }
+    .refresh-setting-controls{
+      justify-self:end;
+      display:inline-flex;
+      align-items:center;
+      gap:0;
+    }
+    .refresh-inline-stepper{
+      gap:10px;
+      margin-right:24px;
+    }
+    .refresh-setting-toggle{
+      justify-self:end;
     }
     .setting-label{
       font-family:Inter,"Segoe UI",-apple-system,sans-serif;
@@ -2987,12 +3125,30 @@ def render_ui_html(default_interval: float, token: str) -> str:
       letter-spacing:.07em;
     }
     .setting-row.metric .stepper{margin-left:auto}
+    .metric-pair-grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+    .metric-pair-grid .setting-row{
+      min-width:0;
+      margin:0;
+    }
+    .metric-pair-grid .setting-label{
+      white-space:nowrap;
+    }
+    .metric-pair-grid .stepper{
+      flex-shrink:0;
+    }
+    .notify-card .metric-pair-grid{
+      align-self:end;
+    }
     .btn-block{width:100%;display:flex;align-items:center;justify-content:center}
     .settings-footer-btn{margin-top:auto}
     .settings-footer-actions{
       margin-top:auto;
       display:grid;
-      grid-template-columns:1fr 1fr;
+      grid-template-columns:1fr 1fr 1fr;
       gap:8px;
       width:100%;
     }
@@ -3083,56 +3239,110 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--gap)}
     @media (max-width:1360px){.controls-grid{grid-template-columns:1fr 1fr}}
     @media (max-width:1040px){.topnav{display:none}.brand{font-size:20px}.container{padding:14px}h1{font-size:28px}}
-    @media (max-width:760px){.controls-grid,.rules-grid,.grid-2,.grid-3{grid-template-columns:1fr}}
+    @media (max-width:760px){
+      .controls-grid,.rules-grid,.grid-2,.grid-3{grid-template-columns:1fr}
+      .metric-pair-grid{grid-template-columns:1fr}
+      .refresh-setting-row{
+        grid-template-columns:1fr;
+        row-gap:10px;
+      }
+      .refresh-setting-controls,.refresh-setting-toggle{
+        justify-self:start;
+      }
+    }
     .btn,button,input,select{font-family:Inter,\"Segoe UI\",-apple-system,sans-serif}
     .btn,button{border:1px solid var(--line);background:var(--surface-highest);color:var(--text);border-radius:var(--radius);padding:8px 11px;cursor:pointer;transition:background .15s,opacity .15s,color .15s}
     .btn:hover,button:hover{background:var(--surface-high)}
-    .btn-primary{
+    .btn-primary,
+    .btn.btn-primary,
+    button.btn-primary{
       background:linear-gradient(90deg,var(--primary),var(--primary-container));
       border:0;
       color:var(--on-primary);
       font-weight:700;
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);
     }
-    .btn-primary:hover{
+    .btn-primary:hover,
+    .btn.btn-primary:hover,
+    button.btn-primary:hover{
       background:linear-gradient(90deg,color-mix(in srgb,var(--primary) 94%, #fff 6%),color-mix(in srgb,var(--primary-container) 94%, #fff 6%));
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
     }
-    .btn-primary-danger{
+    .btn-primary-danger,
+    .btn.btn-primary-danger,
+    button.btn-primary-danger{
       background:linear-gradient(90deg,var(--danger),color-mix(in srgb,var(--danger) 80%, #6b0a0a 20%));
       border:0;
       color:#fff;
       font-weight:700;
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
     }
-    .btn-primary-danger:hover{
+    .btn-primary-danger:hover,
+    .btn.btn-primary-danger:hover,
+    button.btn-primary-danger:hover{
       background:linear-gradient(90deg,color-mix(in srgb,var(--danger) 92%, #fff 8%),color-mix(in srgb,var(--danger) 82%, #fff 18%));
     }
-    [data-theme=\"light\"] .btn:not(.btn-primary):not(.btn-primary-danger),
-    [data-theme=\"light\"] button:not(.btn-primary):not(.btn-primary-danger){
+    .btn-warning,
+    .btn.btn-warning,
+    button.btn-warning{
+      background:linear-gradient(90deg,var(--warn),color-mix(in srgb,var(--warn) 82%, #7a5200 18%));
+      border:0;
+      color:#1f1600;
+      font-weight:700;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.1);
+    }
+    .btn-warning:hover,
+    .btn.btn-warning:hover,
+    button.btn-warning:hover{
+      background:linear-gradient(90deg,color-mix(in srgb,var(--warn) 92%, #fff 8%),color-mix(in srgb,var(--warn) 84%, #fff 16%));
+    }
+    [data-theme=\"light\"] .btn:not(.btn-primary):not(.btn-primary-danger):not(.btn-warning):not(.action-btn),
+    [data-theme=\"light\"] button:not(.btn-primary):not(.btn-primary-danger):not(.btn-warning):not(.action-btn){
       background:#edf3f9;
       border-color:rgba(46,58,72,.24);
     }
-    [data-theme=\"light\"] .btn:not(.btn-primary):not(.btn-primary-danger):hover,
-    [data-theme=\"light\"] button:not(.btn-primary):not(.btn-primary-danger):hover{
+    [data-theme=\"light\"] .btn:not(.btn-primary):not(.btn-primary-danger):not(.btn-warning):not(.action-btn):hover,
+    [data-theme=\"light\"] button:not(.btn-primary):not(.btn-primary-danger):not(.btn-warning):not(.action-btn):hover{
       background:#e4ecf4;
     }
-    [data-theme=\"light\"] .btn-primary{
+    [data-theme=\"light\"] .btn-primary,
+    [data-theme=\"light\"] .btn.btn-primary,
+    [data-theme=\"light\"] button.btn-primary{
       background:linear-gradient(90deg,var(--primary),var(--primary-container));
       color:var(--on-primary);
     }
-    [data-theme=\"light\"] .btn-primary:hover{
+    [data-theme=\"light\"] .btn-primary:hover,
+    [data-theme=\"light\"] .btn.btn-primary:hover,
+    [data-theme=\"light\"] button.btn-primary:hover{
       background:linear-gradient(90deg,color-mix(in srgb,var(--primary) 94%, #fff 6%),color-mix(in srgb,var(--primary-container) 94%, #fff 6%));
     }
-    [data-theme=\"light\"] .btn-primary{
+    [data-theme=\"light\"] .btn-primary,
+    [data-theme=\"light\"] .btn.btn-primary,
+    [data-theme=\"light\"] button.btn-primary{
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.14);
     }
-    [data-theme=\"light\"] .btn-primary-danger{
+    [data-theme=\"light\"] .btn-primary-danger,
+    [data-theme=\"light\"] .btn.btn-primary-danger,
+    [data-theme=\"light\"] button.btn-primary-danger{
       background:linear-gradient(90deg,#c72231,#a31221);
       box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);
     }
-    [data-theme=\"light\"] .btn-primary-danger:hover{
+    [data-theme=\"light\"] .btn-primary-danger:hover,
+    [data-theme=\"light\"] .btn.btn-primary-danger:hover,
+    [data-theme=\"light\"] button.btn-primary-danger:hover{
       background:linear-gradient(90deg,#d02b3a,#ab1624);
+    }
+    [data-theme=\"light\"] .btn-warning,
+    [data-theme=\"light\"] .btn.btn-warning,
+    [data-theme=\"light\"] button.btn-warning{
+      background:linear-gradient(90deg,#e0aa1b,#c78900);
+      color:#241700;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.14);
+    }
+    [data-theme=\"light\"] .btn-warning:hover,
+    [data-theme=\"light\"] .btn.btn-warning:hover,
+    [data-theme=\"light\"] button.btn-warning:hover{
+      background:linear-gradient(90deg,#e8b62f,#d19105);
     }
     [data-theme=\"light\"] .btn-danger{
       color:#a81f2a;
@@ -3208,8 +3418,24 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .usage-cell.updated .usage-meter{animation:none}
     .usage-cell.updated .usage-fill.blink{animation:usageBarBlink 1.1s ease-in-out infinite}
     .mobile-stat .updated{animation:usagePulse .72s ease-in-out 2}
-    .status-dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--text-soft);box-shadow:0 0 6px color-mix(in srgb,var(--text-soft) 30%, transparent)}
-    .status-dot.active{background:var(--primary);box-shadow:0 0 10px var(--accent-glow)}.status-dot.warn{background:var(--warn)}.status-dot.danger{background:var(--danger)}
+    .status-dot{display:inline-block;width:10px;height:10px;border-radius:999px;background:var(--text-soft);box-shadow:0 0 0 1px color-mix(in srgb,var(--surface-low) 75%, transparent),0 0 6px color-mix(in srgb,var(--text-soft) 30%, transparent)}
+    .status-dot.active{background:var(--primary);box-shadow:0 0 0 1px color-mix(in srgb,var(--surface-low) 78%, transparent),0 0 10px var(--accent-glow)}.status-dot.warn{background:var(--warn)}.status-dot.danger{background:var(--danger)}
+    [data-theme=\"light\"] .status-dot{
+      background:#b7c3d1;
+      box-shadow:0 0 0 2px rgba(255,255,255,.96), 0 0 0 1px rgba(124,141,160,.16), inset 0 1px 0 rgba(255,255,255,.55);
+    }
+    [data-theme=\"light\"] .status-dot.active{
+      background:#0f9b52;
+      box-shadow:0 0 0 2px rgba(255,255,255,.98), 0 0 0 1px rgba(15,155,82,.22), 0 4px 10px rgba(15,155,82,.24);
+    }
+    [data-theme=\"light\"] .status-dot.warn{
+      background:#9a6e00;
+      box-shadow:0 0 0 2px rgba(255,255,255,.98), 0 0 0 1px rgba(154,110,0,.2), 0 4px 10px rgba(154,110,0,.18);
+    }
+    [data-theme=\"light\"] .status-dot.danger{
+      background:#b4232c;
+      box-shadow:0 0 0 2px rgba(255,255,255,.98), 0 0 0 1px rgba(180,35,44,.2), 0 4px 10px rgba(180,35,44,.18);
+    }
     .badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:1px 7px;font-size:11px;color:var(--text-soft)}
     th[data-col="actions"],td[data-col="actions"]{text-align:right;white-space:nowrap}
     td[data-col="actions"]{width:1%}
@@ -3249,10 +3475,35 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .action-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;padding:10px 12px;border:1px solid var(--line-soft);background:var(--surface-high);color:var(--text);border-radius:var(--radius);cursor:pointer}
     .action-btn:hover{background:var(--surface-highest)}
     .action-btn .hint{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-soft)}
-    .action-btn.danger{color:var(--danger-soft);border-color:var(--danger-banner-border);background:var(--danger-bg)}
-    .action-btn.danger:hover{background:var(--danger-bg-hover)}
-    .device-modal{width:min(620px,94vw);background:color-mix(in srgb,var(--surface-highest) 62%, transparent);backdrop-filter:blur(24px);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+    .action-btn.danger{
+      background:linear-gradient(90deg,var(--danger),color-mix(in srgb,var(--danger) 80%, #6b0a0a 20%));
+      border:0;
+      color:#fff;
+      font-weight:700;
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);
+    }
+    .action-btn.danger:hover{
+      background:linear-gradient(90deg,color-mix(in srgb,var(--danger) 92%, #fff 8%),color-mix(in srgb,var(--danger) 82%, #fff 18%));
+    }
+    .action-btn.danger .hint{color:rgba(255,255,255,.9)}
+    [data-theme=\"light\"] .action-btn.danger{
+      background:linear-gradient(90deg,#c72231,#a31221);
+      box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);
+    }
+    [data-theme=\"light\"] .action-btn.danger:hover{
+      background:linear-gradient(90deg,#d02b3a,#ab1624);
+    }
+    .device-modal{width:min(700px,96vw);background:color-mix(in srgb,var(--surface-highest) 62%, transparent);backdrop-filter:blur(24px);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
     .device-modal h3{margin:0 0 8px 0}
+    .device-intro{margin:0 0 10px 0;color:var(--text-soft);font-size:12px}
+    .device-name-row{display:grid;gap:6px;margin:0 0 10px 0}
+    .device-name-row span{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-soft)}
+    .device-name-input{width:100%;font-size:14px;padding:9px 10px}
+    .device-note{margin:0 0 10px 0;background:var(--surface-black);border:1px solid var(--line);border-radius:var(--radius);padding:10px}
+    .device-note-title{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-soft);margin:0 0 6px 0}
+    .device-note ul{margin:0;padding-left:18px;display:grid;gap:4px}
+    .device-note li{font-size:12px;color:var(--text-soft)}
+    .device-note strong{color:var(--text)}
     .device-status{font-size:12px;color:var(--text-soft);margin:0 0 10px 0}
     .device-box{display:grid;gap:8px;background:var(--surface-black);border:1px solid var(--line);border-radius:var(--radius);padding:10px}
     .device-label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-soft)}
@@ -3513,15 +3764,15 @@ def render_ui_html(default_interval: float, token: str) -> str:
       </div>
       <div class=\"app-header-right\">
         <div class=\"app-version\">v__UI_VERSION__</div>
-        <button id=\"themeIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Theme: auto\" aria-label=\"Cycle theme\">◐</button>
-        <button id=\"debugIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Debug mode\" aria-label=\"Toggle debug mode\">
+        <button id=\"themeIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Cycle theme mode between auto, dark, and light.\" aria-label=\"Cycle theme\">◐</button>
+        <button id=\"debugIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Toggle debug mode to show System.Out logs and advanced diagnostics.\" aria-label=\"Toggle debug mode\">
           <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\" focusable=\"false\">
             <path d=\"M1.8 2.2h12.4c.66 0 1.2.54 1.2 1.2v9.2c0 .66-.54 1.2-1.2 1.2H1.8c-.66 0-1.2-.54-1.2-1.2V3.4c0-.66.54-1.2 1.2-1.2z\"/>
             <path d=\"M4.1 5.1l2.2 2-2.2 2v-4z\" fill=\"var(--surface-highest)\"/>
             <rect x=\"7.4\" y=\"8.4\" width=\"4.4\" height=\"1.3\" rx=\"0.65\" fill=\"var(--surface-highest)\"/>
           </svg>
         </button>
-        <button id=\"settingsToggleBtn\" class=\"settings-toggle-btn\" type=\"button\" title=\"Hide settings\" aria-label=\"Toggle settings\" aria-pressed=\"false\">
+        <button id=\"settingsToggleBtn\" class=\"settings-toggle-btn\" type=\"button\" title=\"Show or hide the settings panels to free up screen space.\" aria-label=\"Toggle settings\" aria-pressed=\"false\">
           <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\" focusable=\"false\">
             <path d=\"M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.46 1.46 0 0 1-2.105.872l-.31-.17c-1.25-.69-2.65.71-1.96 1.96l.17.31a1.46 1.46 0 0 1-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.46 1.46 0 0 1 .872 2.105l-.17.31c-.69 1.25.71 2.65 1.96 1.96l.31-.17a1.46 1.46 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.46 1.46 0 0 1 2.105-.872l.31.17c1.25.69 2.65-.71 1.96-1.96l-.17-.31a1.46 1.46 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.46 1.46 0 0 1-.872-2.105l.17-.31c.69-1.25-.71-2.65-1.96-1.96l-.31.17a1.46 1.46 0 0 1-2.105-.872l-.1-.34zM8 10.3A2.3 2.3 0 1 1 8 5.7a2.3 2.3 0 0 1 0 4.6z\"/>
           </svg>
@@ -3537,33 +3788,42 @@ def render_ui_html(default_interval: float, token: str) -> str:
       <div class=\"controls-grid\">
         <section class=\"control-card settings-card\">
           <div class=\"group-title\">Panel Controls</div>
-          <div class=\"setting-row\">
-            <span class=\"setting-label\">Auto Refresh</span>
-            <label class=\"toggle\"><input id=\"autoToggle\" type=\"checkbox\" /></label>
+          <div class=\"setting-row inset-row refresh-setting-row\">
+            <span class=\"setting-label\" title=\"Automatically refresh usage for only the current active account.\">Current Account Auto Refresh</span>
+            <div class=\"field-block refresh-setting-controls\">
+              <div class=\"stepper compact refresh-inline-stepper\" data-stepper title=\"Set how often the current active account refreshes, in seconds.\"><button id=\"currentIntervalDec\" data-stepper-dec type=\"button\" title=\"Decrease current-account refresh interval by 1 second.\">-</button><input id=\"currentIntervalInput\" type=\"number\" min=\"1\" max=\"3600\" step=\"1\" value=\"__INTERVAL_INT__\" title=\"Current-account auto refresh interval in seconds.\" /><button id=\"currentIntervalInc\" data-stepper-inc type=\"button\" title=\"Increase current-account refresh interval by 1 second.\">+</button><span class=\"label\" title=\"Seconds\">sec</span></div>
+              <label class=\"toggle refresh-setting-toggle\" title=\"Enable or disable automatic refresh for the current active account only.\"><input id=\"currentAutoToggle\" type=\"checkbox\" title=\"Enable or disable automatic refresh for the current active account only.\" /></label>
+            </div>
           </div>
-          <div class=\"setting-row inset-row\">
-            <span class=\"setting-label\">Refresh Interval (sec)</span>
-            <div class=\"stepper\" data-stepper><button id=\"intervalDec\" data-stepper-dec type=\"button\">-</button><input id=\"intervalInput\" type=\"number\" min=\"1\" step=\"1\" value=\"__INTERVAL_INT__\" /><button id=\"intervalInc\" data-stepper-inc type=\"button\">+</button></div>
+          <div class=\"setting-row inset-row refresh-setting-row\">
+            <span class=\"setting-label\" title=\"Periodically refresh all saved accounts one by one in the background.\">Auto Refresh All</span>
+            <div class=\"field-block refresh-setting-controls\">
+              <div class=\"stepper compact refresh-inline-stepper\" data-stepper title=\"Set how often all saved accounts are refreshed in the background, in minutes.\"><button id=\"allIntervalDec\" data-stepper-dec type=\"button\" title=\"Decrease all-accounts refresh interval by 1 minute.\">-</button><input id=\"allIntervalInput\" type=\"number\" min=\"1\" max=\"60\" step=\"1\" value=\"5\" title=\"All-accounts background refresh interval in minutes.\" /><button id=\"allIntervalInc\" data-stepper-inc type=\"button\" title=\"Increase all-accounts refresh interval by 1 minute.\">+</button><span class=\"label\" title=\"Minutes\">min</span></div>
+              <label class=\"toggle refresh-setting-toggle\" title=\"Enable or disable background refresh for all saved accounts.\"><input id=\"allAutoToggle\" type=\"checkbox\" title=\"Enable or disable background refresh for all saved accounts.\" /></label>
+            </div>
           </div>
           <div class=\"settings-footer-actions\">
-            <button id=\"refreshBtn\" class=\"btn btn-block settings-footer-btn\">Refresh</button>
-            <button id=\"killAllBtn\" class=\"btn btn-block settings-footer-btn btn-primary-danger\">Kill All</button>
+            <button id=\"refreshBtn\" class=\"btn btn-block settings-footer-btn btn-primary\" title=\"Refresh config, current account state, and usage for all accounts right now.\">Refresh</button>
+            <button id=\"restartBtn\" class=\"btn btn-block settings-footer-btn btn-warning\" title=\"Restart the local UI service without opening a new browser tab.\">Restart</button>
+            <button id=\"killAllBtn\" class=\"btn btn-block settings-footer-btn btn-primary-danger\" title=\"Stop running background Codex account processes. Use only when you need a hard reset.\">Kill All</button>
           </div>
         </section>
 
         <section class=\"control-card notify-card settings-card\">
           <div class=\"group-title\">Alarm</div>
           <div class=\"setting-row\">
-            <span class=\"setting-label\">Enable Sound Alarm</span>
-            <label class=\"toggle\"><input id=\"alarmToggle\" type=\"checkbox\" /></label>
+            <span class=\"setting-label\" title=\"Play a sound alarm and show warnings when usage drops below your thresholds.\">Enable Sound Alarm</span>
+            <label class=\"toggle\" title=\"Turn sound alarms on or off for usage warnings.\"><input id=\"alarmToggle\" type=\"checkbox\" title=\"Turn sound alarms on or off for usage warnings.\" /></label>
           </div>
-          <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">5H alarm %</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"alarm5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
-          </div>
-          <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">Weekly alarm %</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"alarmWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
+          <div class=\"metric-pair-grid\">
+            <div class=\"setting-row metric inset-row\">
+              <span class=\"setting-label\" title=\"Trigger an alarm when 5-hour remaining usage falls below this percentage.\">5H alarm %</span>
+              <div class=\"stepper compact\" data-stepper title=\"5-hour warning threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease 5-hour alarm threshold by 1 percent.\">-</button><input id=\"alarm5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"5-hour warning threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase 5-hour alarm threshold by 1 percent.\">+</button></div>
+            </div>
+            <div class=\"setting-row metric inset-row\">
+              <span class=\"setting-label\" title=\"Trigger an alarm when weekly remaining usage falls below this percentage.\">Weekly alarm %</span>
+              <div class=\"stepper compact\" data-stepper title=\"Weekly warning threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease weekly alarm threshold by 1 percent.\">-</button><input id=\"alarmWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"Weekly warning threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase weekly alarm threshold by 1 percent.\">+</button></div>
+            </div>
           </div>
         </section>
       </div>
@@ -3571,47 +3831,49 @@ def render_ui_html(default_interval: float, token: str) -> str:
 
     <section id=\"autoSwitchRulesSection\" data-settings-section=\"1\" class=\"section card\" style=\"padding:12px;\">
       <div class=\"auto-switch-head\">
-        <div class=\"k\" style=\"margin-bottom:0;\">Auto-Switch Rules</div>
-        <div id=\"asPendingCountdown\" class=\"auto-switch-countdown\">Switch in 00:00</div>
+        <div class=\"k\" style=\"margin-bottom:0;\" title=\"Rules that decide when and how the app should switch accounts automatically.\">Auto-Switch Rules</div>
+        <div id=\"asPendingCountdown\" class=\"auto-switch-countdown\" title=\"Shows how long until the next scheduled automatic switch attempt.\">Switch in 00:00</div>
       </div>
       <div class=\"rules-grid\">
         <div class=\"rules-col settings-card\">
           <div class=\"rules-title\">Execution</div>
           <div class=\"setting-row\">
-            <span class=\"setting-label\">Enabled</span>
-            <label class=\"toggle\"><input id=\"asEnabled\" type=\"checkbox\" /></label>
+            <span class=\"setting-label\" title=\"Allow the app to switch accounts automatically when rules are met.\">Enabled</span>
+            <label class=\"toggle\" title=\"Enable or disable automatic account switching.\"><input id=\"asEnabled\" type=\"checkbox\" title=\"Enable or disable automatic account switching.\" /></label>
           </div>
           <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">Delay (sec)</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"asDelay\" type=\"number\" min=\"0\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
+            <span class=\"setting-label\" title=\"Wait this many seconds after a rule is triggered before switching accounts.\">Delay (sec)</span>
+            <div class=\"stepper compact\" data-stepper title=\"Delay before an automatic switch executes.\"><button data-stepper-dec type=\"button\" title=\"Decrease auto-switch delay by 1 second.\">-</button><input id=\"asDelay\" type=\"number\" min=\"0\" step=\"1\" title=\"Auto-switch delay in seconds.\" /><button data-stepper-inc type=\"button\" title=\"Increase auto-switch delay by 1 second.\">+</button></div>
           </div>
           <div class=\"exec-actions\">
-            <button id=\"asRunSwitchBtn\" class=\"btn btn-block settings-footer-btn\">Run Switch</button>
-            <button id=\"asRapidTestBtn\" class=\"btn btn-block settings-footer-btn\">Rapid Test</button>
-            <button id=\"asForceStopBtn\" class=\"btn btn-block settings-footer-btn btn-danger\">Stop Tests</button>
-            <button id=\"asTestAutoSwitchBtn\" class=\"btn btn-block settings-footer-btn\">Test Auto Switch</button>
+            <button id=\"asRunSwitchBtn\" class=\"btn btn-block settings-footer-btn\" title=\"Run the next switch immediately using the current chain and rules.\">Run Switch</button>
+            <button id=\"asRapidTestBtn\" class=\"btn btn-block settings-footer-btn\" title=\"Run a fast diagnostic pass to test switching behavior.\">Rapid Test</button>
+            <button id=\"asForceStopBtn\" class=\"btn btn-block settings-footer-btn btn-danger\" title=\"Stop running auto-switch test jobs.\">Stop Tests</button>
+            <button id=\"asTestAutoSwitchBtn\" class=\"btn btn-block settings-footer-btn\" title=\"Start a controlled auto-switch test using the current thresholds.\">Test Auto Switch</button>
           </div>
         </div>
         <div class=\"rules-col settings-card\">
           <div class=\"rules-title\">Selection Policy</div>
-          <div class=\"setting-field\"><span class=\"setting-label\">Ranking</span><select id=\"asRanking\"><option value=\"balanced\">balanced</option><option value=\"max_5h\">max_5h</option><option value=\"max_weekly\">max_weekly</option><option value=\"manual\">manual</option></select></div>
-          <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">5H switch %</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"as5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
+          <div class=\"setting-field\"><span class=\"setting-label\" title=\"Choose how candidate accounts are ranked before switching.\">Ranking</span><select id=\"asRanking\" title=\"Select the account ranking mode used for automatic switching.\"><option value=\"balanced\">balanced</option><option value=\"max_5h\">max_5h</option><option value=\"max_weekly\">max_weekly</option><option value=\"manual\">manual</option></select></div>
+          <div class=\"metric-pair-grid\">
+            <div class=\"setting-row metric inset-row\">
+              <span class=\"setting-label\" title=\"Consider switching when 5-hour remaining usage falls below this percentage.\">5H switch %</span>
+              <div class=\"stepper compact\" data-stepper title=\"5-hour switching threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease 5-hour switch threshold by 1 percent.\">-</button><input id=\"as5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"5-hour switch threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase 5-hour switch threshold by 1 percent.\">+</button></div>
+            </div>
+            <div class=\"setting-row metric inset-row\">
+              <span class=\"setting-label\" title=\"Consider switching when weekly remaining usage falls below this percentage.\">Weekly switch %</span>
+              <div class=\"stepper compact\" data-stepper title=\"Weekly switching threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease weekly switch threshold by 1 percent.\">-</button><input id=\"asWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"Weekly switch threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase weekly switch threshold by 1 percent.\">+</button></div>
+            </div>
           </div>
-          <div class=\"setting-row metric inset-row\">
-            <span class=\"setting-label\">Weekly switch %</span>
-            <div class=\"stepper compact\" data-stepper><button data-stepper-dec type=\"button\">-</button><input id=\"asWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" /><button data-stepper-inc type=\"button\">+</button></div>
-          </div>
-          <div id=\"asAutoArrangeRow\" class=\"field-row rules-actions\"><button id=\"asAutoArrangeBtn\" class=\"btn-primary\">Auto Arrange</button></div>
+          <div id=\"asAutoArrangeRow\" class=\"field-row rules-actions\"><button id=\"asAutoArrangeBtn\" class=\"btn-primary\" title=\"Rebuild the switch chain automatically from current usage and ranking rules.\">Auto Arrange</button></div>
         </div>
       </div>
       <div id=\"asChainPanel\" class=\"chain-panel\">
         <div class=\"chain-head\">
-          <div class=\"chain-title\">Switch Chain Preview</div>
-          <button id=\"asChainEditBtn\" class=\"btn\" type=\"button\">Edit</button>
+          <div class=\"chain-title\" title=\"Preview of the current account order used for automatic switching.\">Switch Chain Preview</div>
+          <button id=\"asChainEditBtn\" class=\"btn\" type=\"button\" title=\"Edit the switch chain order manually.\">Edit</button>
         </div>
-        <div id=\"asChainPreview\" class=\"chain-track\">-</div>
+        <div id=\"asChainPreview\" class=\"chain-track\" title=\"Current auto-switch chain order.\">-</div>
       </div>
     </section>
 
@@ -3620,16 +3882,16 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <div class=\"k\" style=\"margin:0\">Accounts</div>
         <div class=\"spacer\"></div>
         <div class=\"accounts-actions\">
-          <button id=\"addAccountBtn\" class=\"btn-primary\">Add Account</button>
-          <button id=\"removeAllBtn\" class=\"btn btn-danger\">Remove All</button>
-          <button id=\"colSettingsBtn\" class=\"btn\" title=\"Table columns\">Columns</button>
+          <button id=\"addAccountBtn\" class=\"btn-primary\" title=\"Create a new saved profile and start login.\">Add Account</button>
+          <button id=\"removeAllBtn\" class=\"btn btn-primary-danger\" title=\"Remove every saved account profile from this app.\">Remove All</button>
+          <button id=\"colSettingsBtn\" class=\"btn\" title=\"Choose which table columns are visible.\">Columns</button>
         </div>
       </div>
       <div class=\"table-wrap\">
       <table>
         <thead>
           <tr>
-            <th data-col=\"cur\" data-sort=\"current\">STS</th><th data-col=\"profile\" data-sort=\"name\">Profile</th><th data-col=\"email\" data-sort=\"email\">Email</th><th data-col=\"h5\" data-sort=\"usage5\">5H Usage</th><th data-col=\"h5remain\" data-sort=\"usage5remain\">5H Remain</th><th data-col=\"h5reset\" data-sort=\"usage5reset\">5H Reset At</th><th data-col=\"weekly\" data-sort=\"usageW\">Weekly</th><th data-col=\"weeklyremain\" data-sort=\"usageWremain\">W Remain</th><th data-col=\"weeklyreset\" data-sort=\"usageWreset\">Weekly Reset At</th><th data-col=\"plan\" data-sort=\"planType\">Plan</th><th data-col=\"paid\" data-sort=\"isPaid\">Paid</th><th data-col=\"id\" data-sort=\"id\">ID</th><th data-col=\"added\" data-sort=\"savedAt\">Added</th><th data-col=\"note\" class=\"note-col\" data-sort=\"note\">Note</th><th data-col=\"auto\" class=\"no-sort\">Auto</th><th data-col=\"actions\" class=\"no-sort\">Actions</th>
+            <th data-col=\"cur\" data-sort=\"current\" title=\"Current account status. Green dot means this profile is active.\">STS</th><th data-col=\"profile\" data-sort=\"name\" title=\"Saved profile name. Click the header to sort.\">Profile</th><th data-col=\"email\" data-sort=\"email\" title=\"Email linked to the saved account.\">Email</th><th data-col=\"h5\" data-sort=\"usage5\" title=\"Remaining 5-hour usage percentage.\">5H Usage</th><th data-col=\"h5remain\" data-sort=\"usage5remain\" title=\"Time remaining until the 5-hour window resets.\">5H Remain</th><th data-col=\"h5reset\" data-sort=\"usage5reset\" title=\"Exact reset time for the 5-hour window.\">5H Reset At</th><th data-col=\"weekly\" data-sort=\"usageW\" title=\"Remaining weekly usage percentage.\">Weekly</th><th data-col=\"weeklyremain\" data-sort=\"usageWremain\" title=\"Time remaining until the weekly window resets.\">W Remain</th><th data-col=\"weeklyreset\" data-sort=\"usageWreset\" title=\"Exact reset time for the weekly window.\">Weekly Reset At</th><th data-col=\"plan\" data-sort=\"planType\" title=\"Detected account plan type.\">Plan</th><th data-col=\"paid\" data-sort=\"isPaid\" title=\"Whether the account appears to be paid.\">Paid</th><th data-col=\"id\" data-sort=\"id\" title=\"Account identifier or principal.\">ID</th><th data-col=\"added\" data-sort=\"savedAt\" title=\"When this profile was added to the app.\">Added</th><th data-col=\"note\" class=\"note-col\" data-sort=\"note\" title=\"Extra account notes, such as same-principal markers.\">Note</th><th data-col=\"auto\" class=\"no-sort\" title=\"Include this profile in automatic switching.\">Auto</th><th data-col=\"actions\" class=\"no-sort\" title=\"Switch, rename, or remove this profile.\">Actions</th>
           </tr>
         </thead>
         <tbody id=\"rows\"></tbody>
@@ -3643,7 +3905,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       <div class=\"card terminal-card\" style=\"padding:12px;\">
         <div class=\"terminal-head\">
           <div class=\"k\">System.Out</div>
-          <button id=\"exportLogsBtn\" class=\"btn\" type=\"button\">Export Debug Logs</button>
+          <button id=\"exportLogsBtn\" class=\"btn\" type=\"button\" title=\"Download recent debug logs as JSON for troubleshooting.\">Export Debug Logs</button>
         </div>
         <pre id=\"debugOut\" class=\"out system-out\"></pre>
       </div>
@@ -3668,22 +3930,23 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <span class=\"guide-title\">Guide & Help</span>
       </summary>
       <div class=\"guide-body\">
-        <p class=\"guide-intro\">Use this panel to run local profile workflows end-to-end: account onboarding, usage monitoring, auto-switch policy, alarms, diagnostics, and release visibility.</p>
+        <p class=\"guide-intro\">Use this panel to add accounts, monitor live usage, refresh the current account or all accounts on separate timers, tune auto-switch behavior, and troubleshoot account/auth state from one place.</p>
         <div class=\"guide-grid\">
           <section class=\"guide-block\">
             <h4>Quick Start</h4>
             <ul>
-              <li>Use <b>Add Account</b> to start device login; fallback login is available from the device modal.</li>
-              <li>Use <b>Switch</b> on any row to activate a profile; active row stays pinned first.</li>
-              <li>Use <b>Refresh</b> after profile/config changes for immediate state sync.</li>
+              <li>Use <b>Add Account</b> to open the combined login dialog, enter a profile name, then choose <b>Device Login</b> or <b>Normal Login</b>.</li>
+              <li>Use <b>Switch</b> on any row to activate a saved profile in Codex; the active account gets the green status dot and stays pinned first.</li>
+              <li>Use <b>Refresh</b> for a full immediate sync after switching, login, config changes, or recovering from stale data.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
             <h4>Header & Panel Controls</h4>
             <ul>
-              <li>Header icons cycle <b>Theme</b>, toggle <b>Debug mode</b>, and show/hide settings sections.</li>
-              <li><b>Auto Refresh</b> controls periodic polling; <b>Refresh Interval (sec)</b> uses stepper input.</li>
-              <li><b>Refresh</b> runs immediate fetch without waiting for timer ticks.</li>
+              <li>Header icons cycle <b>Theme</b>, toggle <b>Debug mode</b>, and show or hide the settings panels.</li>
+              <li><b>Current Account Auto Refresh</b> polls only the active account in seconds and is meant for lightweight continuous monitoring.</li>
+              <li><b>Auto Refresh All</b> runs a slower background sweep in minutes and refreshes saved accounts one by one instead of doing one expensive batch on every tick.</li>
+              <li><b>Restart</b> restarts the local UI service, and <b>Kill All</b> force-stops managed background account processes.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -3691,7 +3954,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
             <ul>
               <li><b>Enable Sound Alarm</b> turns usage warning alarm behavior on/off.</li>
               <li>Set warning thresholds with <b>5H alarm %</b> and <b>Weekly alarm %</b>.</li>
-              <li>Alarm events use warning signals and in-app notices when thresholds are breached.</li>
+              <li>Alarm warnings are based on remaining percentage and work with the refreshed table values shown in the Accounts section.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -3700,7 +3963,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <li><b>Execution</b>: toggle <b>Enabled</b>, set <b>Delay (sec)</b>, run <b>Run Switch</b>/<b>Rapid Test</b>/<b>Stop Tests</b>/<b>Test Auto Switch</b>.</li>
               <li><b>Selection Policy</b>: choose ranking mode and set switch thresholds.</li>
               <li><b>Switch Chain Preview</b> shows current order; <b>Edit</b> supports manual reorder.</li>
-              <li><b>Auto Arrange</b> recalculates chain ordering from current usage.</li>
+              <li><b>Auto Arrange</b> recalculates chain ordering from current usage and keeps the active account locked at the front when editing the chain manually.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -3711,7 +3974,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <li>Per-row actions: <b>Switch</b>, row menu (<b>Rename</b>/<b>Remove</b>), and <b>Auto</b> eligibility toggle.</li>
               <li><b>Plan</b> and <b>Paid</b> fields are available as optional columns (hidden by default).</li>
               <li>Mobile cards open full detail modal and include switch + row-actions shortcuts.</li>
-              <li><b>same-principal</b> badge marks profiles linked to identical principal identity.</li>
+              <li>Tooltips are available across controls, headers, and row actions to explain what each setting or button does.</li>
+              <li>Current-account usage is read from the live active auth session, and healthy current sessions automatically sync back into the saved profile snapshot to avoid stale-token drift later.</li>
+              <li>If a row shows <b>auth expired</b>, the saved profile auth snapshot no longer works for usage API calls and that account needs a fresh healthy session.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -3719,7 +3984,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
             <ul>
               <li>In debug mode, <b>System.Out</b> shows UI/API actions, warnings, events, and errors.</li>
               <li><b>Export Debug Logs</b> downloads a JSON snapshot for troubleshooting.</li>
-              <li><b>Advanced Actions</b> exposes wrapped `codex-auth` operations for status/login/switch/import/config/daemon/clean/raw auth.</li>
+              <li><b>Advanced Actions</b> exposes wrapped `codex-auth` operations for status/login/switch/import/config/daemon/clean/raw auth when deeper inspection is needed.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -3758,8 +4023,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
       <div id=\"modalBody\" class=\"body\"></div>
       <input id=\"modalInput\" style=\"display:none\" />
       <div class=\"row\">
-        <button id=\"modalCancelBtn\" class=\"btn\">Cancel</button>
-        <button id=\"modalOkBtn\" class=\"btn-primary\">OK</button>
+        <button id=\"modalCancelBtn\" class=\"btn\" title=\"Cancel and close this dialog.\">Cancel</button>
+        <button id=\"modalOkBtn\" class=\"btn-primary\" title=\"Confirm and continue.\">OK</button>
       </div>
     </div>
   </div>
@@ -3769,8 +4034,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
       <h3>Table Columns</h3>
       <div id=\"columnsModalList\" class=\"columns-list\"></div>
       <div class=\"row\">
-        <button id=\"columnsResetBtn\" class=\"btn\" type=\"button\">Reset Defaults</button>
-        <button id=\"columnsDoneBtn\" class=\"btn-primary\" type=\"button\">Done</button>
+        <button id=\"columnsResetBtn\" class=\"btn\" type=\"button\" title=\"Restore the default visible columns.\">Reset Defaults</button>
+        <button id=\"columnsDoneBtn\" class=\"btn-primary\" type=\"button\" title=\"Apply column visibility changes and close this dialog.\">Done</button>
       </div>
     </div>
   </div>
@@ -3779,20 +4044,32 @@ def render_ui_html(default_interval: float, token: str) -> str:
     <div class=\"actions-modal\">
       <div class=\"actions-head\">
         <h3>Row Actions</h3>
-        <button id=\"rowActionsCloseBtn\" class=\"actions-close\" type=\"button\" aria-label=\"Close row actions\">×</button>
+        <button id=\"rowActionsCloseBtn\" class=\"actions-close\" type=\"button\" aria-label=\"Close row actions\" title=\"Close row actions.\">×</button>
       </div>
       <p class=\"actions-sub\" id=\"rowActionsTarget\">-</p>
       <div class=\"actions-list\">
-        <button id=\"rowActionsRenameBtn\" class=\"action-btn\" type=\"button\"><span>Rename</span><span class=\"hint\">edit</span></button>
-        <button id=\"rowActionsRemoveBtn\" class=\"action-btn danger\" type=\"button\"><span>Remove</span><span class=\"hint\">danger</span></button>
+        <button id=\"rowActionsRenameBtn\" class=\"action-btn\" type=\"button\" title=\"Rename only the saved profile label in this app.\"><span>Rename</span><span class=\"hint\">edit</span></button>
+        <button id=\"rowActionsRemoveBtn\" class=\"action-btn danger\" type=\"button\" title=\"Remove this saved profile from the app.\"><span>Remove</span><span class=\"hint\">danger</span></button>
       </div>
     </div>
   </div>
 
   <div id=\"addDeviceBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\" style=\"display:none;\">
     <div class=\"device-modal\">
-      <h3>Add Account: Device Login</h3>
-      <p id=\"addDeviceStatus\" class=\"device-status\">Preparing device auth link…</p>
+      <h3>Add Account</h3>
+      <p class=\"device-intro\">Create a profile and choose how to log in. Device Login is recommended to avoid browser auto-select issues.</p>
+      <label class=\"device-name-row\" for=\"addDeviceNameInput\">
+        <span>Profile Name</span>
+        <input id=\"addDeviceNameInput\" class=\"device-name-input\" placeholder=\"profile name\" autocomplete=\"off\" title=\"Enter the saved profile name you want to use in this app.\" />
+      </label>
+      <div class=\"device-note\">
+        <p class=\"device-note-title\">Login Methods</p>
+        <ul>
+          <li><strong>Device Login</strong>: generates a login URL and code. Better when browser cookies auto-select the wrong account.</li>
+          <li><strong>Normal Login</strong>: opens regular browser login directly. Faster when you already control account selection.</li>
+        </ul>
+      </div>
+      <p id=\"addDeviceStatus\" class=\"device-status\">Choose a login method to begin.</p>
       <div class=\"device-box\">
         <div class=\"device-label\">Login URL</div>
         <div id=\"addDeviceUrl\" class=\"device-value\">-</div>
@@ -3800,11 +4077,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <div id=\"addDeviceCode\" class=\"device-value\">-</div>
       </div>
       <div class=\"device-actions\">
-        <button id=\"addDeviceCopyBtn\" class=\"btn\" type=\"button\">Copy</button>
-        <button id=\"addDeviceOpenBtn\" class=\"btn\" type=\"button\">Open In Browser</button>
-        <button id=\"addDeviceLegacyBtn\" class=\"btn\" type=\"button\">Use Normal Login</button>
-        <button id=\"addDeviceCancelBtn\" class=\"btn\" type=\"button\">Cancel</button>
-        <button id=\"addDeviceDoneBtn\" class=\"btn-primary\" type=\"button\" style=\"display:none;\">Done</button>
+        <button id=\"addDeviceStartBtn\" class=\"btn-primary\" type=\"button\" title=\"Generate a device-login code and URL for this profile.\">Start Device Login</button>
+        <button id=\"addDeviceCopyBtn\" class=\"btn\" type=\"button\" title=\"Copy the device-login URL and code.\">Copy</button>
+        <button id=\"addDeviceOpenBtn\" class=\"btn\" type=\"button\" title=\"Open the generated device-login URL in your browser.\">Open In Browser</button>
+        <button id=\"addDeviceLegacyBtn\" class=\"btn\" type=\"button\" title=\"Use the regular browser login flow instead of device login.\">Use Normal Login</button>
+        <button id=\"addDeviceCancelBtn\" class=\"btn\" type=\"button\">Close</button>
       </div>
     </div>
   </div>
@@ -3826,7 +4103,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
   <script>
   const token = __TOKEN_JSON__;
   const UI_VERSION = __UI_VERSION_JSON__;
-  let timer = null;
+  let currentRefreshTimer = null;
+  let allRefreshTimer = null;
   let remainTicker = null;
   let eventsTimer = null;
   let sortState = JSON.parse(localStorage.getItem("codex_sort_state") || '{"key":"savedAt","dir":"desc"}');
@@ -3859,6 +4137,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let switchPendingName = "";
   let refreshRunning = false;
   let refreshQueuedOpts = null;
+  let currentRefreshRunning = false;
+  let allRefreshSweepRunning = false;
   let guideReleaseLoaded = false;
   let guideReleaseLoading = false;
   let guideReleaseLastPayload = null;
@@ -3875,6 +4155,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
     "/api/debug/logs",
     "/api/list",
     "/api/usage-local",
+    "/api/usage-local/current",
+    "/api/usage-local/profile",
   ]);
   let activeModalResolver = null;
   const columnLabels = { cur:"STS", profile:"Profile", email:"Email", h5:"5H Usage", h5remain:"5H Remain", h5reset:"5H Reset At", weekly:"Weekly", weeklyremain:"W Remain", weeklyreset:"Weekly Reset At", plan:"Plan", paid:"Paid", id:"ID", added:"Added", note:"Note", auto:"Auto", actions:"Actions" };
@@ -4052,6 +4334,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
   }
   function usageClass(v){ const n=Number(v); if(Number.isNaN(n))return ""; if(n<25)return "usage-low"; if(n<50)return "usage-midlow"; if(n<75)return "usage-mid"; return "usage-good"; }
+  function usageErrorLabel(rowError){
+    const msg = String(rowError || "").trim();
+    if(!msg) return "";
+    const lower = msg.toLowerCase();
+    if(lower === "http 401") return "auth expired";
+    if(lower === "http 403") return "access denied";
+    if(lower.startsWith("http ")) return msg;
+    if(lower.includes("timed out")) return "timeout";
+    if(lower.includes("missing access_token/account_id")) return "missing auth";
+    return msg;
+  }
   function fmtUsagePct(usage){
     const n = Number(usage?.remaining_percent);
     if(Number.isFinite(n)) return `${Math.max(0, Math.min(100, Math.round(n)))}%`;
@@ -4142,6 +4435,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const tone = usageFillClass(pct);
     const txtClass = usageClass(pct);
     return `<div class="usage-cell ${flash ? "updated" : ""}"><span class="usage-pct ${txtClass}">${pct}%</span><div class="usage-meter"><span class="usage-fill ${tone} ${flash ? "blink" : ""}" style="width:${pct}%"></span></div></div>`;
+  }
+  function renderUsageErrorCell(rowError){
+    const label = usageErrorLabel(rowError) || "error";
+    return `<div class="usage-cell"><span class="usage-pct usage-low">${escHtml(label)}</span><div class="usage-meter"><span class="usage-fill low" style="width:100%"></span></div></div>`;
   }
   function fmtReset(ts){ if(!ts) return "unknown"; try { const d = new Date(Number(ts)*1000); return Number.isFinite(d.getTime()) ? d.toLocaleString() : "unknown"; } catch(_) { return "unknown"; } }
   function fmtSavedAt(ts){ if(!ts) return "-"; try { const d = new Date(ts); return Number.isFinite(d.getTime()) ? d.toLocaleString() : ts; } catch(_) { return ts; } }
@@ -4315,6 +4612,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
       if (h > 0) return `${h}h ${m}m ${s}s`;
       return `${m}m ${s}s`;
     } catch(_) { return loading ? "loading..." : "unknown"; }
+  }
+  function formatRemainCell(ts, withSeconds, loading, rowError){
+    if(loading) return fmtRemain(ts, withSeconds, true);
+    const label = usageErrorLabel(rowError);
+    if(label) return label;
+    return fmtRemain(ts, withSeconds, false);
   }
   function refreshRemainCountdowns(){
     document.querySelectorAll("td[data-remain-ts]").forEach((el) => {
@@ -4996,7 +5299,19 @@ def render_ui_html(default_interval: float, token: str) -> str:
       addDevicePollTimer = null;
     }
   }
-  function openAddDeviceModal(){
+  function openAddDeviceModal(opts={}){
+    if(opts.reset){
+      clearAddDevicePolling();
+      addDeviceSessionId = null;
+      addDeviceSessionState = null;
+      addDeviceProfileName = String(opts.name || "").trim();
+      const nameInput = byId("addDeviceNameInput", false);
+      if(nameInput){
+        nameInput.value = addDeviceProfileName;
+        setTimeout(()=>nameInput.focus(), 0);
+      }
+      updateAddDeviceModal({ status:"idle", message:"Choose a login method to begin.", url:null, code:null });
+    }
     const b = byId("addDeviceBackdrop", false);
     if(b) b.style.display = "flex";
   }
@@ -5005,22 +5320,46 @@ def render_ui_html(default_interval: float, token: str) -> str:
     addDeviceSessionId = null;
     addDeviceSessionState = null;
     addDeviceProfileName = "";
+    const nameInput = byId("addDeviceNameInput", false);
+    if(nameInput) nameInput.value = "";
     const b = byId("addDeviceBackdrop", false);
     if(b) b.style.display = "none";
+  }
+  function getAddDeviceProfileName(){
+    const input = byId("addDeviceNameInput", false);
+    const name = String((input?.value || addDeviceProfileName || "")).trim();
+    if(!name){
+      setError("Enter profile name for the new login.");
+      if(input) input.focus();
+      return "";
+    }
+    const existing = Array.isArray(latestData.list?.profiles) ? latestData.list.profiles : [];
+    const taken = existing.some((p) => String(p?.name || "").toLowerCase() === name.toLowerCase());
+    if(taken){
+      setError(`Profile name '${name}' already exists. Choose a different name.`);
+      if(input) input.focus();
+      return "";
+    }
+    return name;
   }
   function updateAddDeviceModal(session){
     addDeviceSessionState = session || null;
     const st = byId("addDeviceStatus", false);
     const urlEl = byId("addDeviceUrl", false);
     const codeEl = byId("addDeviceCode", false);
-    const doneBtn = byId("addDeviceDoneBtn", false);
-    const cancelBtn = byId("addDeviceCancelBtn", false);
+    const startBtn = byId("addDeviceStartBtn", false);
+    const normalBtn = byId("addDeviceLegacyBtn", false);
+    const copyBtn = byId("addDeviceCopyBtn", false);
+    const openBtn = byId("addDeviceOpenBtn", false);
     if(st) st.textContent = session?.error || session?.message || `status: ${session?.status || "-"}`;
     if(urlEl) urlEl.textContent = session?.url || "-";
     if(codeEl) codeEl.textContent = session?.code || "-";
     const finished = !!session && ["completed", "failed", "canceled"].includes(String(session.status || ""));
-    if(doneBtn) doneBtn.style.display = finished ? "" : "none";
-    if(cancelBtn) cancelBtn.style.display = finished ? "none" : "";
+    const running = !!addDeviceSessionId && !finished;
+    if(startBtn) startBtn.disabled = running;
+    if(normalBtn) normalBtn.disabled = running;
+    if(copyBtn) copyBtn.disabled = !String(session?.url || session?.code || "").trim();
+    if(openBtn) openBtn.disabled = !String(session?.url || "").trim();
   }
   async function pollAddDeviceSession(){
     if(!addDeviceSessionId) return;
@@ -5042,8 +5381,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
     clearAddDevicePolling();
     addDeviceSessionId = null;
     addDeviceProfileName = String(name || "").trim();
+    const nameInput = byId("addDeviceNameInput", false);
+    if(nameInput) nameInput.value = addDeviceProfileName;
     updateAddDeviceModal({ status:"running", message:"starting login flow..." });
-    openAddDeviceModal();
     const data = await postApi("/api/local/add/start", { name, timeout: 600, device_auth: true });
     addDeviceSessionId = data.id;
     updateAddDeviceModal(data);
@@ -5321,8 +5661,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
       for(const p of base){
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td data-col="cur"><span class="status-dot"></span></td>
-          <td data-col="profile">${escHtml(p.name)}</td>
+          <td data-col="cur"><span class="status-dot" title="Account status indicator."></span></td>
+          <td data-col="profile" title="${escHtml(p.name)}">${escHtml(p.name)}</td>
           <td data-col="email" class="email-cell">loading...</td>
           <td data-col="h5">${renderUsageMeter(null, true, false)}</td>
           <td data-col="h5remain" class="reset-cell loading-text">loading...</td>
@@ -5333,10 +5673,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
           <td data-col="plan">-</td>
           <td data-col="paid">-</td>
           <td data-col="id" class="id-cell" title="${escHtml(p.account_id)}">${escHtml(p.account_id)}</td>
-          <td data-col="added" class="added-cell">${fmtSavedAt(p.saved_at || "-")}</td>
+          <td data-col="added" class="added-cell" title="When this profile was added to the app.">${fmtSavedAt(p.saved_at || "-")}</td>
           <td data-col="note" class="note-cell"></td>
-          <td data-col="auto"><input type="checkbox" disabled /></td>
-          <td data-col="actions"><div class="actions-cell"><button class="btn btn-disabled" disabled>Switch</button><button class="btn actions-menu-btn btn-disabled" disabled>⋯</button></div></td>
+          <td data-col="auto"><input type="checkbox" disabled title="Auto-switch eligibility loads after account usage is available." /></td>
+          <td data-col="actions"><div class="actions-cell"><button class="btn btn-disabled" disabled title="Switch becomes available after the account finishes loading.">Switch</button><button class="btn actions-menu-btn btn-disabled" disabled title="Row actions become available after the account finishes loading.">⋯</button></div></td>
         `;
         tbody.appendChild(tr);
       }
@@ -5350,6 +5690,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
         const wLoading = isUsageLoadingState(p.usage_weekly, p.error, p.loading_usage);
         const h5Flash = shouldBlinkUsage(p.name, "h5", h5Loading);
         const wFlash = shouldBlinkUsage(p.name, "weekly", wLoading);
+        const rowErrorLabel = usageErrorLabel(p.error);
+        const h5CellHtml = (!h5Loading && rowErrorLabel) ? renderUsageErrorCell(p.error) : renderUsageMeter(p.usage_5h, h5Loading, h5Flash);
+        const wCellHtml = (!wLoading && rowErrorLabel) ? renderUsageErrorCell(p.error) : renderUsageMeter(p.usage_weekly, wLoading, wFlash);
+        const h5RemainText = formatRemainCell(p.usage_5h?.resets_at, true, h5Loading, p.error);
+        const wRemainText = formatRemainCell(p.usage_weekly?.resets_at, false, wLoading, p.error);
         const h5RemainTs = Number(p.usage_5h?.resets_at || 0) || "";
         const wRemainTs = Number(p.usage_weekly?.resets_at || 0) || "";
         const switchTarget = switchInFlight && switchPendingName === p.name;
@@ -5359,22 +5704,22 @@ def render_ui_html(default_interval: float, token: str) -> str:
         const quotaBlocked = (Number.isFinite(h5Pct) && h5Pct <= 0) || (Number.isFinite(wPct) && wPct <= 0);
         const disableSwitch = p.is_current || switchInFlight;
         tr.innerHTML = `
-        <td data-col="cur"><span class="status-dot ${statusClass}"></span></td>
-        <td data-col="profile">${p.name}</td>
+        <td data-col="cur"><span class="status-dot ${statusClass}" title="${p.is_current ? "Current active account." : "Saved account, not currently active."}"></span></td>
+        <td data-col="profile" title="${(p.name || "-").replace(/"/g,'&quot;')}">${p.name}</td>
         <td data-col="email" class="email-cell" title="${(p.email || "-").replace(/"/g,'&quot;')}">${p.email || "-"}</td>
-        <td data-col="h5">${renderUsageMeter(p.usage_5h, h5Loading, h5Flash)}</td>
-        <td data-col="h5remain" class="reset-cell ${h5Loading ? "loading-text" : ""}" data-remain-ts="${h5RemainTs}" data-remain-seconds="1" data-remain-loading="${h5Loading ? "1" : "0"}">${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}</td>
-        <td data-col="h5reset" class="reset-cell">${fmtReset(p.usage_5h?.resets_at)}</td>
-        <td data-col="weekly">${renderUsageMeter(p.usage_weekly, wLoading, wFlash)}</td>
-        <td data-col="weeklyremain" class="reset-cell ${wLoading ? "loading-text" : ""}" data-remain-ts="${wRemainTs}" data-remain-seconds="0" data-remain-loading="${wLoading ? "1" : "0"}">${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}</td>
-        <td data-col="weeklyreset" class="reset-cell">${fmtReset(p.usage_weekly?.resets_at)}</td>
-        <td data-col="plan">${p.plan_type || "-"}</td>
-        <td data-col="paid">${fmtPaid(p.is_paid)}</td>
+        <td data-col="h5">${h5CellHtml}</td>
+        <td data-col="h5remain" class="reset-cell ${(h5Loading || rowErrorLabel) ? "loading-text" : ""}" data-remain-ts="${h5RemainTs}" data-remain-seconds="1" data-remain-loading="${h5Loading ? "1" : "0"}" title="Time remaining until the 5-hour usage window resets.">${h5RemainText}</td>
+        <td data-col="h5reset" class="reset-cell" title="Exact reset time for the 5-hour usage window.">${fmtReset(p.usage_5h?.resets_at)}</td>
+        <td data-col="weekly">${wCellHtml}</td>
+        <td data-col="weeklyremain" class="reset-cell ${(wLoading || rowErrorLabel) ? "loading-text" : ""}" data-remain-ts="${wRemainTs}" data-remain-seconds="0" data-remain-loading="${wLoading ? "1" : "0"}" title="Time remaining until the weekly usage window resets.">${wRemainText}</td>
+        <td data-col="weeklyreset" class="reset-cell" title="Exact reset time for the weekly usage window.">${fmtReset(p.usage_weekly?.resets_at)}</td>
+        <td data-col="plan" title="Detected account plan type.">${p.plan_type || "-"}</td>
+        <td data-col="paid" title="Whether this account appears to be paid.">${fmtPaid(p.is_paid)}</td>
         <td data-col="id" class="id-cell" title="${(p.account_id || "-").replace(/"/g,'&quot;')}">${p.account_id || "-"}</td>
-        <td data-col="added" class="added-cell">${fmtSavedAt(p.saved_at || "-")}</td>
-        <td data-col="note" class="note-cell">${p.same_principal ? '<span class="badge">same-principal</span>' : ''}</td>
-        <td data-col="auto"><input type="checkbox" data-auto="${p.name}" ${p.auto_switch_eligible ? "checked" : ""} /></td>
-        <td data-col="actions"><div class="actions-cell"><button class="${quotaBlocked ? "btn-primary-danger" : "btn-primary"} ${disableSwitch ? "btn-disabled" : ""} ${switchTarget ? "btn-progress" : ""}" data-switch="${p.name}" ${disableSwitch ? "disabled" : ""}>Switch</button><button class="btn actions-menu-btn" data-row-actions="${p.name}">⋯</button></div></td>
+        <td data-col="added" class="added-cell" title="When this profile was added to the app.">${fmtSavedAt(p.saved_at || "-")}</td>
+        <td data-col="note" class="note-cell" title="${p.same_principal ? "This profile shares the same principal identity as another saved profile." : "No extra note for this profile."}">${p.same_principal ? '<span class="badge">same-principal</span>' : ''}</td>
+        <td data-col="auto"><input type="checkbox" data-auto="${p.name}" ${p.auto_switch_eligible ? "checked" : ""} title="Allow or block this profile from automatic switching." /></td>
+        <td data-col="actions"><div class="actions-cell"><button class="${quotaBlocked ? "btn-primary-danger" : "btn-primary"} ${disableSwitch ? "btn-disabled" : ""} ${switchTarget ? "btn-progress" : ""}" data-switch="${p.name}" ${disableSwitch ? "disabled" : ""} title="${p.is_current ? "This profile is already active." : (quotaBlocked ? "Switch to this profile now. Warning: usage is exhausted in one of the tracked windows." : "Switch to this profile now.")}">Switch</button><button class="btn actions-menu-btn" data-row-actions="${p.name}" title="Open rename and remove actions for this profile.">⋯</button></div></td>
       `;
         tbody.appendChild(tr);
         if(mobileRows){
@@ -5389,20 +5734,20 @@ def render_ui_html(default_interval: float, token: str) -> str:
         mrow.innerHTML = `
           <div class="mobile-head">
             <div class="mobile-left">
-              <span class="status-dot ${statusClass}"></span>
+              <span class="status-dot ${statusClass}" title="${p.is_current ? "Current active account." : "Saved account, not currently active."}"></span>
               <span class="mobile-profile">${p.name || "-"}</span>
             </div>
             <div class="mobile-actions">
-              <button class="${quotaBlocked ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""}>Switch</button>
-              <button class="btn actions-menu-btn" data-mobile-row-actions="${p.name}">⋯</button>
+              <button class="${quotaBlocked ? "btn-primary-danger" : "btn-primary"} ${(p.is_current || switchInFlight) ? "btn-disabled" : ""} ${(switchInFlight && switchPendingName === p.name) ? "btn-progress" : ""}" data-mobile-switch="${p.name}" ${(p.is_current || switchInFlight) ? "disabled" : ""} title="${p.is_current ? "This profile is already active." : (quotaBlocked ? "Switch to this profile now. Warning: usage is exhausted in one of the tracked windows." : "Switch to this profile now.")}">Switch</button>
+              <button class="btn actions-menu-btn" data-mobile-row-actions="${p.name}" title="Open rename and remove actions for this profile.">⋯</button>
             </div>
           </div>
           <div class="mobile-email">${p.email || "-"}</div>
           <div class="mobile-stats">
-            <div class="mobile-stat"><span class="label">5H</span><span class="${h5Class} ${h5Flash ? "updated" : ""}">${fmtUsagePct(p.usage_5h)}</span></div>
-            <div class="mobile-stat"><span class="label">Weekly</span><span class="${wClass} ${wFlash ? "updated" : ""}">${fmtUsagePct(p.usage_weekly)}</span></div>
-            <div class="mobile-stat"><span class="label">5H Remain</span><span class="${h5Loading ? "loading-text" : ""}">${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}</span></div>
-            <div class="mobile-stat"><span class="label">W Remain</span><span class="${wLoading ? "loading-text" : ""}">${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}</span></div>
+            <div class="mobile-stat"><span class="label">5H</span><span class="${rowErrorLabel ? "usage-low" : h5Class} ${h5Flash ? "updated" : ""}">${rowErrorLabel || fmtUsagePct(p.usage_5h)}</span></div>
+            <div class="mobile-stat"><span class="label">Weekly</span><span class="${rowErrorLabel ? "usage-low" : wClass} ${wFlash ? "updated" : ""}">${rowErrorLabel || fmtUsagePct(p.usage_weekly)}</span></div>
+            <div class="mobile-stat"><span class="label">5H Remain</span><span class="${(h5Loading || rowErrorLabel) ? "loading-text" : ""}">${formatRemainCell(p.usage_5h?.resets_at, true, h5Loading, p.error)}</span></div>
+            <div class="mobile-stat"><span class="label">W Remain</span><span class="${(wLoading || rowErrorLabel) ? "loading-text" : ""}">${formatRemainCell(p.usage_weekly?.resets_at, false, wLoading, p.error)}</span></div>
           </div>
         `;
         const openDetails = async () => {
@@ -5410,11 +5755,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
             `Profile: ${p.name || "-"}`,
             `Email: ${p.email || "-"}`,
             `Current: ${p.is_current ? "yes" : "no"}`,
-            `5H Usage: ${fmtUsagePct(p.usage_5h)}`,
-            `5H Remain: ${fmtRemain(p.usage_5h?.resets_at, true, h5Loading)}`,
+            `5H Usage: ${rowErrorLabel || fmtUsagePct(p.usage_5h)}`,
+            `5H Remain: ${formatRemainCell(p.usage_5h?.resets_at, true, h5Loading, p.error)}`,
             `5H Reset At: ${fmtReset(p.usage_5h?.resets_at)}`,
-            `Weekly Usage: ${fmtUsagePct(p.usage_weekly)}`,
-            `Weekly Remain: ${fmtRemain(p.usage_weekly?.resets_at, false, wLoading)}`,
+            `Weekly Usage: ${rowErrorLabel || fmtUsagePct(p.usage_weekly)}`,
+            `Weekly Remain: ${formatRemainCell(p.usage_weekly?.resets_at, false, wLoading, p.error)}`,
             `Weekly Reset At: ${fmtReset(p.usage_weekly?.resets_at)}`,
             `Plan: ${p.plan_type || "-"}`,
             `Paid: ${fmtPaid(p.is_paid)}`,
@@ -5471,8 +5816,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
     applyTheme(ui.theme || "auto");
     updateHeaderThemeIcon(ui.theme || "auto");
     byId("advancedCard").style.display = "none";
-    byId("autoToggle").checked = !!ui.auto_refresh;
-    byId("intervalInput").value = String(ui.refresh_interval_sec || 5);
+    byId("currentAutoToggle").checked = !!ui.current_auto_refresh_enabled;
+    byId("currentIntervalInput").value = String(ui.current_refresh_interval_sec || 5);
+    byId("allAutoToggle").checked = !!ui.all_auto_refresh_enabled;
+    byId("allIntervalInput").value = String(ui.all_refresh_interval_min || 5);
     byId("debugToggle").checked = !!ui.debug_mode;
     updateHeaderDebugIcon(!!ui.debug_mode);
     byId("debugRuntimeSection").style.display = ui.debug_mode ? "block" : "none";
@@ -5570,6 +5917,115 @@ def render_ui_html(default_interval: float, token: str) -> str:
       return parsed;
     } catch(_) {
       return null;
+    }
+  }
+
+  function commitUsagePayload(payload, opts={}){
+    if(!payload || payload.__error) return false;
+    const prevUsageForFlash = (!opts.showLoading && sessionUsageCache && Array.isArray(sessionUsageCache.profiles) && sessionUsageCache.profiles.length)
+      ? sessionUsageCache
+      : null;
+    if(!opts.showLoading && prevUsageForFlash){
+      markUsageFlashUpdates(prevUsageForFlash, payload);
+    }
+    latestData.usage = payload;
+    sessionUsageCache = payload;
+    renderTable(payload);
+    return true;
+  }
+
+  function setProfileLoadingState(name, loading, errorMsg=null){
+    const target = String(name || "").trim();
+    if(!target) return false;
+    const currentUsage = latestData.usage;
+    if(!currentUsage || !Array.isArray(currentUsage.profiles) || !currentUsage.profiles.length){
+      return false;
+    }
+    let changed = false;
+    const nextProfiles = currentUsage.profiles.map((profile) => {
+      if(String(profile?.name || "").trim() !== target){
+        return profile;
+      }
+      changed = true;
+      return {
+        ...profile,
+        loading_usage: !!loading,
+        error: loading ? null : (errorMsg || profile.error || null),
+      };
+    });
+    if(!changed) return false;
+    latestData.usage = {
+      ...currentUsage,
+      profiles: nextProfiles,
+    };
+    renderTable(latestData.usage);
+    return true;
+  }
+
+  async function refreshCurrentUsage(opts={}){
+    if(refreshRunning) return;
+    if(currentRefreshRunning) return;
+    currentRefreshRunning = true;
+    try{
+      const timeoutSec = Math.max(1, Number(opts?.timeoutSec || 6));
+      const payload = await safeGet(`/api/usage-local/current?timeout=${encodeURIComponent(String(timeoutSec))}`, {
+        timeoutMs: Math.max(3500, (timeoutSec + 3) * 1000),
+      });
+      if(!payload.__error){
+        commitUsagePayload(payload, { showLoading: false });
+        return;
+      }
+      setError((byId("error").textContent ? byId("error").textContent + "\\n" : "") + "current usage: " + payload.__error);
+    } finally {
+      currentRefreshRunning = false;
+    }
+  }
+
+  async function refreshProfileUsage(name, opts={}){
+    const target = String(name || "").trim();
+    if(!target) return;
+    const timeoutSec = Math.max(1, Number(opts?.timeoutSec || 7));
+    setProfileLoadingState(target, true, null);
+    const payload = await safeGet(`/api/usage-local/profile?name=${encodeURIComponent(target)}&timeout=${encodeURIComponent(String(timeoutSec))}`, {
+      timeoutMs: Math.max(4000, (timeoutSec + 4) * 1000),
+    });
+    if(!payload.__error){
+      commitUsagePayload(payload, { showLoading: false });
+      return;
+    }
+    setProfileLoadingState(target, false, payload.__error || "request failed");
+    setError((byId("error").textContent ? byId("error").textContent + "\\n" : "") + `usage(${target}): ` + payload.__error);
+  }
+
+  async function runAllAccountsSweep(opts={}){
+    if(refreshRunning) return;
+    if(allRefreshSweepRunning) return;
+    allRefreshSweepRunning = true;
+    try{
+      const timeoutSec = Math.max(1, Number(opts?.timeoutSec || 7));
+      const listProfiles = Array.isArray(latestData.list?.profiles) ? latestData.list.profiles : [];
+      const cachedProfiles = Array.isArray(latestData.usage?.profiles) ? latestData.usage.profiles : [];
+      const currentName = String(latestData.usage?.current_profile || cachedProfiles.find((p) => p?.is_current)?.name || "").trim();
+      const orderedNames = [];
+      for(const item of listProfiles){
+        const name = String(item?.name || "").trim();
+        if(!name || orderedNames.includes(name)) continue;
+        orderedNames.push(name);
+      }
+      if(!orderedNames.length){
+        for(const row of cachedProfiles){
+          const name = String(row?.name || "").trim();
+          if(!name || orderedNames.includes(name)) continue;
+          orderedNames.push(name);
+        }
+      }
+      for(const name of orderedNames){
+        if(refreshRunning) break;
+        if(currentName && name === currentName) continue;
+        await refreshProfileUsage(name, { timeoutSec });
+      }
+    } finally {
+      allRefreshSweepRunning = false;
     }
   }
 
@@ -5679,15 +6135,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       ]);
       usageFetchBlinkActive = false;
       if(!usage.__error){
-        const prevUsageForFlash = (!showLoading && sessionUsageCache && Array.isArray(sessionUsageCache.profiles) && sessionUsageCache.profiles.length)
-          ? sessionUsageCache
-          : null;
-        if(!showLoading && prevUsageForFlash){
-          markUsageFlashUpdates(prevUsageForFlash, usage);
-        }
-        latestData.usage = usage;
-        sessionUsageCache = usage;
-        renderTable(usage);
+        commitUsagePayload(usage, { showLoading });
       } else {
         const hasSessionCache = !!(sessionUsageCache && Array.isArray(sessionUsageCache.profiles) && sessionUsageCache.profiles.length);
         if(!showLoading && hasSessionCache){
@@ -5750,17 +6198,72 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
   }
 
-  function resetTimer(){
-    if(timer) clearInterval(timer);
-    const enabled = !!byId("autoToggle").checked;
+  function resetCurrentRefreshTimer(){
+    if(currentRefreshTimer) clearInterval(currentRefreshTimer);
+    const enabled = !!byId("currentAutoToggle").checked;
     if(!enabled) return;
-    const iv = Math.max(1, parseInt(byId("intervalInput").value || "5", 10));
-    byId("intervalInput").value = String(iv);
-    timer = setInterval(() => { refreshAll({ showLoading: false }).catch(() => {}); }, iv * 1000);
+    const iv = Math.max(1, parseInt(byId("currentIntervalInput").value || "5", 10));
+    byId("currentIntervalInput").value = String(iv);
+    currentRefreshTimer = setInterval(() => { refreshCurrentUsage({ timeoutSec: Math.max(2, Math.min(12, iv + 2)) }).catch(() => {}); }, iv * 1000);
+  }
+
+  function resetAllRefreshTimer(){
+    if(allRefreshTimer) clearInterval(allRefreshTimer);
+    const enabled = !!byId("allAutoToggle").checked;
+    if(!enabled) return;
+    const ivMin = Math.max(1, Math.min(60, parseInt(byId("allIntervalInput").value || "5", 10)));
+    byId("allIntervalInput").value = String(ivMin);
+    allRefreshTimer = setInterval(() => { runAllAccountsSweep({ timeoutSec: 7 }).catch(() => {}); }, ivMin * 60 * 1000);
+  }
+
+  function resetTimer(){
+    resetCurrentRefreshTimer();
+    resetAllRefreshTimer();
   }
   function resetRemainTicker(){
     if(remainTicker) clearInterval(remainTicker);
     remainTicker = setInterval(refreshRemainCountdowns, 1000);
+  }
+
+  async function restartUiService(){
+    const restartBtn = byId("restartBtn", false);
+    const refreshBtn = byId("refreshBtn", false);
+    const prevRestart = restartBtn ? (restartBtn.textContent || "Restart") : "Restart";
+    if(restartBtn){
+      restartBtn.disabled = true;
+      restartBtn.textContent = "Restarting...";
+    }
+    if(refreshBtn) refreshBtn.disabled = true;
+    setError("");
+    let reloadAfterMs = 1200;
+    try{
+      const data = await postApi("/api/system/restart", {});
+      reloadAfterMs = Math.max(400, Number(data?.reload_after_ms || 1200));
+    } catch(e){
+      const msg = e?.message || String(e);
+      if(!/Failed to fetch|network/i.test(msg)){
+        throw e;
+      }
+    }
+    setError("Restarting UI service...");
+    await waitMs(reloadAfterMs);
+    const startedAt = Date.now();
+    while((Date.now() - startedAt) < 20000){
+      const health = await safeGet(`/api/health?r=${Date.now()}`, { timeoutMs: 900 });
+      if(!health.__error){
+        try {
+          window.location.href = "/?v="+encodeURIComponent(UI_VERSION)+"&r="+Date.now();
+          return;
+        } catch(_) {}
+      }
+      await waitMs(700);
+    }
+    if(restartBtn){
+      restartBtn.disabled = false;
+      restartBtn.textContent = prevRestart;
+    }
+    if(refreshBtn) refreshBtn.disabled = false;
+    throw new Error("UI restart timed out. Reload the page manually.");
   }
 
   async function init(){
@@ -5816,6 +6319,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
           }
         }
       });
+      byId("restartBtn").addEventListener("click", async ()=>{
+        try{
+          await restartUiService();
+        } catch(e){
+          setError(e?.message || String(e));
+        }
+      });
       byId("killAllBtn").addEventListener("click", async ()=>{
         const ask = await openModal({
           title: "Kill All",
@@ -5860,32 +6370,44 @@ def render_ui_html(default_interval: float, token: str) -> str:
           updateHeaderThemeIcon(next);
         });
       }
-      byId("autoToggle").addEventListener("change", async (e)=>{ await saveUiConfigPatch({ ui: { auto_refresh: !!e.target.checked } }); resetTimer(); });
-      byId("intervalInput").addEventListener("change", async ()=>{ const v=Math.max(1,parseInt(byId("intervalInput").value||"5",10)); byId("intervalInput").value=String(v); await saveUiConfigPatch({ ui: { refresh_interval_sec: v } }); resetTimer(); });
+      byId("currentAutoToggle").addEventListener("change", async (e)=>{
+        await saveUiConfigPatch({ ui: { current_auto_refresh_enabled: !!e.target.checked } });
+        resetTimer();
+      });
+      byId("currentIntervalInput").addEventListener("change", async ()=>{
+        const v = Math.max(1, parseInt(byId("currentIntervalInput").value || "5", 10));
+        byId("currentIntervalInput").value = String(v);
+        await saveUiConfigPatch({ ui: { current_refresh_interval_sec: v } });
+        resetTimer();
+      });
+      byId("allAutoToggle").addEventListener("change", async (e)=>{
+        await saveUiConfigPatch({ ui: { all_auto_refresh_enabled: !!e.target.checked } });
+        resetTimer();
+      });
+      byId("allIntervalInput").addEventListener("change", async ()=>{
+        const v = Math.max(1, Math.min(60, parseInt(byId("allIntervalInput").value || "5", 10)));
+        byId("allIntervalInput").value = String(v);
+        await saveUiConfigPatch({ ui: { all_refresh_interval_min: v } });
+        resetTimer();
+      });
       initSteppers(document);
       byId("addAccountBtn").addEventListener("click", async ()=>{
         pushOverlayLog("ui", "ui.click add_account");
-        const r = await openModal({ title:"Add Account", body:"Enter profile name for the new login:", input:true, inputPlaceholder:"profile name" });
-        const name = (r&&r.ok) ? (r.value||"").trim() : "";
-        if(!name){
-          pushOverlayLog("ui", "ui.cancel add_account");
-          return;
-        }
-        const existing = Array.isArray(latestData.list?.profiles) ? latestData.list.profiles : [];
-        const taken = existing.some((p) => String(p?.name || "").toLowerCase() === name.toLowerCase());
-        if(taken){
-          setError(`Profile name '${name}' already exists. Choose a different name.`);
-          return;
-        }
-        pushOverlayLog("ui", "ui.submit add_account", { profile: name });
-        try {
+        setError("");
+        openAddDeviceModal({ reset:true });
+      });
+      byId("addDeviceStartBtn").addEventListener("click", async ()=>{
+        const name = getAddDeviceProfileName();
+        if(!name) return;
+        setError("");
+        pushOverlayLog("ui", "ui.submit add_account.device", { profile: name });
+        try{
           await startAddDeviceFlow(name);
         } catch(e){
           const msg = e?.message || String(e);
           setError(msg);
           pushOverlayLog("error", "device_auth.start_failed", { profile: name, error: msg });
           updateAddDeviceModal({ status:"failed", error: msg, message: msg, url: null, code: null });
-          openAddDeviceModal();
         }
       });
       byId("addDeviceCopyBtn").addEventListener("click", async ()=>{
@@ -5906,8 +6428,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
         pushOverlayLog("ui", "device_auth.open_browser");
       });
       byId("addDeviceLegacyBtn").addEventListener("click", async ()=>{
-        const name = addDeviceProfileName || "";
-        if(!name){ setError("Missing profile name for login."); return; }
+        const name = getAddDeviceProfileName();
+        if(!name) return;
         if(addDeviceSessionId){
           try { await postApi("/api/local/add/cancel", { id: addDeviceSessionId }); } catch(_) {}
         }
@@ -5921,7 +6443,17 @@ def render_ui_html(default_interval: float, token: str) -> str:
         }
         closeAddDeviceModal();
       });
-      byId("addDeviceDoneBtn").addEventListener("click", ()=>closeAddDeviceModal());
+      const addDeviceNameInput = byId("addDeviceNameInput", false);
+      if(addDeviceNameInput){
+        addDeviceNameInput.addEventListener("input", () => {
+          addDeviceProfileName = String(addDeviceNameInput.value || "").trim();
+        });
+        addDeviceNameInput.addEventListener("keydown", (e) => {
+          if(e.key !== "Enter") return;
+          e.preventDefault();
+          byId("addDeviceStartBtn", false)?.click();
+        });
+      }
       const exportLogsBtn = byId("exportLogsBtn", false);
       if(exportLogsBtn) exportLogsBtn.addEventListener("click", exportDebugSnapshot);
       byId("removeAllBtn").addEventListener("click", async ()=>{
@@ -6850,12 +7382,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if cached_payload and cached_key == key and cached_epoch == epoch and (now - cached_ts) <= max(0.05, ttl_sec):
                     return cached_payload
         payload = usage_service.collect(timeout_sec=timeout_sec, config=config)
-        with usage_cache_lock:
-            usage_cache["ts"] = time.time()
-            usage_cache["payload"] = payload
-            usage_cache["cfg_hash"] = key
-            usage_cache["timeout"] = timeout_sec
-        return payload
+        return _store_usage_payload(payload, config, timeout_sec)
 
     def invalidate_usage_cache(reason: str = "") -> None:
         with usage_cache_lock:
@@ -6866,6 +7393,100 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             usage_cache["timeout"] = None
         if reason:
             log_runtime("info", "usage cache invalidated", {"reason": reason})
+
+    def _usage_cache_payload_copy():
+        with usage_cache_lock:
+            payload = usage_cache.get("payload")
+            return copy.deepcopy(payload) if isinstance(payload, dict) else None
+
+    def _seed_usage_payload(config: dict) -> dict:
+        context = _build_usage_profile_context(config=config)
+        rows = []
+        list_rows = collect_list_data(config=config)
+        profile_meta = context.get("profile_meta") or {}
+        current_profile = str(context.get("current_profile") or "").strip() or None
+        for item in list_rows:
+            account_hint = str(item.get("account_hint") or "")
+            hint_left = account_hint.split("|")[0].strip()
+            name = str(item.get("name") or "").strip()
+            entry = profile_meta.get(name) or {}
+            email = str(entry.get("email") or "").strip() or (hint_left if "@" in hint_left else "-")
+            account_id = str(entry.get("account_id") or item.get("account_id") or "-")
+            is_current = bool(current_profile and name == current_profile)
+            rows.append(
+                {
+                    "name": item.get("name"),
+                    "email": email,
+                    "account_id": account_id,
+                    "usage_5h": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "usage_weekly": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "plan_type": None,
+                    "is_paid": None,
+                    "is_current": is_current,
+                    "same_principal": bool(item.get("same_principal")),
+                    "error": None,
+                    "saved_at": item.get("saved_at"),
+                    "auto_switch_eligible": bool(item.get("auto_switch_eligible", False)),
+                }
+            )
+        return {"refreshed_at": dt.datetime.now().isoformat(), "current_profile": current_profile, "profiles": rows}
+
+    def _merge_usage_rows(base_payload: dict | None, updated_payload: dict | None, config: dict) -> dict:
+        base = copy.deepcopy(base_payload) if isinstance(base_payload, dict) else _seed_usage_payload(config)
+        updates = updated_payload if isinstance(updated_payload, dict) else {}
+        base_rows = base.get("profiles") or []
+        update_rows = updates.get("profiles") or []
+        by_name = {}
+        order = []
+        for row in base_rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            by_name[name] = copy.deepcopy(row)
+            order.append(name)
+        for row in update_rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            if name not in by_name:
+                order.append(name)
+            by_name[name] = copy.deepcopy(row)
+        current_profile = str((updates.get("current_profile") or base.get("current_profile") or "")).strip() or None
+        rows = []
+        for name in order:
+            row = copy.deepcopy(by_name.get(name) or {})
+            row["is_current"] = bool(current_profile and name == current_profile)
+            rows.append(row)
+        merged = {
+            "refreshed_at": updates.get("refreshed_at") or base.get("refreshed_at") or dt.datetime.now().isoformat(),
+            "current_profile": current_profile,
+            "profiles": rows,
+        }
+        return merged
+
+    def _store_usage_payload(payload: dict, config: dict, timeout_sec: int) -> dict:
+        merged = _merge_usage_rows(None, payload, config)
+        with usage_cache_lock:
+            usage_cache["ts"] = time.time()
+            usage_cache["payload"] = merged
+            usage_cache["cfg_hash"] = _cfg_usage_cache_key(config if isinstance(config, dict) else {})
+            usage_cache["timeout"] = timeout_sec
+        return merged
+
+    def refresh_usage_subset(profile_names: list[str], timeout_sec: int, config: dict) -> dict:
+        partial = collect_usage_local_data(timeout_sec=timeout_sec, config=config, profile_names=profile_names)
+        cached = _usage_cache_payload_copy()
+        merged = _merge_usage_rows(cached, partial, config)
+        with usage_cache_lock:
+            usage_cache["ts"] = time.time()
+            usage_cache["payload"] = merged
+            usage_cache["cfg_hash"] = _cfg_usage_cache_key(config if isinstance(config, dict) else {})
+            usage_cache["timeout"] = timeout_sec
+        return merged
 
     def execute_profile_switch(
         target: str,
@@ -7237,6 +7858,36 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                         {"duration_ms": duration_ms, "timeout_sec": timeout, "force": force, "profiles": len(profile_rows) if isinstance(profile_rows, list) else 0, "error_rows": error_rows},
                     )
                 return _json_ok(result)
+            if self.command == "GET" and path == "/api/usage-local/current":
+                timeout = 7
+                if "timeout" in q:
+                    try:
+                        timeout = max(1, int(float(q["timeout"][0])))
+                    except Exception:
+                        return _json_error("BAD_TIMEOUT", "timeout must be a positive number")
+                cfg = load_cam_config()
+                context = _build_usage_profile_context(config=cfg)
+                current_name = str(context.get("current_profile") or "").strip()
+                if not current_name:
+                    cached = _usage_cache_payload_copy() or _seed_usage_payload(cfg)
+                    return _json_ok(cached)
+                result = refresh_usage_subset([current_name], timeout_sec=timeout, config=cfg)
+                return _json_ok(result)
+            if self.command == "GET" and path == "/api/usage-local/profile":
+                timeout = 7
+                if "timeout" in q:
+                    try:
+                        timeout = max(1, int(float(q["timeout"][0])))
+                    except Exception:
+                        return _json_error("BAD_TIMEOUT", "timeout must be a positive number")
+                name = str((q.get("name", [""])[0] or "")).strip()
+                if not name:
+                    return _json_error("MISSING_NAME", "profile name is required")
+                cfg = load_cam_config()
+                if not any(p.name == name for p in _existing_profile_dirs()):
+                    return _json_error("NOT_FOUND", f"profile '{name}' not found", 404)
+                result = refresh_usage_subset([name], timeout_sec=timeout, config=cfg)
+                return _json_ok(result)
             if self.command == "GET" and path == "/api/adv/list":
                 args = ["list"]
                 if bool_value((q.get("debug", ["false"])[0]), False):
@@ -7407,6 +8058,48 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
 
                 threading.Thread(target=_deferred_shutdown, daemon=True).start()
                 return _json_ok({"scheduled": True, "will_close_page": True, "port": target_port, "config": cfg})
+            if self.command == "POST" and path == "/api/system/restart":
+                push_event("system-restart", "ui-service restart requested from UI")
+                helper_code = (
+                    "import subprocess,time,sys; "
+                    "time.sleep(0.45); "
+                    "sys.exit(subprocess.call(sys.argv[1:]))"
+                )
+                cmd = [
+                    sys.executable,
+                    "-c",
+                    helper_code,
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "ui-service",
+                    "restart",
+                    "--host",
+                    str(host or UI_DEFAULT_HOST),
+                    "--port",
+                    str(int(port or UI_DEFAULT_PORT)),
+                    "--interval",
+                    str(float(interval_sec)),
+                    "--idle-timeout",
+                    str(float(idle_timeout_sec)),
+                    "--no-open",
+                ]
+                try:
+                    popen_kwargs = {
+                        "stdin": subprocess.DEVNULL,
+                        "stdout": subprocess.DEVNULL,
+                        "stderr": subprocess.DEVNULL,
+                    }
+                    if sys.platform.startswith("win"):
+                        popen_kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+                            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                        )
+                    else:
+                        popen_kwargs["start_new_session"] = True
+                    subprocess.Popen(cmd, **popen_kwargs)
+                except Exception as e:
+                    _log_runtime_safe("error", "ui restart spawn failed", {"error": str(e)})
+                    return _json_error("RESTART_FAILED", f"failed to schedule restart: {e}", 500)
+                return _json_ok({"restarting": True, "reload_after_ms": 1200})
             if self.command == "POST" and path == "/api/auto-switch/rapid-test":
                 if runtime.get("rapid_test_active"):
                     return _json_error("RAPID_TEST_BUSY", "rapid test is already running", 409)
