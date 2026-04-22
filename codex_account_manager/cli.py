@@ -58,6 +58,33 @@ DEFAULT_APP_VERSION = "0.0.7"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
+_RAW_SUBPROCESS_RUN = subprocess.run
+_RAW_SUBPROCESS_CALL = subprocess.call
+
+
+def _with_windows_hidden_subprocess(kwargs: dict) -> dict:
+    if not sys.platform.startswith("win"):
+        return kwargs
+    out = dict(kwargs)
+    flags = int(out.get("creationflags") or 0)
+    flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    out["creationflags"] = flags
+    if "startupinfo" not in out and hasattr(subprocess, "STARTUPINFO"):
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        si.wShowWindow = 0
+        out["startupinfo"] = si
+    return out
+
+
+def _subprocess_run(*popenargs, **kwargs):
+    return _RAW_SUBPROCESS_RUN(*popenargs, **_with_windows_hidden_subprocess(kwargs))
+
+
+def _subprocess_call(*popenargs, **kwargs):
+    return _RAW_SUBPROCESS_CALL(*popenargs, **_with_windows_hidden_subprocess(kwargs))
+
+
 def load_app_version() -> str:
     try:
         if PROJECT_CONFIG_FILE.exists():
@@ -119,7 +146,7 @@ def _set_private_permissions(path: Path) -> None:
         user = os.environ.get("USERNAME")
         if user:
             try:
-                subprocess.run(
+                _subprocess_run(
                     ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -137,7 +164,7 @@ def _ensure_windows_user_writable(path: Path) -> bool:
     if not user:
         return False
     try:
-        res = subprocess.run(
+        res = _subprocess_run(
             ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1113,7 +1140,7 @@ def _proc_running(pattern: str) -> bool:
             image = Path(pattern).name.lower()
             if not image.endswith(".exe"):
                 image = f"{image}.exe"
-            p = subprocess.run(
+            p = _subprocess_run(
                 ["tasklist", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {image}"],
                 capture_output=True,
                 text=True,
@@ -1122,7 +1149,7 @@ def _proc_running(pattern: str) -> bool:
                 return False
             return image in p.stdout.lower()
         if shutil.which("pgrep"):
-            p = subprocess.run(
+            p = _subprocess_run(
                 ["pgrep", "-f", pattern],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -1154,20 +1181,20 @@ def stop_codex() -> bool:
     touched = False
     for app_name in APP_CANDIDATES:
         if sys.platform == "darwin":
-            subprocess.run(["osascript", "-e", f'tell application "{app_name}" to quit'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _subprocess_run(["osascript", "-e", f'tell application "{app_name}" to quit'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             touched = True
         for proc_pattern in candidates.get(app_name, []):
             if sys.platform.startswith("win"):
                 image = Path(proc_pattern).name
                 if not image.lower().endswith(".exe"):
                     image = f"{image}.exe"
-                subprocess.run(["taskkill", "/F", "/T", "/IM", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _subprocess_run(["taskkill", "/F", "/T", "/IM", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 touched = True
             elif shutil.which("pkill"):
-                subprocess.run(["pkill", "-f", proc_pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _subprocess_run(["pkill", "-f", proc_pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 touched = True
             elif shutil.which("killall"):
-                subprocess.run(["killall", "-q", Path(proc_pattern).name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _subprocess_run(["killall", "-q", Path(proc_pattern).name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 touched = True
     if sys.platform.startswith("win"):
         # Broader fallback for Store/app-hosted builds that may not run under Codex.exe image names.
@@ -1190,7 +1217,7 @@ def stop_codex() -> bool:
                 "}"
             )
             try:
-                subprocess.run([ps, "-NoProfile", "-Command", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+                _subprocess_run([ps, "-NoProfile", "-Command", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
                 touched = True
             except Exception:
                 pass
@@ -1224,7 +1251,7 @@ def _windows_force_kill_codex_processes() -> int:
         "Write-Output $k"
     )
     try:
-        proc = subprocess.run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=6)
+        proc = _subprocess_run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=6)
         if proc.returncode != 0:
             return 0
         out = (proc.stdout or "").strip()
@@ -1268,7 +1295,7 @@ def _windows_graceful_close_codex_windows() -> tuple[int, int]:
         "Write-Output ($attempt.ToString() + ',' + $alive.ToString())"
     )
     try:
-        proc = subprocess.run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=7)
+        proc = _subprocess_run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=7)
         if proc.returncode != 0:
             return 0, 0
         raw = (proc.stdout or "").strip().splitlines()
@@ -1318,7 +1345,7 @@ def _detect_running_codex_executable_windows() -> str | None:
         "if($p){Write-Output $p}"
     )
     try:
-        proc = subprocess.run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=3)
+        proc = _subprocess_run([ps, "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=3)
     except Exception:
         return None
     if proc.returncode != 0:
@@ -1344,7 +1371,7 @@ def _start_windows_appsfolder_codex() -> bool:
         "exit 0"
     )
     try:
-        proc = subprocess.run([ps, "-NoProfile", "-Command", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+        proc = _subprocess_run([ps, "-NoProfile", "-Command", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
     except Exception:
         return False
     return proc.returncode == 0
@@ -1405,7 +1432,7 @@ def start_codex(preferred_app_name: str = "", preferred_exec_path: str = "") -> 
         return False
     if sys.platform == "darwin":
         for app_name in app_order:
-            p = subprocess.run(["open", "-a", app_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            p = _subprocess_run(["open", "-a", app_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if p.returncode == 0:
                 return True
         return False
@@ -1485,7 +1512,7 @@ def _resolve_codex_cli_from_where_windows() -> str | None:
     if not where_exe:
         return None
     try:
-        proc = subprocess.run(
+        proc = _subprocess_run(
             [where_exe, "codex"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -1521,7 +1548,7 @@ def _resolve_codex_cli_from_powershell_command_windows() -> str | None:
         "}"
     )
     try:
-        proc = subprocess.run(
+        proc = _subprocess_run(
             [ps, "-NoProfile", "-Command", script],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -1551,7 +1578,7 @@ def _resolve_codex_cli_from_app_paths_registry_windows() -> str | None:
     ]
     for key in keys:
         try:
-            proc = subprocess.run(
+            proc = _subprocess_run(
                 [reg_exe, "query", key, "/ve"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -1586,7 +1613,7 @@ def _resolve_codex_cli_from_appx_windows() -> str | None:
         "if($pkg -and $pkg.InstallLocation){Write-Output $pkg.InstallLocation}"
     )
     try:
-        proc = subprocess.run(
+        proc = _subprocess_run(
             [ps, "-NoProfile", "-Command", script],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -1612,7 +1639,7 @@ def _resolve_codex_cli_from_appx_windows() -> str | None:
 
 def _can_invoke_codex_cli(path: str) -> bool:
     try:
-        subprocess.run(
+        _subprocess_run(
             [path, "--help"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1746,7 +1773,10 @@ def run_codex_auth(args) -> int:
         print(f"error: {e}")
         return 1
     cmd = runner + args
-    return subprocess.call(cmd)
+    kwargs = {}
+    if sys.platform.startswith("win"):
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return _subprocess_call(cmd, **kwargs)
 
 
 def run_codex_auth_capture(args, timeout_sec: int | None = 6):
@@ -1763,9 +1793,11 @@ def run_codex_auth_capture(args, timeout_sec: int | None = 6):
     cmd = runner + args
     try:
         kwargs = {"capture_output": True, "text": True}
+        if sys.platform.startswith("win"):
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         if timeout_sec is not None:
             kwargs["timeout"] = timeout_sec
-        proc = subprocess.run(cmd, **kwargs)
+        proc = _subprocess_run(cmd, **kwargs)
     except subprocess.TimeoutExpired:
         return {
             "ok": False,
@@ -1913,7 +1945,7 @@ def cmd_add(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, devi
     print(f"temp CODEX_HOME: {temp_home}")
 
     try:
-        proc = subprocess.run(login_cmd, env=env, timeout=timeout)
+        proc = _subprocess_run(login_cmd, env=env, timeout=timeout)
         if proc.returncode != 0:
             reason = f"login command failed with exit code {proc.returncode}"
             print(f"error: {reason}")
@@ -2369,7 +2401,7 @@ def cmd_run(name: str, command_args) -> int:
 
     print(f"profile home: {profile_home}")
     print(f"running: {' '.join(cmd)}")
-    return subprocess.call(cmd, env=env)
+    return _subprocess_call(cmd, env=env)
 
 
 def cmd_remove(name: str) -> int:
@@ -7540,7 +7572,7 @@ def clear_ui_pid_info() -> None:
 def stop_ui_process(pid: int) -> bool:
     try:
         if sys.platform.startswith("win"):
-            proc = subprocess.run(["taskkill", "/PID", str(pid), "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = _subprocess_run(["taskkill", "/PID", str(pid), "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return proc.returncode == 0
         os.kill(pid, signal.SIGTERM)
         return True
@@ -7614,13 +7646,18 @@ def cmd_ui(host: str, port: int, no_open: bool, interval_sec: float, idle_timeou
         "--no-open",
     ]
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        popen_kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys.platform.startswith("win"):
+            popen_kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(cmd, **popen_kwargs)
     except Exception as e:
         print(f"error: failed to start detached UI: {e}")
         return 1
@@ -7648,7 +7685,7 @@ def _pids_listening_on_port(port: int) -> set[int]:
     pids: set[int] = set()
     if shutil.which("lsof"):
         try:
-            p = subprocess.run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True)
+            p = _subprocess_run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True)
             for raw in p.stdout.splitlines():
                 raw = raw.strip()
                 if raw.isdigit():
@@ -7659,7 +7696,7 @@ def _pids_listening_on_port(port: int) -> set[int]:
         return pids
     if shutil.which("ss"):
         try:
-            p = subprocess.run(["ss", "-lptn", f"sport = :{port}"], capture_output=True, text=True)
+            p = _subprocess_run(["ss", "-lptn", f"sport = :{port}"], capture_output=True, text=True)
             for match in re.findall(r"pid=(\d+)", p.stdout):
                 pids.add(int(match))
         except Exception:
@@ -7668,7 +7705,7 @@ def _pids_listening_on_port(port: int) -> set[int]:
         return pids
     if shutil.which("netstat"):
         try:
-            p = subprocess.run(["netstat", "-nlp"], capture_output=True, text=True)
+            p = _subprocess_run(["netstat", "-nlp"], capture_output=True, text=True)
             for line in p.stdout.splitlines():
                 if f":{port} " not in line:
                     continue
@@ -7746,7 +7783,7 @@ def _linux_systemd_user_available() -> bool:
     if not shutil.which("systemctl"):
         return False
     try:
-        proc = subprocess.run(["systemctl", "--user", "list-unit-files"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = _subprocess_run(["systemctl", "--user", "list-unit-files"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return proc.returncode == 0
     except Exception:
         return False
@@ -7767,12 +7804,12 @@ def cmd_ui_autostart(action: str, host: str, port: int) -> int:
             plist_dir.mkdir(parents=True, exist_ok=True)
             plist = f'''<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{''.join([f'<string>{x}</string>' for x in cmd])}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>\n'''
             plist_path.write_text(plist, encoding="utf-8")
-            subprocess.run(["launchctl", "unload", str(plist_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["launchctl", "load", str(plist_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _subprocess_run(["launchctl", "unload", str(plist_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _subprocess_run(["launchctl", "load", str(plist_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(f"autostart installed: {plist_path}")
             return 0
         if action == "uninstall":
-            subprocess.run(["launchctl", "unload", str(plist_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _subprocess_run(["launchctl", "unload", str(plist_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if plist_path.exists():
                 plist_path.unlink()
             print("autostart uninstalled")
@@ -7786,18 +7823,18 @@ def cmd_ui_autostart(action: str, host: str, port: int) -> int:
         task = "CodexAccountManagerUI"
         if action == "install":
             tr = subprocess.list2cmdline(cmd)
-            rc = subprocess.run(["schtasks", "/Create", "/TN", task, "/TR", tr, "/SC", "ONLOGON", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+            rc = _subprocess_run(["schtasks", "/Create", "/TN", task, "/TR", tr, "/SC", "ONLOGON", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
             if rc == 0:
                 print("autostart installed")
                 return 0
             print("error: failed to install windows autostart")
             return 1
         if action == "uninstall":
-            subprocess.run(["schtasks", "/Delete", "/TN", task, "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _subprocess_run(["schtasks", "/Delete", "/TN", task, "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("autostart uninstalled")
             return 0
         if action == "status":
-            rc = subprocess.run(["schtasks", "/Query", "/TN", task], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+            rc = _subprocess_run(["schtasks", "/Query", "/TN", task], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
             print_json({"installed": rc == 0, "task": task})
             return 0
 
@@ -7812,20 +7849,20 @@ def cmd_ui_autostart(action: str, host: str, port: int) -> int:
                     f"[Unit]\nDescription=Codex Account Manager UI\n\n[Service]\nType=simple\nExecStart={exec_cmd}\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
                     encoding="utf-8",
                 )
-                subprocess.run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(["systemctl", "--user", "enable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _subprocess_run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _subprocess_run(["systemctl", "--user", "enable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"autostart installed: {service_path}")
                 return 0
             if action == "uninstall":
-                subprocess.run(["systemctl", "--user", "disable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _subprocess_run(["systemctl", "--user", "disable", "--now", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if service_path.exists():
                     service_path.unlink()
-                subprocess.run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _subprocess_run(["systemctl", "--user", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print("autostart uninstalled")
                 return 0
             if action == "status":
-                enabled = subprocess.run(["systemctl", "--user", "is-enabled", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-                active = subprocess.run(["systemctl", "--user", "is-active", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+                enabled = _subprocess_run(["systemctl", "--user", "is-enabled", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+                active = _subprocess_run(["systemctl", "--user", "is-active", "codex-account-ui.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
                 print_json({"installed": service_path.exists(), "enabled": enabled, "active": active, "backend": "systemd", "path": str(service_path)})
                 return 0
 
