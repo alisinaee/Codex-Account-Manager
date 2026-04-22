@@ -27,7 +27,7 @@ codex-account --help
 Packaging is defined in `pyproject.toml` using `setuptools`:
 
 - Package name: `codex-account-manager`
-- Version: `0.0.7`
+- Version: `0.0.8`
 - Console script: `codex-account`
 - Supported Python: `>=3.11`
 
