@@ -55,7 +55,7 @@ CAM_LOG_MAX_BYTES = 2 * 1024 * 1024
 CAM_LOG_BACKUPS = 4
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.8"
+DEFAULT_APP_VERSION = "0.0.9"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 
 
