@@ -3,6 +3,9 @@
 ## Project Snapshot
 - Keep updates focused on architecture, behavior rules, and high-impact changes only.
 - Prefer short, implementation-focused bullets over narrative prose.
+- App/package version is sourced from `config.json`, `pyproject.toml`, `uv.lock`, and `codex_account_manager/cli.py`.
+- In-app `Guide & Help` and release-note fallback content are embedded in `codex_account_manager/cli.py` and `docs/release-notes.md`.
+- `release.zip` is a committed release artifact built from a fixed tracked-file list at repo root.
 
 ## Behavior Rules
 - Keep this file concise and clear for AI agents.
@@ -15,6 +18,12 @@
 - Ensure dude its too slow similations i want to each swith happen about 30 sec also colorufll outputs , to know what happend what seelct in chain for next see the algorithm and.
 
 ## Recent Changes (Last 20)
+### 2026-04-22T23:06:00+03:30
+- Changed files: `codex_account_manager/cli.py`, `config.json`, `pyproject.toml`, `uv.lock`, `docs/release-notes.md`, `docs/agent-rules.md`, `release.zip`
+- Summary: Prepared v0.0.10 release content by updating the in-app guide/help copy, bumping version metadata, documenting the new refresh/auth workflow, and rebuilding release.zip.
+- Behavior impact: Recorded release workflow and current UI/auth behavior for future AI context.
+<!-- fingerprint:82c73c7fd4ea -->
+
 ### 2026-04-20T21:04:40+03:30
 - Changed files: `codex_account_manager/autoswitch_sim.py`, `README.md`, `release.zip`
 - Summary: Added real-mode candidate exclusion diagnostics and prepare-test flag to auto-enable profile eligibility for 30-second cycle switching tests; rebuilt release.zip.
@@ -40,4 +49,4 @@
 <!-- fingerprint:2fc5b9367fb4 -->
 
 ## Last Updated
-- 2026-04-20T21:04:40+03:30
+- 2026-04-22T23:06:00+03:30
