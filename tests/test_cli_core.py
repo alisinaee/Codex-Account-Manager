@@ -1,5 +1,7 @@
+import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +19,8 @@ class CliCoreTests(unittest.TestCase):
             "PROFILES_DIR": cli.PROFILES_DIR,
             "BACKUPS_DIR": cli.BACKUPS_DIR,
             "PROFILE_HOMES_DIR": cli.PROFILE_HOMES_DIR,
+            "EXPORT_SESSIONS": dict(cli.EXPORT_SESSIONS),
+            "IMPORT_ANALYSES": dict(cli.IMPORT_ANALYSES),
         }
         cli.CAM_DIR = root / "cam"
         cli.CAM_CONFIG_FILE = cli.CAM_DIR / "config.json"
@@ -24,6 +28,8 @@ class CliCoreTests(unittest.TestCase):
         cli.PROFILES_DIR = root / "profiles"
         cli.BACKUPS_DIR = root / "backups"
         cli.PROFILE_HOMES_DIR = root / "homes"
+        cli.EXPORT_SESSIONS.clear()
+        cli.IMPORT_ANALYSES.clear()
 
     def tearDown(self):
         cli.CAM_DIR = self._orig["CAM_DIR"]
@@ -32,6 +38,10 @@ class CliCoreTests(unittest.TestCase):
         cli.PROFILES_DIR = self._orig["PROFILES_DIR"]
         cli.BACKUPS_DIR = self._orig["BACKUPS_DIR"]
         cli.PROFILE_HOMES_DIR = self._orig["PROFILE_HOMES_DIR"]
+        cli.EXPORT_SESSIONS.clear()
+        cli.EXPORT_SESSIONS.update(self._orig["EXPORT_SESSIONS"])
+        cli.IMPORT_ANALYSES.clear()
+        cli.IMPORT_ANALYSES.update(self._orig["IMPORT_ANALYSES"])
         self.tmp.cleanup()
 
     def test_log_redaction_applies_to_message_and_details(self):
@@ -64,6 +74,18 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(cli._error_type_for_code("BAD_JSON", 400), "validation")
         self.assertEqual(cli._error_type_for_code("COMMAND_FAILED", 400), "transient")
         self.assertEqual(cli._error_type_for_code("INTERNAL", 500), "internal")
+
+    def test_notification_alarm_preset_defaults_when_missing(self):
+        cfg = cli.sanitize_cam_config({"notifications": {"enabled": True}})
+        self.assertEqual(cfg["notifications"]["alarm_preset"], cli.DEFAULT_ALARM_PRESET_ID)
+
+    def test_notification_alarm_preset_rejects_unknown_values(self):
+        cfg = cli.sanitize_cam_config({"notifications": {"alarm_preset": "nope"}})
+        self.assertEqual(cfg["notifications"]["alarm_preset"], cli.DEFAULT_ALARM_PRESET_ID)
+
+    def test_notification_alarm_preset_keeps_known_value(self):
+        cfg = cli.sanitize_cam_config({"notifications": {"alarm_preset": "zenith"}})
+        self.assertEqual(cfg["notifications"]["alarm_preset"], "zenith")
 
     def test_local_release_notes_parser_handles_unreleased_and_versions(self):
         fallback = Path(self.tmp.name) / "release-notes.md"
@@ -131,6 +153,44 @@ class CliCoreTests(unittest.TestCase):
         self.assertTrue(second["cached"])
         self.assertEqual(fetcher.call_count, 1)
 
+    def test_update_status_ignores_prerelease_when_newer_stable_exists(self):
+        payload = {
+            "status": "synced",
+            "status_text": "Synced from GitHub",
+            "source": "github",
+            "repo_url": cli.PROJECT_RELEASES_URL,
+            "releases": [
+                {"tag": "v9.9.9-rc1", "version": "v9.9.9-rc1", "title": "v9.9.9-rc1", "published_at": "2026-04-23T10:00:00Z", "body": "rc", "highlights": [], "url": "", "is_prerelease": True, "is_draft": False, "is_current": False, "source": "github"},
+                {"tag": "v0.0.12", "version": "v0.0.12", "title": "v0.0.12", "published_at": "2026-04-22T10:00:00Z", "body": "stable", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": False, "source": "github"},
+            ],
+        }
+        status = cli.build_update_status_payload(payload)
+        self.assertTrue(status["update_available"])
+        self.assertEqual(status["latest_version"], "v0.0.12")
+        self.assertEqual((status["latest_release"] or {}).get("tag"), "v0.0.12")
+
+    def test_update_status_returns_no_update_when_versions_match(self):
+        payload = {
+            "status": "synced",
+            "status_text": "Synced from GitHub",
+            "source": "github",
+            "repo_url": cli.PROJECT_RELEASES_URL,
+            "releases": [
+                {"tag": f"v{cli.APP_VERSION}", "version": f"v{cli.APP_VERSION}", "title": f"v{cli.APP_VERSION}", "published_at": "2026-04-23T10:00:00Z", "body": "", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": True, "source": "github"},
+            ],
+        }
+        status = cli.build_update_status_payload(payload)
+        self.assertFalse(status["update_available"])
+        self.assertEqual(status["latest_version"], f"v{cli.APP_VERSION}")
+
+    def test_render_ui_html_contains_update_controls(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token")
+        self.assertIn('id="appUpdateBadge"', html)
+        self.assertIn('id="appUpdateBtn"', html)
+        self.assertIn('id="appUpdateBackdrop"', html)
+        self.assertIn("/api/app-update-status", html)
+        self.assertIn("/api/system/update", html)
+
     def test_trigger_breached_hits_when_remaining_equals_threshold(self):
         cfg = {
             "auto_switch": {
@@ -193,6 +253,158 @@ class CliCoreTests(unittest.TestCase):
         }
         chain = cli._ordered_chain_names(payload, cfg)
         self.assertEqual(chain, ["acc1", "acc3", "acc2"])
+
+    def _write_profile(self, name: str, *, email: str, account_id: str) -> None:
+        profile_dir = cli.PROFILES_DIR / name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        auth = {
+            "account_id": account_id,
+            "id_token": f"header.{self._jwt_payload({'email': email})}.sig",
+        }
+        (profile_dir / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+        (profile_dir / "meta.json").write_text(json.dumps({"name": name, "saved_at": "2026-04-23T00:00:00", "account_hint": email}), encoding="utf-8")
+
+    def _jwt_payload(self, payload: dict) -> str:
+        import base64
+        raw = json.dumps(payload).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+    def test_export_profiles_archive_contains_manifest_and_profiles(self):
+        self._write_profile("work", email="work@example.com", account_id="acc-work")
+        self._write_profile("personal", email="personal@example.com", account_id="acc-personal")
+        out = Path(self.tmp.name) / "profiles.camzip"
+        payload = cli.create_profiles_archive(out)
+        self.assertEqual(payload["count"], 2)
+        self.assertTrue(out.exists())
+        with zipfile.ZipFile(out, "r") as zf:
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            self.assertEqual(manifest["version"], cli.PROFILE_ARCHIVE_VERSION)
+            self.assertEqual(sorted(item["name"] for item in manifest["profiles"]), ["personal", "work"])
+            self.assertIn("profiles/work/auth.json", zf.namelist())
+            self.assertIn("profiles/personal/meta.json", zf.namelist())
+
+    def test_export_profiles_archive_can_limit_to_selected_profiles(self):
+        self._write_profile("work", email="work@example.com", account_id="acc-work")
+        self._write_profile("personal", email="personal@example.com", account_id="acc-personal")
+        out = Path(self.tmp.name) / "selected.camzip"
+        payload = cli.create_profiles_archive(out, ["personal"])
+        self.assertEqual(payload["count"], 1)
+        with zipfile.ZipFile(out, "r") as zf:
+            names = zf.namelist()
+            self.assertIn("profiles/personal/auth.json", names)
+            self.assertNotIn("profiles/work/auth.json", names)
+
+    def test_export_profiles_fails_when_requested_profile_missing(self):
+        out = Path(self.tmp.name) / "missing.camzip"
+        with self.assertRaises(RuntimeError):
+            cli.create_profiles_archive(out, ["nope"])
+
+    def test_prepare_profiles_export_uses_custom_filename_and_extension(self):
+        self._write_profile("work", email="work@example.com", account_id="acc-work")
+        payload = cli.prepare_profiles_export(["work"], filename="team-migration")
+        self.assertEqual(payload["filename"], "team-migration.camzip")
+        session = cli.get_export_session(payload["export_id"])
+        self.assertIsNotNone(session)
+        self.assertEqual(session["filename"], "team-migration.camzip")
+        self.assertTrue(Path(session["path"]).exists())
+
+    def test_prepare_profiles_export_sanitizes_custom_filename(self):
+        self._write_profile("work", email="work@example.com", account_id="acc-work")
+        payload = cli.prepare_profiles_export(["work"], filename="../  weird export 2026!!.camzip")
+        self.assertEqual(payload["filename"], "weird-export-2026.camzip")
+
+    def test_import_analysis_rejects_bad_archive(self):
+        bad = Path(self.tmp.name) / "bad.camzip"
+        bad.write_text("not-a-zip", encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            cli.analyze_profiles_archive(bad)
+
+    def test_import_analysis_reports_name_and_account_conflicts(self):
+        self._write_profile("work", email="work@example.com", account_id="acc-work")
+        export_root = Path(self.tmp.name) / "export-src"
+        export_profiles = export_root / "profiles"
+        export_profiles.mkdir(parents=True, exist_ok=True)
+        old_profiles = cli.PROFILES_DIR
+        try:
+            cli.PROFILES_DIR = export_profiles
+            self._write_profile("work", email="new@example.com", account_id="other-acc")
+            self._write_profile("moved", email="work@example.com", account_id="third-acc")
+            archive = Path(self.tmp.name) / "conflicts.camzip"
+            cli.create_profiles_archive(archive)
+        finally:
+            cli.PROFILES_DIR = old_profiles
+        analysis = cli.analyze_profiles_archive(archive)
+        by_name = {row["name"]: row for row in analysis["profiles"]}
+        self.assertEqual(by_name["work"]["status"], "name_conflict")
+        self.assertEqual(by_name["moved"]["status"], "account_conflict")
+
+    def test_import_apply_skip_leaves_existing_profile_untouched(self):
+        self._write_profile("work", email="work@example.com", account_id="acc-old")
+        archive = Path(self.tmp.name) / "skip.camzip"
+        export_root = Path(self.tmp.name) / "export-skip"
+        export_profiles = export_root / "profiles"
+        export_profiles.mkdir(parents=True, exist_ok=True)
+        old_profiles = cli.PROFILES_DIR
+        try:
+            cli.PROFILES_DIR = export_profiles
+            self._write_profile("work", email="new@example.com", account_id="acc-new")
+            cli.create_profiles_archive(archive)
+        finally:
+            cli.PROFILES_DIR = old_profiles
+        result = cli.apply_profiles_import(archive, [{"name": "work", "action": "skip"}])
+        self.assertEqual(result["summary"]["skipped"], 1)
+        auth = json.loads((cli.PROFILES_DIR / "work" / "auth.json").read_text(encoding="utf-8"))
+        self.assertEqual(auth["account_id"], "acc-old")
+
+    def test_import_apply_rename_creates_new_profile(self):
+        archive = Path(self.tmp.name) / "rename.camzip"
+        export_root = Path(self.tmp.name) / "export-rename"
+        export_profiles = export_root / "profiles"
+        export_profiles.mkdir(parents=True, exist_ok=True)
+        old_profiles = cli.PROFILES_DIR
+        try:
+            cli.PROFILES_DIR = export_profiles
+            self._write_profile("work", email="work@example.com", account_id="acc-work")
+            cli.create_profiles_archive(archive)
+        finally:
+            cli.PROFILES_DIR = old_profiles
+        result = cli.apply_profiles_import(archive, [{"name": "work", "action": "rename", "rename_to": "work-copy"}])
+        self.assertEqual(result["summary"]["imported"], 1)
+        self.assertTrue((cli.PROFILES_DIR / "work-copy" / "auth.json").exists())
+
+    def test_import_apply_overwrite_replaces_existing_profile(self):
+        self._write_profile("work", email="old@example.com", account_id="acc-old")
+        archive = Path(self.tmp.name) / "overwrite.camzip"
+        export_root = Path(self.tmp.name) / "export-overwrite"
+        export_profiles = export_root / "profiles"
+        export_profiles.mkdir(parents=True, exist_ok=True)
+        old_profiles = cli.PROFILES_DIR
+        try:
+            cli.PROFILES_DIR = export_profiles
+            self._write_profile("work", email="new@example.com", account_id="acc-new")
+            cli.create_profiles_archive(archive)
+        finally:
+            cli.PROFILES_DIR = old_profiles
+        result = cli.apply_profiles_import(archive, [{"name": "work", "action": "overwrite"}])
+        self.assertEqual(result["summary"]["overwritten"], 1)
+        auth = json.loads((cli.PROFILES_DIR / "work" / "auth.json").read_text(encoding="utf-8"))
+        self.assertEqual(auth["account_id"], "acc-new")
+
+    def test_import_analysis_rejects_unsupported_manifest_version(self):
+        self._write_profile("work", email="work@example.com", account_id="acc-work")
+        archive = Path(self.tmp.name) / "version.camzip"
+        cli.create_profiles_archive(archive, ["work"])
+        rewritten = Path(self.tmp.name) / "version-rewritten.camzip"
+        with zipfile.ZipFile(archive, "r") as src, zipfile.ZipFile(rewritten, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+            for info in src.infolist():
+                data = src.read(info.filename)
+                if info.filename == "manifest.json":
+                    manifest = json.loads(data.decode("utf-8"))
+                    manifest["version"] = cli.PROFILE_ARCHIVE_VERSION + 1
+                    data = json.dumps(manifest).encode("utf-8")
+                dst.writestr(info.filename, data)
+        with self.assertRaises(RuntimeError):
+            cli.analyze_profiles_archive(rewritten)
 
 
 if __name__ == "__main__":

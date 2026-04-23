@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -55,12 +56,20 @@ CAM_LOG_MAX_BYTES = 2 * 1024 * 1024
 CAM_LOG_BACKUPS = 4
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.10"
+DEFAULT_APP_VERSION = "0.0.11"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
+PROFILE_ARCHIVE_VERSION = 1
+PROFILE_ARCHIVE_EXT = ".camzip"
+EXPORT_SESSION_TTL_SEC = 15 * 60
+IMPORT_ANALYSIS_TTL_SEC = 30 * 60
 
 
 _RAW_SUBPROCESS_RUN = subprocess.run
 _RAW_SUBPROCESS_CALL = subprocess.call
+EXPORT_SESSION_LOCK = threading.Lock()
+EXPORT_SESSIONS: dict[str, dict] = {}
+IMPORT_ANALYSIS_LOCK = threading.Lock()
+IMPORT_ANALYSES: dict[str, dict] = {}
 
 
 def _with_windows_hidden_subprocess(kwargs: dict) -> dict:
@@ -189,6 +198,7 @@ DEFAULT_CAM_CONFIG = {
     "notifications": {
         "enabled": False,
         "scope": "any",
+        "alarm_preset": "beacon",
         "thresholds": {
             "h5_warn_pct": 20,
             "weekly_warn_pct": 20,
@@ -220,6 +230,31 @@ DEFAULT_CAM_CONFIG = {
         "eligibility": {},
     },
 }
+
+ALARM_PRESETS = [
+    {"id": "beacon", "label": "Beacon", "tones": [{"t": 0.00, "f": 880, "d": 0.22, "g": 0.18}, {"t": 0.28, "f": 1046, "d": 0.22, "g": 0.18}, {"t": 0.56, "f": 1318, "d": 0.34, "g": 0.2}]},
+    {"id": "pulse", "label": "Pulse", "tones": [{"t": 0.00, "f": 740, "d": 0.18, "g": 0.16}, {"t": 0.22, "f": 740, "d": 0.18, "g": 0.18}, {"t": 0.44, "f": 740, "d": 0.22, "g": 0.2}]},
+    {"id": "sentinel", "label": "Sentinel", "tones": [{"t": 0.00, "f": 523, "d": 0.24, "g": 0.16}, {"t": 0.30, "f": 659, "d": 0.24, "g": 0.17}, {"t": 0.60, "f": 784, "d": 0.30, "g": 0.19}]},
+    {"id": "radar", "label": "Radar", "tones": [{"t": 0.00, "f": 640, "d": 0.12, "g": 0.14}, {"t": 0.16, "f": 760, "d": 0.12, "g": 0.15}, {"t": 0.32, "f": 920, "d": 0.16, "g": 0.18}, {"t": 0.56, "f": 1120, "d": 0.24, "g": 0.2}]},
+    {"id": "lantern", "label": "Lantern", "tones": [{"t": 0.00, "f": 660, "d": 0.20, "g": 0.14}, {"t": 0.24, "f": 990, "d": 0.28, "g": 0.18}]},
+    {"id": "signal", "label": "Signal", "tones": [{"t": 0.00, "f": 784, "d": 0.16, "g": 0.16}, {"t": 0.20, "f": 932, "d": 0.16, "g": 0.17}, {"t": 0.40, "f": 1174, "d": 0.16, "g": 0.18}, {"t": 0.66, "f": 1568, "d": 0.26, "g": 0.19}]},
+    {"id": "harbor", "label": "Harbor", "tones": [{"t": 0.00, "f": 440, "d": 0.26, "g": 0.16}, {"t": 0.34, "f": 554, "d": 0.26, "g": 0.16}, {"t": 0.68, "f": 659, "d": 0.36, "g": 0.19}]},
+    {"id": "nova", "label": "Nova", "tones": [{"t": 0.00, "f": 988, "d": 0.12, "g": 0.15}, {"t": 0.18, "f": 1244, "d": 0.14, "g": 0.16}, {"t": 0.38, "f": 1568, "d": 0.30, "g": 0.21}]},
+    {"id": "ripple", "label": "Ripple", "tones": [{"t": 0.00, "f": 698, "d": 0.14, "g": 0.13}, {"t": 0.16, "f": 740, "d": 0.14, "g": 0.13}, {"t": 0.32, "f": 784, "d": 0.14, "g": 0.14}, {"t": 0.48, "f": 831, "d": 0.24, "g": 0.16}]},
+    {"id": "flare", "label": "Flare", "tones": [{"t": 0.00, "f": 880, "d": 0.10, "g": 0.14}, {"t": 0.14, "f": 1108, "d": 0.10, "g": 0.16}, {"t": 0.28, "f": 1396, "d": 0.12, "g": 0.18}, {"t": 0.46, "f": 1760, "d": 0.28, "g": 0.2}]},
+    {"id": "quartz", "label": "Quartz", "tones": [{"t": 0.00, "f": 587, "d": 0.18, "g": 0.15}, {"t": 0.24, "f": 880, "d": 0.18, "g": 0.17}, {"t": 0.50, "f": 1174, "d": 0.30, "g": 0.19}]},
+    {"id": "orbit", "label": "Orbit", "tones": [{"t": 0.00, "f": 523, "d": 0.12, "g": 0.13}, {"t": 0.16, "f": 659, "d": 0.12, "g": 0.14}, {"t": 0.32, "f": 831, "d": 0.12, "g": 0.15}, {"t": 0.52, "f": 1046, "d": 0.22, "g": 0.18}]},
+    {"id": "echo", "label": "Echo", "tones": [{"t": 0.00, "f": 660, "d": 0.22, "g": 0.12}, {"t": 0.30, "f": 660, "d": 0.18, "g": 0.10}, {"t": 0.56, "f": 990, "d": 0.26, "g": 0.17}]},
+    {"id": "summit", "label": "Summit", "tones": [{"t": 0.00, "f": 784, "d": 0.18, "g": 0.15}, {"t": 0.24, "f": 988, "d": 0.18, "g": 0.16}, {"t": 0.50, "f": 1318, "d": 0.24, "g": 0.18}, {"t": 0.82, "f": 1568, "d": 0.32, "g": 0.2}]},
+    {"id": "drift", "label": "Drift", "tones": [{"t": 0.00, "f": 494, "d": 0.24, "g": 0.15}, {"t": 0.28, "f": 622, "d": 0.24, "g": 0.15}, {"t": 0.60, "f": 740, "d": 0.34, "g": 0.18}]},
+    {"id": "vector", "label": "Vector", "tones": [{"t": 0.00, "f": 932, "d": 0.12, "g": 0.16}, {"t": 0.16, "f": 1174, "d": 0.12, "g": 0.17}, {"t": 0.32, "f": 1480, "d": 0.12, "g": 0.18}, {"t": 0.52, "f": 1864, "d": 0.26, "g": 0.19}]},
+    {"id": "glow", "label": "Glow", "tones": [{"t": 0.00, "f": 698, "d": 0.18, "g": 0.14}, {"t": 0.22, "f": 880, "d": 0.18, "g": 0.16}, {"t": 0.48, "f": 1046, "d": 0.28, "g": 0.18}]},
+    {"id": "strobe", "label": "Strobe", "tones": [{"t": 0.00, "f": 1046, "d": 0.09, "g": 0.15}, {"t": 0.12, "f": 1046, "d": 0.09, "g": 0.15}, {"t": 0.24, "f": 1318, "d": 0.09, "g": 0.16}, {"t": 0.36, "f": 1318, "d": 0.09, "g": 0.16}, {"t": 0.52, "f": 1568, "d": 0.24, "g": 0.19}]},
+    {"id": "ember", "label": "Ember", "tones": [{"t": 0.00, "f": 554, "d": 0.22, "g": 0.14}, {"t": 0.28, "f": 698, "d": 0.22, "g": 0.15}, {"t": 0.58, "f": 831, "d": 0.30, "g": 0.17}]},
+    {"id": "zenith", "label": "Zenith", "tones": [{"t": 0.00, "f": 988, "d": 0.16, "g": 0.16}, {"t": 0.22, "f": 1244, "d": 0.16, "g": 0.17}, {"t": 0.46, "f": 1661, "d": 0.18, "g": 0.18}, {"t": 0.74, "f": 1976, "d": 0.30, "g": 0.2}]},
+]
+DEFAULT_ALARM_PRESET_ID = ALARM_PRESETS[0]["id"]
+ALARM_PRESET_IDS = {item["id"] for item in ALARM_PRESETS}
 
 
 ADD_LOGIN_LOCK = threading.Lock()
@@ -490,6 +525,41 @@ def ensure_tmp_dir() -> Path:
     return tmp_dir
 
 
+def ensure_cam_tmp_dir() -> Path:
+    ensure_dirs()
+    tmp_dir = CAM_DIR / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_dir
+
+
+def _cleanup_expired_export_sessions() -> None:
+    now = time.time()
+    with EXPORT_SESSION_LOCK:
+        expired = [sid for sid, entry in EXPORT_SESSIONS.items() if now - float(entry.get("created_ts") or 0.0) > EXPORT_SESSION_TTL_SEC]
+        for sid in expired:
+            entry = EXPORT_SESSIONS.pop(sid, None) or {}
+            path = entry.get("path")
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+
+def _cleanup_expired_import_analyses() -> None:
+    now = time.time()
+    with IMPORT_ANALYSIS_LOCK:
+        expired = [sid for sid, entry in IMPORT_ANALYSES.items() if now - float(entry.get("created_ts") or 0.0) > IMPORT_ANALYSIS_TTL_SEC]
+        for sid in expired:
+            entry = IMPORT_ANALYSES.pop(sid, None) or {}
+            path = entry.get("path")
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+
 def _redact_log_text(value: str) -> str:
     if not value:
         return value
@@ -671,6 +741,9 @@ def sanitize_cam_config(raw: dict) -> dict:
     notif = cfg.get("notifications", {})
     notif["enabled"] = bool(notif.get("enabled", False))
     notif["scope"] = notif.get("scope") if notif.get("scope") in ("any", "5h", "weekly") else "any"
+    notif["alarm_preset"] = str(notif.get("alarm_preset") or "").strip()
+    if notif["alarm_preset"] not in ALARM_PRESET_IDS:
+        notif["alarm_preset"] = DEFAULT_ALARM_PRESET_ID
     thresholds = notif.get("thresholds", {})
     notif["thresholds"] = {
         "h5_warn_pct": clamp_int(thresholds.get("h5_warn_pct"), 20, minimum=0, maximum=100),
@@ -1910,6 +1983,419 @@ def write_profile(name: str, source_auth: Path, source_label: str, overwrite: bo
     print(f"account: {meta['account_hint']}")
 
 
+def _profile_archive_filename() -> str:
+    return f"codex-account-profiles-{now_stamp()}{PROFILE_ARCHIVE_EXT}"
+
+
+def _sanitize_profile_archive_filename(raw: str | None) -> str | None:
+    name = str(raw or "").strip()
+    if not name:
+        return None
+    name = name.replace("\\", "/").split("/")[-1].strip()
+    suffix = PROFILE_ARCHIVE_EXT if name.lower().endswith(PROFILE_ARCHIVE_EXT) else ""
+    stem = name[: -len(PROFILE_ARCHIVE_EXT)] if suffix else name
+    stem = re.sub(r"\s+", "-", stem)
+    stem = re.sub(r"[^A-Za-z0-9._+-]", "-", stem)
+    stem = re.sub(r"-{2,}", "-", stem).strip(" ._-")
+    if not stem:
+        return None
+    return f"{stem}{suffix or PROFILE_ARCHIVE_EXT}"
+
+
+def _archive_profile_entry(name: str) -> dict:
+    profile_dir = PROFILES_DIR / name
+    auth_path = profile_dir / "auth.json"
+    meta_path = profile_dir / "meta.json"
+    if not auth_path.exists():
+        raise RuntimeError(f"profile '{name}' is missing auth.json")
+    if not meta_path.exists():
+        raise RuntimeError(f"profile '{name}' is missing meta.json")
+    return {
+        "name": name,
+        "account_hint": account_hint_from_auth(auth_path),
+        "files": ["auth.json", "meta.json"],
+    }
+
+
+def _resolve_export_profile_names(names: list[str] | None = None) -> list[str]:
+    ensure_dirs()
+    if not names:
+        resolved = [p.name for p in _existing_profile_dirs()]
+        if not resolved:
+            raise RuntimeError("no profiles available to export")
+        return resolved
+    clean: list[str] = []
+    seen = set()
+    for raw in names:
+        name = str(raw or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        ensure_profile_exists(name)
+        clean.append(name)
+    if not clean:
+        raise RuntimeError("at least one profile name is required")
+    return clean
+
+
+def create_profiles_archive(output_path: Path, profile_names: list[str] | None = None) -> dict:
+    ensure_dirs()
+    chosen = _resolve_export_profile_names(profile_names)
+    manifest = {
+        "format": "codex-account-profiles",
+        "version": PROFILE_ARCHIVE_VERSION,
+        "exported_at": dt.datetime.now().isoformat(),
+        "app_version": APP_VERSION,
+        "profiles": [],
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name in chosen:
+            entry = _archive_profile_entry(name)
+            manifest["profiles"].append(entry)
+            profile_dir = PROFILES_DIR / name
+            zf.write(profile_dir / "auth.json", arcname=f"profiles/{name}/auth.json")
+            zf.write(profile_dir / "meta.json", arcname=f"profiles/{name}/meta.json")
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+    _set_private_permissions(output_path)
+    return {
+        "path": str(output_path),
+        "filename": output_path.name,
+        "profiles": [dict(item) for item in manifest["profiles"]],
+        "count": len(chosen),
+        "manifest": manifest,
+    }
+
+
+def _read_profile_archive(archive_path: Path) -> tuple[dict, list[dict]]:
+    if not archive_path.exists():
+        raise RuntimeError(f"archive not found: {archive_path}")
+    try:
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            try:
+                manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            except KeyError:
+                raise RuntimeError("archive is missing manifest.json")
+            except Exception as e:
+                raise RuntimeError(f"archive manifest is invalid: {e}")
+            if not isinstance(manifest, dict):
+                raise RuntimeError("archive manifest must be an object")
+            if manifest.get("format") != "codex-account-profiles":
+                raise RuntimeError("archive format is not supported")
+            version = manifest.get("version")
+            if int(version or 0) != PROFILE_ARCHIVE_VERSION:
+                raise RuntimeError(f"unsupported archive version: {version}")
+            rows = manifest.get("profiles")
+            if not isinstance(rows, list) or not rows:
+                raise RuntimeError("archive does not contain any profiles")
+            entries: list[dict] = []
+            for item in rows:
+                if not isinstance(item, dict):
+                    raise RuntimeError("archive manifest has an invalid profile entry")
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    raise RuntimeError("archive manifest contains a profile without a name")
+                auth_member = f"profiles/{name}/auth.json"
+                meta_member = f"profiles/{name}/meta.json"
+                try:
+                    auth_bytes = zf.read(auth_member)
+                except KeyError:
+                    raise RuntimeError(f"archive is missing {auth_member}")
+                try:
+                    meta_bytes = zf.read(meta_member)
+                except KeyError:
+                    raise RuntimeError(f"archive is missing {meta_member}")
+                try:
+                    auth_data = json.loads(auth_bytes.decode("utf-8"))
+                except Exception as e:
+                    raise RuntimeError(f"profile '{name}' has invalid auth.json: {e}")
+                try:
+                    meta_data = json.loads(meta_bytes.decode("utf-8"))
+                except Exception as e:
+                    raise RuntimeError(f"profile '{name}' has invalid meta.json: {e}")
+                entries.append(
+                    {
+                        "name": name,
+                        "auth_bytes": auth_bytes,
+                        "meta_bytes": meta_bytes,
+                        "auth_data": auth_data,
+                        "meta_data": meta_data,
+                        "account_hint": str(item.get("account_hint") or account_hint_from_auth_bytes(auth_data)),
+                        "principal_id": _principal_id_from_data(auth_data),
+                        "email": _normalized_email(_email_from_auth_data(auth_data)),
+                    }
+                )
+            return manifest, entries
+    except zipfile.BadZipFile:
+        raise RuntimeError("archive is not a valid zip file")
+
+
+def _email_from_auth_data(data: dict | None) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    id_token = data.get("id_token")
+    if not id_token and isinstance(data.get("tokens"), dict):
+        id_token = data["tokens"].get("id_token")
+    if isinstance(id_token, str) and id_token:
+        payload = decode_jwt_payload(id_token) or {}
+        email = payload.get("email")
+        if isinstance(email, str) and email.strip():
+            return email.strip().lower()
+    return None
+
+
+def account_hint_from_auth_bytes(data: dict | None) -> str:
+    if not isinstance(data, dict):
+        return "unknown"
+    hints: list[str] = []
+    account_id = _account_id_from_data(data)
+    if account_id:
+        hints.append(f"id:{account_id}")
+    email = _email_from_auth_data(data)
+    if email:
+        hints.insert(0, email)
+    return " | ".join(hints) if hints else "unknown"
+
+
+def analyze_profiles_archive(archive_path: Path) -> dict:
+    ensure_dirs()
+    manifest, entries = _read_profile_archive(archive_path)
+    results: list[dict] = []
+    for entry in entries:
+        name = str(entry["name"])
+        problems: list[str] = []
+        status = "ready"
+        existing_name = _find_conflicting_profile_name(name)
+        email = _normalized_email(entry.get("email"))
+        principal_id = str(entry.get("principal_id") or "").strip()
+        email_conflict = None
+        principal_conflicts: list[str] = []
+        if existing_name:
+            status = "name_conflict"
+            problems.append(f"profile name '{existing_name}' already exists")
+        if email:
+            dup = find_same_email_profiles(email, exclude_name=name if existing_name == name else "")
+            if dup:
+                email_conflict = dup[0]
+                if status == "ready":
+                    status = "account_conflict"
+                problems.append(f"email '{email}' already exists in profile '{email_conflict}'")
+        if principal_id:
+            principal_conflicts = find_same_principal_profiles(principal_id, exclude_name=name if existing_name == name else "")
+        action = "import"
+        if status in {"name_conflict", "account_conflict"}:
+            action = "skip"
+        results.append(
+            {
+                "name": name,
+                "account_hint": entry.get("account_hint") or "unknown",
+                "status": status,
+                "problems": problems,
+                "action": action,
+                "rename_to": "",
+                "existing_name": existing_name or "",
+                "email_conflict": email_conflict or "",
+                "principal_conflicts": principal_conflicts,
+            }
+        )
+    return {
+        "manifest": manifest,
+        "profiles": results,
+        "summary": {
+            "total": len(results),
+            "ready": sum(1 for item in results if item["status"] == "ready"),
+            "conflicts": sum(1 for item in results if item["status"] in {"name_conflict", "account_conflict"}),
+        },
+    }
+
+
+def _copy_profile_from_import_entry(entry: dict, target_name: str, overwrite: bool) -> tuple[str, bool]:
+    target_name = str(target_name or "").strip()
+    _validate_target_profile_name(target_name, overwrite=overwrite)
+    target_dir = PROFILES_DIR / target_name
+    if overwrite and target_dir.exists():
+        shutil.rmtree(target_dir, ignore_errors=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    auth_path = target_dir / "auth.json"
+    meta_path = target_dir / "meta.json"
+    auth_path.write_bytes(entry["auth_bytes"])
+    _set_private_permissions(auth_path)
+    meta = dict(entry.get("meta_data") or {})
+    meta["name"] = target_name
+    if not meta.get("saved_at"):
+        meta["saved_at"] = dt.datetime.now().isoformat()
+    meta["account_hint"] = account_hint_from_auth(auth_path)
+    meta["source_auth"] = f"imported:{entry.get('archive_filename') or 'archive'}"
+    meta["imported_at"] = dt.datetime.now().isoformat()
+    atomic_write_json(meta_path, meta)
+    _set_private_permissions(meta_path)
+    return target_name, overwrite
+
+
+def apply_profiles_import(archive_path: Path, plan_rows: list[dict]) -> dict:
+    ensure_dirs()
+    _, entries = _read_profile_archive(archive_path)
+    entry_map = {str(entry["name"]): entry for entry in entries}
+    results = []
+    counts = {"total": 0, "imported": 0, "skipped": 0, "overwritten": 0, "failed": 0}
+    for row in plan_rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        action = str(row.get("action") or "skip").strip().lower()
+        counts["total"] += 1
+        entry = entry_map.get(name)
+        if not entry:
+            counts["failed"] += 1
+            results.append({"name": name, "status": "failed", "message": "profile was not found in analysis set"})
+            continue
+        if action == "skip":
+            counts["skipped"] += 1
+            results.append({"name": name, "status": "skipped", "message": "skipped by user"})
+            continue
+        target_name = name
+        overwrite = False
+        if action == "rename":
+            target_name = str(row.get("rename_to") or "").strip()
+            if not target_name:
+                counts["failed"] += 1
+                results.append({"name": name, "status": "failed", "message": "rename target is required"})
+                continue
+        elif action == "overwrite":
+            overwrite = True
+        elif action != "import":
+            counts["failed"] += 1
+            results.append({"name": name, "status": "failed", "message": f"unsupported action '{action}'"})
+            continue
+        try:
+            final_name, did_overwrite = _copy_profile_from_import_entry(entry, target_name=target_name, overwrite=overwrite)
+            counts["imported"] += 1
+            if did_overwrite:
+                counts["overwritten"] += 1
+            results.append({"name": name, "target_name": final_name, "status": "imported", "overwritten": did_overwrite})
+        except Exception as e:
+            counts["failed"] += 1
+            results.append({"name": name, "status": "failed", "message": str(e)})
+    return {"results": results, "summary": counts}
+
+
+def prepare_profiles_export(profile_names: list[str] | None = None, filename: str | None = None) -> dict:
+    _cleanup_expired_export_sessions()
+    tmp_dir = ensure_cam_tmp_dir()
+    archive_filename = _sanitize_profile_archive_filename(filename) or _profile_archive_filename()
+    archive_path = tmp_dir / f"{secrets.token_hex(8)}-{archive_filename}"
+    payload = create_profiles_archive(archive_path, profile_names=profile_names)
+    payload["filename"] = archive_filename
+    session_id = secrets.token_urlsafe(18)
+    with EXPORT_SESSION_LOCK:
+        EXPORT_SESSIONS[session_id] = {
+            "path": payload["path"],
+            "filename": archive_filename,
+            "created_ts": time.time(),
+            "count": payload["count"],
+        }
+    return {
+        "export_id": session_id,
+        "filename": archive_filename,
+        "count": payload["count"],
+        "profiles": payload["profiles"],
+    }
+
+
+def get_export_session(export_id: str) -> dict | None:
+    _cleanup_expired_export_sessions()
+    with EXPORT_SESSION_LOCK:
+        entry = EXPORT_SESSIONS.get(export_id)
+        return dict(entry) if isinstance(entry, dict) else None
+
+
+def store_import_analysis(archive_filename: str, archive_bytes: bytes) -> dict:
+    _cleanup_expired_import_analyses()
+    tmp_dir = ensure_cam_tmp_dir()
+    suffix = PROFILE_ARCHIVE_EXT if str(archive_filename or "").endswith(PROFILE_ARCHIVE_EXT) else f"-upload{PROFILE_ARCHIVE_EXT}"
+    fd, tmp_path = tempfile.mkstemp(prefix="profile-import-", suffix=suffix, dir=str(tmp_dir))
+    os.close(fd)
+    archive_path = Path(tmp_path)
+    try:
+        archive_path.write_bytes(archive_bytes)
+        _set_private_permissions(archive_path)
+        analysis = analyze_profiles_archive(archive_path)
+    except Exception:
+        try:
+            archive_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    analysis_id = secrets.token_urlsafe(18)
+    with IMPORT_ANALYSIS_LOCK:
+        IMPORT_ANALYSES[analysis_id] = {
+            "path": str(archive_path),
+            "created_ts": time.time(),
+            "filename": archive_filename or archive_path.name,
+            "profiles": analysis.get("profiles") or [],
+        }
+    return {
+        "analysis_id": analysis_id,
+        "filename": archive_filename or archive_path.name,
+        "manifest": analysis["manifest"],
+        "profiles": analysis["profiles"],
+        "summary": analysis["summary"],
+    }
+
+
+def load_import_analysis(analysis_id: str) -> dict | None:
+    _cleanup_expired_import_analyses()
+    with IMPORT_ANALYSIS_LOCK:
+        entry = IMPORT_ANALYSES.get(analysis_id)
+        return copy.deepcopy(entry) if isinstance(entry, dict) else None
+
+
+def clear_import_analysis(analysis_id: str) -> None:
+    with IMPORT_ANALYSIS_LOCK:
+        entry = IMPORT_ANALYSES.pop(analysis_id, None) or {}
+    path = entry.get("path")
+    if path:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def cmd_export_profiles(profile_names: list[str] | None = None, output: str | None = None) -> int:
+    try:
+        filename = str(output or "").strip() or _profile_archive_filename()
+        output_path = Path(filename).expanduser()
+        if not output_path.is_absolute():
+            output_path = Path.cwd() / output_path
+        payload = create_profiles_archive(output_path, profile_names=profile_names)
+        print(f"exported {payload['count']} profile(s) -> {output_path}")
+        return 0
+    except Exception as e:
+        print(f"error: {e}")
+        return 1
+
+
+def cmd_import_profiles(archive_path: str, apply: bool = False, overwrite: bool = False) -> int:
+    try:
+        src = Path(archive_path).expanduser()
+        analysis = analyze_profiles_archive(src)
+        print_json(analysis)
+        if not apply:
+            return 0
+        rows = []
+        for item in analysis["profiles"]:
+            action = "import"
+            if item["status"] in {"name_conflict", "account_conflict"}:
+                action = "overwrite" if overwrite else "skip"
+            rows.append({"name": item["name"], "action": action})
+        result = apply_profiles_import(src, rows)
+        print_json(result)
+        return 0 if int((result.get("summary") or {}).get("failed") or 0) == 0 else 1
+    except Exception as e:
+        print(f"error: {e}")
+        return 1
+
+
 def sync_profile_auth_snapshot(name: str, source_auth: Path, source_label: str | None = None) -> bool:
     name = (name or "").strip()
     if not name or not source_auth.exists():
@@ -2649,6 +3135,24 @@ def _normalize_release_tag(raw: str | None) -> str:
     return re.sub(r"[^0-9a-z.+_-]", "", tag)
 
 
+def _release_version_key(raw: str | None) -> tuple:
+    tag = _normalize_release_tag(raw)
+    if not tag:
+        return (0, 0, 0, 0, 0, "")
+    base = re.split(r"[-+]", tag, maxsplit=1)[0]
+    nums = [int(x) for x in re.findall(r"\d+", base)]
+    nums = (nums + [0, 0, 0])[:3]
+    suffix = ""
+    if "-" in tag:
+        suffix = tag.split("-", 1)[1]
+    elif "+" in tag:
+        suffix = tag.split("+", 1)[1]
+    suffix_rank = 1 if not suffix else 0
+    suffix_nums = [int(x) for x in re.findall(r"\d+", suffix)]
+    suffix_num = suffix_nums[0] if suffix_nums else 0
+    return (nums[0], nums[1], nums[2], suffix_rank, suffix_num, suffix)
+
+
 def _is_current_release_tag(tag: str | None) -> bool:
     return bool(_normalize_release_tag(tag) and _normalize_release_tag(tag) == _normalize_release_tag(APP_VERSION))
 
@@ -2820,10 +3324,79 @@ def load_release_notes_payload(
     return {**payload, "cached": False, "cache_ttl_sec": int(RELEASE_NOTES_CACHE_TTL_SEC)}
 
 
+def _latest_stable_release(releases) -> dict | None:
+    rows = [row for row in (releases or []) if isinstance(row, dict) and not bool(row.get("is_draft")) and not bool(row.get("is_prerelease"))]
+    if not rows:
+        return None
+    return max(rows, key=lambda row: (_release_version_key(row.get("tag") or row.get("version")), str(row.get("published_at") or "")))
+
+
+def build_update_status_payload(release_payload: dict | None) -> dict:
+    payload = release_payload if isinstance(release_payload, dict) else {}
+    releases = payload.get("releases")
+    latest_release = _latest_stable_release(releases if isinstance(releases, list) else [])
+    current_version = f"v{APP_VERSION}"
+    latest_version = ""
+    update_available = False
+    if latest_release:
+        latest_version = str(latest_release.get("tag") or latest_release.get("version") or "").strip()
+        update_available = _release_version_key(latest_version) > _release_version_key(APP_VERSION)
+    return {
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "update_available": update_available,
+        "status": str(payload.get("status") or ""),
+        "status_text": str(payload.get("status_text") or ""),
+        "source": str(payload.get("source") or ""),
+        "repo_url": str(payload.get("repo_url") or PROJECT_RELEASES_URL),
+        "error": payload.get("error"),
+        "fetched_at": payload.get("fetched_at"),
+        "latest_release": latest_release,
+        "release_notes": payload,
+    }
+
+
+def run_app_update_command() -> dict:
+    pipx_bin = shutil.which("pipx")
+    command = [pipx_bin or "pipx", "upgrade", "codex-account-manager"]
+    if not pipx_bin:
+        return {
+            "ok": False,
+            "updated": False,
+            "command": command,
+            "stdout": "",
+            "stderr": "pipx was not found in PATH. Install pipx first, then run: pipx upgrade codex-account-manager",
+            "returncode": None,
+        }
+    try:
+        proc = _subprocess_run(command, capture_output=True, text=True, timeout=900)
+    except Exception as e:
+        return {
+            "ok": False,
+            "updated": False,
+            "command": command,
+            "stdout": "",
+            "stderr": str(e),
+            "returncode": None,
+        }
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    ok = proc.returncode == 0
+    return {
+        "ok": ok,
+        "updated": ok,
+        "command": command,
+        "stdout": stdout,
+        "stderr": stderr,
+        "returncode": proc.returncode,
+    }
+
+
 def render_ui_html(default_interval: float, token: str) -> str:
     token_json = json.dumps(token)
     interval_json = json.dumps(default_interval)
     version_json = json.dumps(APP_VERSION)
+    alarm_presets_json = json.dumps(ALARM_PRESETS, separators=(",", ":"))
     html = """<!doctype html>
 <html lang=\"en\">
 <head>
@@ -2983,6 +3556,22 @@ def render_ui_html(default_interval: float, token: str) -> str:
       letter-spacing:.08em;
       text-transform:uppercase;
     }
+    .app-update-pill{
+      display:none;
+      align-items:center;
+      gap:6px;
+      padding:5px 9px;
+      border-radius:999px;
+      background:var(--accent-bg);
+      border:1px solid var(--accent-border);
+      color:var(--primary);
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:10px;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      white-space:nowrap;
+    }
+    .app-update-pill.active{display:inline-flex}
     .save-spinner{
       display:none;
       width:15px;
@@ -3067,11 +3656,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .toolbar{padding:14px}
     .controls-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:12px}
     .control-card,.rules-col{background:var(--surface-card);border:1px solid var(--line);border-radius:var(--radius);padding:12px;display:flex;flex-direction:column;gap:10px}
+    .control-card.control-card-full{grid-column:1 / -1}
     .group-title,.rules-title{font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.12em}
     .settings-card{padding:14px 14px 12px;gap:12px}
     .notify-card{
       display:grid;
-      grid-template-rows:auto minmax(48px,1fr) auto;
+      grid-template-rows:auto auto minmax(48px,1fr) auto;
       align-content:stretch;
     }
     .settings-card .group-title{
@@ -3747,6 +4337,390 @@ def render_ui_html(default_interval: float, token: str) -> str:
       align-items:center;
       margin-top:6px;
     }
+    .migration-note{
+      margin:0;
+      color:var(--text-soft);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .migration-actions{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      align-items:center;
+    }
+    .migration-actions button{
+      flex:1 1 180px;
+      min-width:0;
+    }
+    .migration-file{
+      font-size:12px;
+      color:var(--text-soft);
+      min-height:16px;
+    }
+    .profiles-panel{
+      gap:14px;
+    }
+    .profiles-panel-body{
+      display:grid;
+      gap:10px;
+    }
+    .profiles-panel-head{
+      display:grid;
+      gap:6px;
+    }
+    .export-modal{
+      width:min(860px,96vw);
+      max-height:84vh;
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      background:color-mix(in srgb,var(--surface-highest) 64%, transparent);
+      backdrop-filter:blur(24px);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:14px;
+    }
+    .export-modal h3{margin:0}
+    .export-modal-intro{
+      margin:0;
+      color:var(--text-soft);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .export-modal-field{
+      display:grid;
+      gap:6px;
+    }
+    .export-modal-field label{
+      font-size:12px;
+      color:var(--text-soft);
+    }
+    .export-modal-table-wrap{
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      background:var(--surface-black);
+      overflow:auto;
+      max-height:44vh;
+    }
+    .export-modal-table{
+      width:100%;
+      min-width:100%;
+      border-collapse:collapse;
+    }
+    .export-modal-table thead th{
+      position:sticky;
+      top:0;
+      background:var(--surface-high);
+      z-index:1;
+      font-size:10px;
+      color:var(--text-soft);
+      text-transform:uppercase;
+      letter-spacing:.12em;
+      padding:10px 12px;
+      border-bottom:1px solid var(--line);
+    }
+    .export-modal-table tbody td{
+      padding:11px 12px;
+      border-bottom:1px solid var(--line-soft);
+      font-size:13px;
+      vertical-align:middle;
+    }
+    .export-modal-table tbody tr:last-child td{
+      border-bottom:0;
+    }
+    .export-modal-table tbody tr:hover{
+      background:var(--surface-high);
+    }
+    .export-modal-table th:first-child,
+    .export-modal-table td:first-child{
+      width:52px;
+      text-align:center;
+    }
+    .export-modal-table input[type="checkbox"]{
+      width:16px;
+      height:16px;
+    }
+    .export-modal-name{
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:12px;
+      color:var(--text);
+    }
+    .export-modal-hint{
+      color:var(--text-soft);
+      word-break:break-word;
+    }
+    .export-modal-summary{
+      font-size:12px;
+      color:var(--text-soft);
+      background:var(--surface-high);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:9px 10px;
+    }
+    .export-modal-actions{
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .export-modal-bulk-actions{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+    }
+    .export-modal-footer{
+      display:flex;
+      justify-content:flex-end;
+      gap:8px;
+    }
+    .alarm-actions{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:8px;
+    }
+    .alarm-selected-row{
+      display:grid;
+      gap:6px;
+      padding:9px 10px;
+      background:var(--surface-black);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+    }
+    .alarm-selected-head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+    }
+    .alarm-selected-label{
+      font-size:11px;
+      color:var(--text-soft);
+      text-transform:uppercase;
+      letter-spacing:.08em;
+    }
+    .alarm-selected-value{
+      font-size:13px;
+      color:var(--text);
+      font-weight:600;
+    }
+    .alarm-modal{
+      width:min(860px,96vw);
+      max-height:84vh;
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      background:color-mix(in srgb,var(--surface-highest) 64%, transparent);
+      backdrop-filter:blur(24px);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:14px;
+    }
+    .alarm-modal h3{margin:0}
+    .alarm-modal-intro{
+      margin:0;
+      color:var(--text-soft);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .alarm-preset-list{
+      display:grid;
+      gap:8px;
+      overflow:auto;
+      max-height:52vh;
+      padding-right:4px;
+    }
+    .alarm-preset-item{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      gap:10px;
+      align-items:center;
+      background:var(--surface-black);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:10px;
+      transition:border-color .15s ease, background .15s ease, box-shadow .15s ease;
+    }
+    .alarm-preset-item.selected{
+      border-color:var(--accent-border);
+      background:color-mix(in srgb,var(--accent-bg) 55%, var(--surface-black));
+      box-shadow:0 0 0 1px var(--accent-inset) inset;
+    }
+    .alarm-preset-main{
+      min-width:0;
+      display:grid;
+      gap:4px;
+      cursor:pointer;
+    }
+    .alarm-preset-name{
+      font-size:13px;
+      font-weight:600;
+      color:var(--text);
+    }
+    .alarm-preset-meta{
+      font-size:12px;
+      color:var(--text-soft);
+    }
+    .alarm-preset-actions{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      flex-shrink:0;
+    }
+    .alarm-modal-footer{
+      display:flex;
+      justify-content:flex-end;
+      gap:8px;
+    }
+    .update-modal{
+      width:min(780px,96vw);
+      max-height:84vh;
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      background:color-mix(in srgb,var(--surface-highest) 64%, transparent);
+      backdrop-filter:blur(24px);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:14px;
+    }
+    .update-modal h3{margin:0}
+    .update-modal-intro{
+      margin:0;
+      color:var(--text-soft);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .update-modal-release{
+      display:grid;
+      gap:10px;
+      overflow:auto;
+      max-height:52vh;
+      padding-right:4px;
+    }
+    .update-modal-card{
+      display:grid;
+      gap:8px;
+      background:var(--surface-black);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:12px;
+    }
+    .update-modal-meta{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      align-items:center;
+    }
+    .update-modal-tag{
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:12px;
+      color:var(--primary);
+      font-weight:700;
+    }
+    .update-modal-date{
+      font-size:11px;
+      color:var(--text-soft);
+    }
+    .update-modal-title{
+      font-size:15px;
+      font-weight:700;
+      color:var(--text);
+    }
+    .update-modal-highlights{
+      margin:0;
+      padding-left:18px;
+      display:grid;
+      gap:4px;
+      color:var(--text);
+      font-size:12px;
+      line-height:1.45;
+    }
+    .update-modal-body{
+      margin:0;
+      white-space:pre-wrap;
+      color:var(--text-soft);
+      font-size:12px;
+      line-height:1.5;
+    }
+    .update-modal-link{
+      font-size:12px;
+      color:var(--primary);
+      text-decoration:none;
+      font-weight:600;
+    }
+    .update-modal-link:hover{text-decoration:underline}
+    .update-modal-output{
+      margin:0;
+      background:var(--surface-black);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:10px;
+      color:var(--text-soft);
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:11px;
+      line-height:1.45;
+      white-space:pre-wrap;
+      overflow:auto;
+      max-height:160px;
+    }
+    .update-modal-footer{
+      display:flex;
+      justify-content:flex-end;
+      gap:8px;
+    }
+    .review-modal{
+      width:min(760px,96vw);
+      max-height:84vh;
+      display:flex;
+      flex-direction:column;
+      background:color-mix(in srgb,var(--surface-highest) 64%, transparent);
+      backdrop-filter:blur(24px);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:14px;
+    }
+    .review-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+    .review-head h3{margin:0}
+    .review-intro{margin:0;color:var(--text-soft);font-size:12px;line-height:1.45}
+    .review-list{display:grid;gap:8px;overflow:auto;padding-right:4px}
+    .review-item{
+      display:grid;
+      gap:8px;
+      background:var(--surface-black);
+      border:1px solid var(--line-soft);
+      border-radius:var(--radius);
+      padding:10px;
+    }
+    .review-item-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+    .review-name{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:12px;color:var(--text)}
+    .review-hint{font-size:12px;color:var(--text-soft)}
+    .review-status{
+      font-size:10px;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      border-radius:999px;
+      padding:3px 8px;
+      border:1px solid var(--line);
+      background:var(--surface-high);
+      color:var(--text-soft);
+    }
+    .review-status.ready{color:var(--primary);border-color:var(--accent-border);background:var(--accent-bg)}
+    .review-status.conflict{color:var(--warn-strong);border-color:var(--warn-ring);background:var(--warn-bg)}
+    .review-status.invalid{color:var(--danger-soft);border-color:var(--danger-ring);background:var(--danger-bg)}
+    .review-problems{margin:0;padding-left:18px;display:grid;gap:4px;font-size:12px;color:var(--text-soft)}
+    .review-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .review-actions select,.review-actions input{min-width:170px}
+    .review-summary{
+      margin-top:10px;
+      font-size:12px;
+      color:var(--text-soft);
+      background:var(--surface-high);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:9px 10px;
+    }
     @media (max-width:900px){
       .guide-grid{grid-template-columns:1fr}
     }
@@ -3760,10 +4734,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
     <section class=\"app-header\">
       <div class=\"app-title-wrap\">
         <div class=\"app-title\">Codex Account Manager</div>
+        <div class=\"app-version\">v__UI_VERSION__</div>
+        <div id=\"appUpdateBadge\" class=\"app-update-pill\">Update available</div>
         <span id=\"saveSpinner\" class=\"save-spinner\" aria-label=\"Saving\" title=\"Saving\"></span>
       </div>
       <div class=\"app-header-right\">
-        <div class=\"app-version\">v__UI_VERSION__</div>
+        <button id=\"appUpdateBtn\" class=\"btn-primary\" type=\"button\" style=\"display:none\" title=\"Review the latest release notes and update this app.\">Update</button>
         <button id=\"themeIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Cycle theme mode between auto, dark, and light.\" aria-label=\"Cycle theme\">◐</button>
         <button id=\"debugIconBtn\" class=\"header-icon-btn\" type=\"button\" title=\"Toggle debug mode to show System.Out logs and advanced diagnostics.\" aria-label=\"Toggle debug mode\">
           <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\" focusable=\"false\">
@@ -3811,9 +4787,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
 
         <section class=\"control-card notify-card settings-card\">
           <div class=\"group-title\">Alarm</div>
-          <div class=\"setting-row\">
-            <span class=\"setting-label\" title=\"Play a sound alarm and show warnings when usage drops below your thresholds.\">Enable Sound Alarm</span>
-            <label class=\"toggle\" title=\"Turn sound alarms on or off for usage warnings.\"><input id=\"alarmToggle\" type=\"checkbox\" title=\"Turn sound alarms on or off for usage warnings.\" /></label>
+          <div class=\"alarm-selected-row\">
+            <div class=\"alarm-selected-head\">
+              <div class=\"alarm-selected-label\">Selected Alarm</div>
+              <label class=\"toggle\" title=\"Turn sound alarms on or off for usage warnings.\"><input id=\"alarmToggle\" type=\"checkbox\" title=\"Turn sound alarms on or off for usage warnings.\" /></label>
+            </div>
+            <div id=\"alarmPresetValue\" class=\"alarm-selected-value\">Beacon</div>
           </div>
           <div class=\"metric-pair-grid\">
             <div class=\"setting-row metric inset-row\">
@@ -3825,6 +4804,25 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <div class=\"stepper compact\" data-stepper title=\"Weekly warning threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease weekly alarm threshold by 1 percent.\">-</button><input id=\"alarmWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"Weekly warning threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase weekly alarm threshold by 1 percent.\">+</button></div>
             </div>
           </div>
+          <div class=\"alarm-actions\">
+            <button id=\"chooseAlarmBtn\" class=\"btn\" type=\"button\" title=\"Browse built-in alarm presets and preview alternatives before saving one.\">Choose Alarm</button>
+            <button id=\"testAlarmBtn\" class=\"btn-warning\" type=\"button\" title=\"Play the currently selected alarm preset and show the warning preview now.\">Test Alarm</button>
+          </div>
+        </section>
+
+        <section class=\"control-card settings-card control-card-full profiles-panel\">
+          <div class=\"group-title\">Profiles</div>
+          <div class=\"profiles-panel-body\">
+            <div class=\"profiles-panel-head\">
+              <p class=\"migration-note\">Move saved local profiles between systems. Exported files include sensitive auth data, so keep archives private and only import from sources you trust.</p>
+              <div class=\"migration-actions\">
+                <button id=\"importProfilesBtn\" class=\"btn-primary\" type=\"button\" title=\"Choose a migration archive, analyze its profiles, and review changes before importing.\">Import</button>
+                <button id=\"exportProfilesBtn\" class=\"btn-warning\" type=\"button\" title=\"Choose saved profiles to package into a private migration archive.\">Export</button>
+              </div>
+            </div>
+            <div class=\"migration-file\" id=\"importFileLabel\"></div>
+          </div>
+          <input id=\"importProfilesInput\" type=\"file\" accept=\".camzip,application/zip\" style=\"display:none\" />
         </section>
       </div>
     </section>
@@ -3930,7 +4928,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <span class=\"guide-title\">Guide & Help</span>
       </summary>
       <div class=\"guide-body\">
-        <p class=\"guide-intro\">Use this panel to add accounts, monitor live usage, refresh the current account or all accounts on separate timers, tune auto-switch behavior, and troubleshoot account/auth state from one place.</p>
+        <p class=\"guide-intro\">Use this panel to add accounts, monitor live usage, import or export saved profiles, tune alarms and auto-switch behavior, review release notes, and update the app from one place.</p>
         <div class=\"guide-grid\">
           <section class=\"guide-block\">
             <h4>Quick Start</h4>
@@ -3943,16 +4941,26 @@ def render_ui_html(default_interval: float, token: str) -> str:
           <section class=\"guide-block\">
             <h4>Header & Panel Controls</h4>
             <ul>
-              <li>Header icons cycle <b>Theme</b>, toggle <b>Debug mode</b>, and show or hide the settings panels.</li>
+              <li>Header shows the current app version, and when a newer release exists it adds a green <b>Update available</b> badge plus an <b>Update</b> button.</li>
+              <li>Header controls cycle <b>Theme</b>, toggle <b>Debug mode</b>, and show or hide the settings panels.</li>
               <li><b>Current Account Auto Refresh</b> polls only the active account in seconds and is meant for lightweight continuous monitoring.</li>
               <li><b>Auto Refresh All</b> runs a slower background sweep in minutes and refreshes saved accounts one by one instead of doing one expensive batch on every tick.</li>
               <li><b>Restart</b> restarts the local UI service, and <b>Kill All</b> force-stops managed background account processes.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
+            <h4>Profiles Import / Export</h4>
+            <ul>
+              <li><b>Import</b> opens an archive picker, analyzes the migration file, and lets you review per-profile actions before anything is applied.</li>
+              <li><b>Export</b> opens a profile-selection dialog with bulk select actions and an optional custom archive filename.</li>
+              <li>Migration archives include sensitive auth data. Keep them private and only import files from sources you trust.</li>
+            </ul>
+          </section>
+          <section class=\"guide-block\">
             <h4>Alarm & Notification</h4>
             <ul>
-              <li><b>Enable Sound Alarm</b> turns usage warning alarm behavior on/off.</li>
+              <li>Use the toggle in <b>Selected Alarm</b> to turn usage warning alarms on/off.</li>
+              <li><b>Choose Alarm</b> opens a built-in preset browser with preview buttons, and <b>Test Alarm</b> plays the currently selected preset immediately.</li>
               <li>Set warning thresholds with <b>5H alarm %</b> and <b>Weekly alarm %</b>.</li>
               <li>Alarm warnings are based on remaining percentage and work with the refreshed table values shown in the Accounts section.</li>
             </ul>
@@ -3993,12 +5001,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <li><b>App Version:</b> v__UI_VERSION__</li>
               <li><b>Repository:</b> <a href=\"https://github.com/alisinaee/Codex-Account-Manager\" target=\"_blank\" rel=\"noopener noreferrer\">Codex-Account-Manager</a></li>
               <li>Local-first Codex profile manager with usage monitoring, safe switching workflows, and auto-switch automation.</li>
+              <li>When an update is available, the app can show the latest GitHub release notes first and then run the pipx upgrade flow from the UI.</li>
             </ul>
           </section>
           <section class=\"guide-block guide-release-block\">
             <div class=\"guide-release-headline\">
               <h4>Release Notes</h4>
-              <button id=\"guideReleaseRefreshBtn\" class=\"btn\" type=\"button\">Refresh</button>
+        <button id=\"guideReleaseRefreshBtn\" class=\"btn\" type=\"button\" title=\"Refresh release notes from GitHub and fall back to local notes if needed.\">Refresh</button>
             </div>
             <div id=\"guideReleaseStatus\" class=\"guide-release-status\">Open this section to load release history.</div>
             <div id=\"guideReleaseList\" class=\"guide-release-list\"></div>
@@ -4036,6 +5045,40 @@ def render_ui_html(default_interval: float, token: str) -> str:
       <div class=\"row\">
         <button id=\"columnsResetBtn\" class=\"btn\" type=\"button\" title=\"Restore the default visible columns.\">Reset Defaults</button>
         <button id=\"columnsDoneBtn\" class=\"btn-primary\" type=\"button\" title=\"Apply column visibility changes and close this dialog.\">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div id=\"exportProfilesBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\" style=\"display:none;\">
+    <div class=\"export-modal\">
+      <h3>Export Profiles</h3>
+      <p class=\"export-modal-intro\">Choose the saved profiles you want to package into a migration archive. You can optionally provide a custom archive name.</p>
+      <div class=\"export-modal-field\">
+        <label for=\"exportFilenameInput\">Archive Name (Optional)</label>
+        <input id=\"exportFilenameInput\" type=\"text\" placeholder=\"codex-account-profiles\" autocomplete=\"off\" />
+      </div>
+      <div class=\"export-modal-actions\">
+        <div class=\"export-modal-bulk-actions\">
+          <button id=\"exportSelectAllBtn\" class=\"btn\" type=\"button\" title=\"Select every saved profile in this export list.\">Select All</button>
+          <button id=\"exportUnselectAllBtn\" class=\"btn\" type=\"button\" title=\"Clear every selected profile in this export list.\">Unselect All</button>
+        </div>
+      </div>
+      <div class=\"export-modal-table-wrap\">
+        <table class=\"export-modal-table\">
+          <thead>
+            <tr>
+              <th scope=\"col\"><input id=\"exportHeaderCheckbox\" type=\"checkbox\" aria-label=\"Toggle all export rows\" /></th>
+              <th scope=\"col\">Profile</th>
+              <th scope=\"col\">Account Hint</th>
+            </tr>
+          </thead>
+          <tbody id=\"exportProfilesTableBody\"></tbody>
+        </table>
+      </div>
+      <div id=\"exportProfilesSummary\" class=\"export-modal-summary\">No saved profiles are available.</div>
+      <div class=\"export-modal-footer\">
+        <button id=\"exportProfilesCancelBtn\" class=\"btn\" type=\"button\" title=\"Close this export dialog without creating an archive.\">Cancel</button>
+        <button id=\"exportProfilesConfirmBtn\" class=\"btn-warning\" type=\"button\" title=\"Create and download a migration archive for the selected profiles.\">Export Selected</button>
       </div>
     </div>
   </div>
@@ -4081,7 +5124,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <button id=\"addDeviceCopyBtn\" class=\"btn\" type=\"button\" title=\"Copy the device-login URL and code.\">Copy</button>
         <button id=\"addDeviceOpenBtn\" class=\"btn\" type=\"button\" title=\"Open the generated device-login URL in your browser.\">Open In Browser</button>
         <button id=\"addDeviceLegacyBtn\" class=\"btn\" type=\"button\" title=\"Use the regular browser login flow instead of device login.\">Use Normal Login</button>
-        <button id=\"addDeviceCancelBtn\" class=\"btn\" type=\"button\">Close</button>
+        <button id=\"addDeviceCancelBtn\" class=\"btn\" type=\"button\" title=\"Close this add-account dialog without starting a login flow.\">Close</button>
       </div>
     </div>
   </div>
@@ -4094,8 +5137,51 @@ def render_ui_html(default_interval: float, token: str) -> str:
       <div id=\"chainEditHint\" class=\"device-status\">Drag rows to set switch order. Active account is locked at top; edit only the next chain.</div>
       <div id=\"chainEditList\" class=\"chain-edit-list\"></div>
       <div class=\"row\">
-        <button id=\"chainEditCancelBtn\" class=\"btn\" type=\"button\">Cancel</button>
-        <button id=\"chainEditSaveBtn\" class=\"btn-primary\" type=\"button\">Save</button>
+        <button id=\"chainEditCancelBtn\" class=\"btn\" type=\"button\" title=\"Close the switch-chain editor without saving changes.\">Cancel</button>
+        <button id=\"chainEditSaveBtn\" class=\"btn-primary\" type=\"button\" title=\"Save the current manual switch-chain order.\">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id=\"importReviewBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\" style=\"display:none;\">
+    <div class=\"review-modal\">
+      <div class=\"review-head\">
+        <div>
+          <h3>Import Review</h3>
+          <p id=\"importReviewIntro\" class=\"review-intro\">Review each profile before applying this import.</p>
+        </div>
+        <button id=\"importReviewCloseBtn\" class=\"actions-close\" type=\"button\" aria-label=\"Close import review\">×</button>
+      </div>
+      <div id=\"importReviewList\" class=\"review-list\"></div>
+      <div id=\"importReviewSummary\" class=\"review-summary\"></div>
+      <div class=\"row\">
+        <button id=\"importReviewCancelBtn\" class=\"btn\" type=\"button\" title=\"Close the import review without applying any profile changes.\">Cancel</button>
+        <button id=\"importReviewApplyBtn\" class=\"btn-primary\" type=\"button\" title=\"Apply the reviewed import actions to your saved profiles.\">Apply Import</button>
+      </div>
+    </div>
+  </div>
+
+  <div id=\"alarmPresetBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\" style=\"display:none;\">
+    <div class=\"alarm-modal\">
+      <h3>Choose Alarm</h3>
+      <p class=\"alarm-modal-intro\">Browse built-in alarm presets, preview them with the play button, then save the one you want for warning alerts.</p>
+      <div id=\"alarmPresetList\" class=\"alarm-preset-list\"></div>
+      <div class=\"alarm-modal-footer\">
+        <button id=\"alarmPresetCancelBtn\" class=\"btn\" type=\"button\" title=\"Close the alarm picker without changing the current preset.\">Cancel</button>
+        <button id=\"alarmPresetUseBtn\" class=\"btn-primary\" type=\"button\" title=\"Save the selected alarm preset for future warning sounds.\">Use Selected</button>
+      </div>
+    </div>
+  </div>
+
+  <div id=\"appUpdateBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\" style=\"display:none;\">
+    <div class=\"update-modal\">
+      <h3>Update App</h3>
+      <p id=\"appUpdateIntro\" class=\"update-modal-intro\">Review the latest release notes before upgrading this app.</p>
+      <div id=\"appUpdateRelease\" class=\"update-modal-release\"></div>
+      <pre id=\"appUpdateOutput\" class=\"update-modal-output\" style=\"display:none;\"></pre>
+      <div class=\"update-modal-footer\">
+        <button id=\"appUpdateCancelBtn\" class=\"btn\" type=\"button\" title=\"Close this update review without running the pipx upgrade.\">Cancel</button>
+        <button id=\"appUpdateConfirmBtn\" class=\"btn-primary\" type=\"button\" title=\"Run the pipx upgrade now using the reviewed release notes.\">Update Now</button>
       </div>
     </div>
   </div>
@@ -4103,6 +5189,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   <script>
   const token = __TOKEN_JSON__;
   const UI_VERSION = __UI_VERSION_JSON__;
+  const ALARM_PRESETS = __ALARM_PRESETS_JSON__;
   let currentRefreshTimer = null;
   let allRefreshTimer = null;
   let remainTicker = null;
@@ -4142,7 +5229,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let guideReleaseLoaded = false;
   let guideReleaseLoading = false;
   let guideReleaseLastPayload = null;
+  let appUpdateState = null;
+  let appUpdateInFlight = false;
   let diagnosticsHooksInstalled = false;
+  let exportSelectedNames = [];
+  let importReviewState = null;
+  let alarmPresetDraftId = "";
+  const alarmPresetMap = new Map((Array.isArray(ALARM_PRESETS) ? ALARM_PRESETS : []).map((item) => [String(item.id || ""), item]));
   const MAX_OVERLAY_LOGS = 900;
   const LOG_COALESCE_WINDOW_MS = 3500;
   const LOG_STRING_LIMIT = 360;
@@ -4914,6 +6007,131 @@ def render_ui_html(default_interval: float, token: str) -> str:
       guideReleaseLoading = false;
     }
   }
+  function renderUpdateReleaseModal(state){
+    const intro = byId("appUpdateIntro", false);
+    const releaseEl = byId("appUpdateRelease", false);
+    const outputEl = byId("appUpdateOutput", false);
+    const confirmBtn = byId("appUpdateConfirmBtn", false);
+    const release = state?.latest_release || null;
+    const latestVersion = String(state?.latest_version || "");
+    if(outputEl){
+      outputEl.style.display = "none";
+      outputEl.textContent = "";
+    }
+    if(intro){
+      intro.textContent = latestVersion
+        ? `Review the ${latestVersion} release notes before upgrading this app with pipx.`
+        : "Review the latest release notes before upgrading this app.";
+    }
+    if(confirmBtn){
+      confirmBtn.disabled = !state?.update_available || appUpdateInFlight;
+      confirmBtn.textContent = appUpdateInFlight ? "Updating..." : "Update Now";
+      confirmBtn.classList.toggle("btn-progress", !!appUpdateInFlight);
+    }
+    if(!releaseEl) return;
+    if(!release){
+      releaseEl.innerHTML = `<div class="update-modal-card"><div class="update-modal-body">Release notes are unavailable right now. You can still continue with the pipx upgrade if you want.</div></div>`;
+      return;
+    }
+    const highlights = Array.isArray(release?.highlights) ? release.highlights.filter(Boolean) : [];
+    const body = String(release?.body || "").trim();
+    const link = String(release?.url || "").trim();
+    const dateText = release?.published_at ? formatReleaseAge(release.published_at) : "Release date unavailable";
+    const highlightHtml = highlights.length
+      ? `<ul class="update-modal-highlights">${highlights.map((item) => `<li>${escHtml(item)}</li>`).join("")}</ul>`
+      : "";
+    const bodyHtml = body ? `<p class="update-modal-body">${escHtml(body)}</p>` : `<p class="update-modal-body">No release notes body was provided for this release.</p>`;
+    const linkHtml = link ? `<a class="update-modal-link" href="${escAttr(link)}" target="_blank" rel="noopener noreferrer">Open on GitHub</a>` : "";
+    releaseEl.innerHTML = `
+      <div class="update-modal-card">
+        <div class="update-modal-meta">
+          <span class="update-modal-tag">${escHtml(String(release?.tag || release?.version || latestVersion || "Latest release"))}</span>
+          <span class="update-modal-date">${escHtml(dateText)}</span>
+        </div>
+        <div class="update-modal-title">${escHtml(String(release?.title || release?.tag || latestVersion || "Latest release"))}</div>
+        ${highlightHtml}
+        ${bodyHtml}
+        ${linkHtml}
+      </div>
+    `;
+  }
+  function openUpdateModal(){
+    renderUpdateReleaseModal(appUpdateState || {});
+    const b = byId("appUpdateBackdrop", false);
+    if(b) b.style.display = "flex";
+  }
+  function closeUpdateModal(){
+    if(appUpdateInFlight) return;
+    const b = byId("appUpdateBackdrop", false);
+    if(b) b.style.display = "none";
+  }
+  function applyAppUpdateStatus(state){
+    appUpdateState = state && typeof state === "object" ? state : {};
+    const badge = byId("appUpdateBadge", false);
+    const btn = byId("appUpdateBtn", false);
+    const latestVersion = String(appUpdateState?.latest_version || "").trim();
+    const updateAvailable = !!appUpdateState?.update_available;
+    if(badge){
+      badge.textContent = latestVersion ? `Update available: ${latestVersion}` : "Update available";
+      badge.classList.toggle("active", updateAvailable);
+    }
+    if(btn){
+      btn.style.display = updateAvailable ? "" : "none";
+      btn.disabled = !updateAvailable || appUpdateInFlight;
+      btn.textContent = appUpdateInFlight ? "Updating..." : "Update";
+      btn.classList.toggle("btn-progress", !!appUpdateInFlight);
+    }
+  }
+  async function loadAppUpdateStatus(force=false){
+    const path = force ? "/api/app-update-status?force=true" : "/api/app-update-status";
+    const payload = await safeGet(path);
+    if(payload.__error){
+      pushOverlayLog("warn", "app_update.status_failed", { error: payload.__error });
+      applyAppUpdateStatus({
+        ...(appUpdateState || {}),
+        status: "failed",
+        error: payload.__error,
+        update_available: false,
+      });
+      return;
+    }
+    applyAppUpdateStatus(payload);
+  }
+  async function runAppUpdateFlow(){
+    if(appUpdateInFlight) return;
+    appUpdateInFlight = true;
+    applyAppUpdateStatus(appUpdateState || {});
+    renderUpdateReleaseModal(appUpdateState || {});
+    setError("");
+    try{
+      const data = await postApi("/api/system/update", {});
+      const output = [String(data?.stdout || "").trim(), String(data?.stderr || "").trim()].filter(Boolean).join("\\n\\n");
+      const outputEl = byId("appUpdateOutput", false);
+      if(outputEl){
+        outputEl.style.display = output ? "block" : "none";
+        outputEl.textContent = output || "Update finished without terminal output.";
+      }
+      if(!data?.updated){
+        throw new Error(String(data?.stderr || data?.error || "Update failed."));
+      }
+      showInAppNotice("Update Complete", "App updated successfully. Restarting the UI service now.", { duration_ms: 9000 });
+      closeUpdateModal();
+      await restartUiService();
+    } catch(e){
+      const msg = e?.message || String(e);
+      setError(msg);
+      const outputEl = byId("appUpdateOutput", false);
+      if(outputEl && !outputEl.textContent.trim()){
+        outputEl.style.display = "block";
+        outputEl.textContent = msg;
+      }
+      pushOverlayLog("error", "app_update.failed", { error: msg });
+    } finally {
+      appUpdateInFlight = false;
+      applyAppUpdateStatus(appUpdateState || {});
+      renderUpdateReleaseModal(appUpdateState || {});
+    }
+  }
   async function copyText(text){
     const value = String(text || "");
     if(!value) return false;
@@ -5018,7 +6236,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
       const d = await fn();
       setCmdOut(title,d);
       pushOverlayLog("ui", `action.success ${title}`, { duration_ms: Date.now() - startedAt });
-      await refreshAll(refreshOpts || undefined);
+      if(!(refreshOpts && refreshOpts.skipRefresh)){
+        await refreshAll(refreshOpts || undefined);
+      }
       return true;
     } catch(e){
       const msg = e?.message || String(e);
@@ -5266,6 +6486,329 @@ def render_ui_html(default_interval: float, token: str) -> str:
   function closeColumnsModal(){
     const b = byId("columnsModalBackdrop", false);
     if(b) b.style.display = "none";
+  }
+  function getExportableProfiles(){
+    const rows = Array.isArray(latestData?.list?.profiles) ? latestData.list.profiles : [];
+    return rows.map((row) => ({ name: String(row?.name || "").trim(), account_hint: String(row?.account_hint || row?.email || "-") })).filter((row) => !!row.name);
+  }
+  function setImportFileLabel(text=""){
+    const label = byId("importFileLabel", false);
+    if(!label) return;
+    label.textContent = String(text || "").trim();
+  }
+  function syncExportSelection(rows, selectedNames){
+    const selectedSet = new Set((selectedNames || []).map((name) => String(name || "").trim()).filter(Boolean));
+    return rows.filter((row) => selectedSet.has(row.name)).map((row) => row.name);
+  }
+  function updateExportSelectedSummary(){
+    const rows = getExportableProfiles();
+    exportSelectedNames = syncExportSelection(rows, exportSelectedNames);
+    updateExportProfilesSummary(rows);
+  }
+  function updateExportProfilesSummary(rows){
+    const summary = byId("exportProfilesSummary", false);
+    const confirmBtn = byId("exportProfilesConfirmBtn", false);
+    const headerCheckbox = byId("exportHeaderCheckbox", false);
+    if(!summary) return;
+    const selectedCount = exportSelectedNames.length;
+    if(confirmBtn) confirmBtn.disabled = !rows.length || selectedCount === 0;
+    if(headerCheckbox){
+      headerCheckbox.checked = !!rows.length && selectedCount === rows.length;
+      headerCheckbox.indeterminate = selectedCount > 0 && selectedCount < rows.length;
+      headerCheckbox.disabled = rows.length === 0;
+    }
+    if(!rows.length){
+      summary.textContent = "No saved profiles are available.";
+      return;
+    }
+    summary.textContent = `${selectedCount} of ${rows.length} profile(s) selected for export.`;
+  }
+  function toggleAllExportProfiles(checked){
+    const rows = getExportableProfiles();
+    exportSelectedNames = checked ? rows.map((row) => row.name) : [];
+    renderExportProfilesModal();
+  }
+  function renderExportProfilesModal(){
+    const panel = byId("exportProfilesTableBody", false);
+    if(!panel) return;
+    panel.innerHTML = "";
+    const rows = getExportableProfiles();
+    exportSelectedNames = syncExportSelection(rows, exportSelectedNames);
+    if(!rows.length){
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3;
+      td.className = "export-modal-hint";
+      td.textContent = "No saved profiles are available.";
+      tr.appendChild(td);
+      panel.appendChild(tr);
+      updateExportProfilesSummary(rows);
+      return;
+    }
+    rows.forEach((row) => {
+      const tr = document.createElement("tr");
+      const checkboxCell = document.createElement("td");
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.checked = exportSelectedNames.includes(row.name);
+      chk.addEventListener("change", () => {
+        if(chk.checked){
+          if(!exportSelectedNames.includes(row.name)) exportSelectedNames.push(row.name);
+        } else {
+          exportSelectedNames = exportSelectedNames.filter((name) => name !== row.name);
+        }
+        updateExportProfilesSummary(rows);
+      });
+      checkboxCell.appendChild(chk);
+      const nameCell = document.createElement("td");
+      const nameText = document.createElement("div");
+      nameText.className = "export-modal-name";
+      nameText.textContent = row.name;
+      nameCell.appendChild(nameText);
+      const hintCell = document.createElement("td");
+      hintCell.className = "export-modal-hint";
+      hintCell.textContent = row.account_hint || "-";
+      tr.appendChild(checkboxCell);
+      tr.appendChild(nameCell);
+      tr.appendChild(hintCell);
+      panel.appendChild(tr);
+    });
+    updateExportProfilesSummary(rows);
+  }
+  function openExportProfilesModal(){
+    const rows = getExportableProfiles();
+    exportSelectedNames = rows.map((row) => row.name);
+    const filenameInput = byId("exportFilenameInput", false);
+    if(filenameInput) filenameInput.value = "";
+    renderExportProfilesModal();
+    const b = byId("exportProfilesBackdrop", false);
+    if(b) b.style.display = "flex";
+  }
+  function closeExportProfilesModal(){
+    const b = byId("exportProfilesBackdrop", false);
+    if(b) b.style.display = "none";
+  }
+  function renderAlarmPresetModal(){
+    const list = byId("alarmPresetList", false);
+    const useBtn = byId("alarmPresetUseBtn", false);
+    if(!list) return;
+    list.innerHTML = "";
+    const activeId = String(alarmPresetDraftId || getSelectedAlarmPresetId());
+    (Array.isArray(ALARM_PRESETS) ? ALARM_PRESETS : []).forEach((preset) => {
+      const row = document.createElement("div");
+      row.className = `alarm-preset-item${preset.id === activeId ? " selected" : ""}`;
+      const main = document.createElement("div");
+      main.className = "alarm-preset-main";
+      main.addEventListener("click", () => {
+        alarmPresetDraftId = preset.id;
+        renderAlarmPresetModal();
+      });
+      const name = document.createElement("div");
+      name.className = "alarm-preset-name";
+      name.textContent = preset.label || preset.id;
+      const meta = document.createElement("div");
+      meta.className = "alarm-preset-meta";
+      meta.textContent = preset.id === getSelectedAlarmPresetId() ? "Current selection" : `Preset: ${preset.id}`;
+      main.appendChild(name);
+      main.appendChild(meta);
+      const actions = document.createElement("div");
+      actions.className = "alarm-preset-actions";
+      const playBtn = document.createElement("button");
+      playBtn.className = "btn";
+      playBtn.type = "button";
+      playBtn.textContent = "Play";
+      playBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        alarmPresetDraftId = preset.id;
+        renderAlarmPresetModal();
+        await previewAlarmPreset(preset.id, { message: `Previewing ${preset.label}. This is how warning alarms will sound.` });
+      });
+      actions.appendChild(playBtn);
+      row.appendChild(main);
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+    if(useBtn) useBtn.disabled = !activeId || activeId === getSelectedAlarmPresetId();
+  }
+  function openAlarmPresetModal(){
+    alarmPresetDraftId = getSelectedAlarmPresetId();
+    renderAlarmPresetModal();
+    const b = byId("alarmPresetBackdrop", false);
+    if(b) b.style.display = "flex";
+  }
+  function closeAlarmPresetModal(){
+    alarmPresetDraftId = "";
+    const b = byId("alarmPresetBackdrop", false);
+    if(b) b.style.display = "none";
+  }
+  async function applyAlarmPresetSelection(){
+    const nextId = String(alarmPresetDraftId || "").trim();
+    if(!nextId || nextId === getSelectedAlarmPresetId()){
+      closeAlarmPresetModal();
+      return;
+    }
+    await saveUiConfigPatch({ notifications: { alarm_preset: nextId } });
+    latestData.config = latestData.config || {};
+    latestData.config.notifications = latestData.config.notifications || {};
+    latestData.config.notifications.alarm_preset = nextId;
+    updateAlarmPresetSummary();
+    closeAlarmPresetModal();
+    showInAppNotice("Alarm Updated", `${getSelectedAlarmPresetLabel(nextId)} is now the active warning alarm.`, { duration_ms: 5000 });
+  }
+  async function fileToBase64(file){
+    const buf = await file.arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buf);
+    const chunk = 0x8000;
+    for(let i=0;i<bytes.length;i+=chunk){
+      const slice = bytes.subarray(i, i + chunk);
+      binary += String.fromCharCode.apply(null, slice);
+    }
+    return btoa(binary);
+  }
+  function closeImportReviewModal(){
+    importReviewState = null;
+    const b = byId("importReviewBackdrop", false);
+    if(b) b.style.display = "none";
+  }
+  function renderImportReviewModal(){
+    const list = byId("importReviewList", false);
+    const summary = byId("importReviewSummary", false);
+    if(!list || !summary || !importReviewState) return;
+    list.innerHTML = "";
+    const rows = Array.isArray(importReviewState.profiles) ? importReviewState.profiles : [];
+    rows.forEach((row) => {
+      const card = document.createElement("div");
+      card.className = "review-item";
+      const head = document.createElement("div");
+      head.className = "review-item-head";
+      const left = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "review-name";
+      name.textContent = row.name || "-";
+      const hint = document.createElement("div");
+      hint.className = "review-hint";
+      hint.textContent = row.account_hint || "-";
+      left.appendChild(name);
+      left.appendChild(hint);
+      const badge = document.createElement("div");
+      const statusClass = row.status === "ready" ? "ready" : ((row.status || "").includes("conflict") ? "conflict" : "invalid");
+      badge.className = `review-status ${statusClass}`;
+      badge.textContent = String(row.status || "unknown").replaceAll("_", " ");
+      head.appendChild(left);
+      head.appendChild(badge);
+      card.appendChild(head);
+      if(Array.isArray(row.problems) && row.problems.length){
+        const ul = document.createElement("ul");
+        ul.className = "review-problems";
+        row.problems.forEach((msg) => {
+          const li = document.createElement("li");
+          li.textContent = msg;
+          ul.appendChild(li);
+        });
+        card.appendChild(ul);
+      }
+      const actions = document.createElement("div");
+      actions.className = "review-actions";
+      const select = document.createElement("select");
+      [
+        { value:"import", label:"Import" },
+        { value:"skip", label:"Skip" },
+        { value:"rename", label:"Rename" },
+        { value:"overwrite", label:"Overwrite" },
+      ].forEach((opt) => {
+        const el = document.createElement("option");
+        el.value = opt.value;
+        el.textContent = opt.label;
+        if(opt.value === "overwrite" && !row.existing_name) el.disabled = true;
+        select.appendChild(el);
+      });
+      select.value = row.action || (row.status === "ready" ? "import" : "skip");
+      const rename = document.createElement("input");
+      rename.type = "text";
+      rename.placeholder = "new profile name";
+      rename.value = row.rename_to || "";
+      rename.style.display = select.value === "rename" ? "" : "none";
+      select.addEventListener("change", () => {
+        row.action = select.value;
+        rename.style.display = select.value === "rename" ? "" : "none";
+      });
+      rename.addEventListener("input", () => {
+        row.rename_to = rename.value;
+      });
+      actions.appendChild(select);
+      actions.appendChild(rename);
+      card.appendChild(actions);
+      list.appendChild(card);
+    });
+    const total = rows.length;
+    const importCount = rows.filter((row) => (row.action || "skip") !== "skip").length;
+    const overwriteCount = rows.filter((row) => row.action === "overwrite").length;
+    summary.textContent = `Profiles in archive: ${total}. Selected for apply: ${importCount}. Overwrite actions: ${overwriteCount}.`;
+  }
+  function openImportReviewModal(payload){
+    importReviewState = JSON.parse(JSON.stringify(payload || {}));
+    byId("importReviewIntro").textContent = `Archive: ${importReviewState.filename || "uploaded file"}. Review each profile before applying this import.`;
+    renderImportReviewModal();
+    const b = byId("importReviewBackdrop", false);
+    if(b) b.style.display = "flex";
+  }
+  async function startProfilesExportFlow(){
+    const rows = getExportableProfiles();
+    const names = syncExportSelection(rows, exportSelectedNames);
+    if(!names.length){
+      setError("Select at least one profile to export.");
+      return;
+    }
+    const requestedFilename = String(byId("exportFilenameInput", false)?.value || "").trim();
+    const payload = await postApi("/api/local/export/prepare", {
+      scope: "selected",
+      names,
+      filename: requestedFilename,
+    });
+    const href = `/api/local/export/download?token=${encodeURIComponent(token)}&id=${encodeURIComponent(payload.export_id)}`;
+    const res = await fetch(href, { method: "GET", cache: "no-store", credentials: "same-origin" });
+    if(!res.ok){
+      let detail = `download failed (${res.status})`;
+      try{
+        const errPayload = await res.json();
+        detail = errPayload?.error?.message || detail;
+      } catch(_) {}
+      throw new Error(detail);
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = payload.filename || "profiles.camzip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => {
+      try { URL.revokeObjectURL(objectUrl); } catch(_) {}
+    }, 1500);
+    closeExportProfilesModal();
+    showInAppNotice("Export Ready", `Downloaded ${payload.count || 0} profile(s) as a migration archive.`, { duration_ms: 7000 });
+  }
+  async function startProfilesImportFlow(file){
+    if(!file) return;
+    setImportFileLabel(`Selected file: ${file.name}`);
+    const warning = await openModal({
+      title: "Import Profiles",
+      body: "Imported data may grant account access and should only come from a trusted source. Keep exported files private, do not share them with other people, and use this feature at your own risk.\\n\\nContinue and analyze this archive?",
+      okText: "Analyze Import",
+      okClass: "btn-warning",
+    });
+    if(!warning || !warning.ok){
+      byId("importProfilesInput").value = "";
+      return;
+    }
+    const content_b64 = await fileToBase64(file);
+    const payload = await postApi("/api/local/import/analyze", {
+      filename: file.name,
+      content_b64,
+    });
+    openImportReviewModal(payload);
   }
   function openRowActionsModal(name){
     activeRowActionsName = name || null;
@@ -5533,28 +7076,65 @@ def render_ui_html(default_interval: float, token: str) -> str:
     return alarmAudioCtx.state === "running";
   }
 
-  function playAlarmPattern(delayMs){
+  function getAlarmPresetById(presetId){
+    const id = String(presetId || "");
+    return alarmPresetMap.get(id) || alarmPresetMap.get("beacon") || (Array.isArray(ALARM_PRESETS) ? ALARM_PRESETS[0] : null);
+  }
+
+  function getSelectedAlarmPresetId(){
+    return String(latestData?.config?.notifications?.alarm_preset || "beacon");
+  }
+
+  function getSelectedAlarmPresetLabel(presetId){
+    const preset = getAlarmPresetById(presetId || getSelectedAlarmPresetId());
+    return String(preset?.label || "Beacon");
+  }
+
+  function updateAlarmPresetSummary(){
+    const valueEl = byId("alarmPresetValue", false);
+    if(valueEl) valueEl.textContent = getSelectedAlarmPresetLabel();
+  }
+
+  function playAlarmPreset(presetId, delayMs){
     if(!alarmAudioCtx || alarmAudioCtx.state !== "running") return;
+    const preset = getAlarmPresetById(presetId);
+    const tones = Array.isArray(preset?.tones) ? preset.tones : [];
+    if(!tones.length) return;
     const now = alarmAudioCtx.currentTime + Math.max(0, Number(delayMs || 0)) / 1000;
-    const seq = [
-      { t: 0.00, f: 880, d: 0.22 },
-      { t: 0.28, f: 1046, d: 0.22 },
-      { t: 0.56, f: 1318, d: 0.34 },
-    ];
-    seq.forEach((tone) => {
+    tones.forEach((tone) => {
       try {
         const osc = alarmAudioCtx.createOscillator();
         const gain = alarmAudioCtx.createGain();
         osc.type = "triangle";
-        osc.frequency.setValueAtTime(tone.f, now + tone.t);
-        gain.gain.setValueAtTime(0.0001, now + tone.t);
-        gain.gain.exponentialRampToValueAtTime(0.18, now + tone.t + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + tone.t + tone.d);
+        const startAt = now + Math.max(0, Number(tone.t || 0));
+        const duration = Math.max(0.06, Number(tone.d || 0.18));
+        const level = Math.max(0.02, Math.min(0.22, Number(tone.g || 0.16)));
+        osc.frequency.setValueAtTime(Number(tone.f || 880), startAt);
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(level, startAt + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
         osc.connect(gain);
         gain.connect(alarmAudioCtx.destination);
-        osc.start(now + tone.t);
-        osc.stop(now + tone.t + tone.d + 0.02);
+        osc.start(startAt);
+        osc.stop(startAt + duration + 0.02);
       } catch(_) {}
+    });
+  }
+
+  async function previewAlarmPreset(presetId, opts){
+    const options = opts || {};
+    const preset = getAlarmPresetById(presetId);
+    if(!preset) return;
+    await primeAlarmAudio();
+    playAlarmPreset(preset.id, 0);
+    const message = options.message || `Previewing ${preset.label}. This is how warning alarms will sound.`;
+    await triggerSystemNotification(message, 0, {
+      play_alarm: false,
+      in_app_always: true,
+      require_interaction: false,
+      renotify: false,
+      suppress_permission_error: true,
+      tag: `cam-alarm-preview-${preset.id}`,
     });
   }
 
@@ -5565,13 +7145,15 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const requireInteraction = !!(opts && opts.require_interaction);
     const renotify = !!(opts && opts.renotify);
     const inAppAlways = !!(opts && opts.in_app_always);
-    if(playAlarm) playAlarmPattern(delayMs);
+    const suppressPermissionError = !!(opts && opts.suppress_permission_error);
+    if(playAlarm) playAlarmPreset(getSelectedAlarmPresetId(), delayMs);
     if(!(await ensureNotificationPermission(false))){
       if(inAppAlways){
         setTimeout(() => {
           showInAppNotice("Codex Account Manager", String(message || "Notification"), { require_interaction: requireInteraction });
         }, delayMs);
       }
+      if(suppressPermissionError) return;
       if(playAlarm){
         setError("Browser notification permission is blocked. Alarm sound played instead.");
       } else {
@@ -5627,8 +7209,15 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const wHit = Number.isFinite(remW) ? remW < Number(ath.weekly_warn_pct ?? 20) : !!details.weekly_hit;
     if(!(h5Hit || wHit)) return;
     await primeAlarmAudio();
-    playAlarmPattern(0);
-    showInAppNotice("Alarm", ev.message || "Usage warning", { duration_ms: 9000 });
+    playAlarmPreset(alarmCfg.alarm_preset, 0);
+    await triggerSystemNotification(ev.message || "Usage warning", 0, {
+      play_alarm: false,
+      in_app_always: true,
+      require_interaction: false,
+      renotify: true,
+      suppress_permission_error: true,
+      tag: `cam-warning-${ev.id || Date.now()}`,
+    });
   }
 
   function renderTable(usage){
@@ -5827,6 +7416,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     byId("alarmToggle").checked = !!n.enabled;
     byId("alarm5h").value = String(n.thresholds?.h5_warn_pct ?? 20);
     byId("alarmWeekly").value = String(n.thresholds?.weekly_warn_pct ?? 20);
+    updateAlarmPresetSummary();
     const a = cfg.auto_switch || {};
     byId("asEnabled").checked = pendingAutoSwitchEnabled === null ? !!a.enabled : !!pendingAutoSwitchEnabled;
     setControlValueIfPristine("asDelay", String(a.delay_sec ?? 60));
@@ -6088,11 +7678,45 @@ def render_ui_html(default_interval: float, token: str) -> str:
       }
       if(!list.__error){
         latestData.list = list;
+        updateExportSelectedSummary();
+        if(showLoading){
+          const hasLiveUsage = !!(latestData.usage && Array.isArray(latestData.usage.profiles) && latestData.usage.profiles.length);
+          if(!hasLiveUsage){
+            const listLoadingSnapshot = buildUsageLoadingSnapshot(
+              latestData.usage,
+              latestData.list,
+              latestData.current || current,
+              "request pending",
+              true,
+            );
+            if(listLoadingSnapshot && Array.isArray(listLoadingSnapshot.profiles) && listLoadingSnapshot.profiles.length){
+              latestData.usage = listLoadingSnapshot;
+              renderTable(listLoadingSnapshot);
+            }
+          }
+        }
       } else {
         const listRetry = await safeGet("/api/list", { timeoutMs: 12000 });
         if(!listRetry.__error){
           list = listRetry;
           latestData.list = listRetry;
+          updateExportSelectedSummary();
+          if(showLoading){
+            const hasLiveUsage = !!(latestData.usage && Array.isArray(latestData.usage.profiles) && latestData.usage.profiles.length);
+            if(!hasLiveUsage){
+              const listRetrySnapshot = buildUsageLoadingSnapshot(
+                latestData.usage,
+                latestData.list,
+                latestData.current || current,
+                "request pending",
+                true,
+              );
+              if(listRetrySnapshot && Array.isArray(listRetrySnapshot.profiles) && listRetrySnapshot.profiles.length){
+                latestData.usage = listRetrySnapshot;
+                renderTable(listRetrySnapshot);
+              }
+            }
+          }
           pushOverlayLog("ui", "refresh.list.retry.success");
         }
       }
@@ -6321,6 +7945,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       });
       byId("restartBtn").addEventListener("click", async ()=>{
         try{
+          await loadAppUpdateStatus(true);
           await restartUiService();
         } catch(e){
           setError(e?.message || String(e));
@@ -6357,6 +7982,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
         }
       });
       byId("themeSelect").addEventListener("change", async (e) => { applyTheme(e.target.value); await saveUiConfigPatch({ ui: { theme: e.target.value } }); });
+      const updateBtn = byId("appUpdateBtn", false);
+      if(updateBtn){
+        updateBtn.addEventListener("click", ()=>openUpdateModal());
+      }
       const themeBtn = byId("themeIconBtn", false);
       if(themeBtn){
         themeBtn.addEventListener("click", () => {
@@ -6391,10 +8020,31 @@ def render_ui_html(default_interval: float, token: str) -> str:
         resetTimer();
       });
       initSteppers(document);
+      setImportFileLabel("Choose a migration archive to review and import.");
       byId("addAccountBtn").addEventListener("click", async ()=>{
         pushOverlayLog("ui", "ui.click add_account");
         setError("");
         openAddDeviceModal({ reset:true });
+      });
+      byId("exportProfilesBtn").addEventListener("click", ()=>openExportProfilesModal());
+      byId("importProfilesBtn").addEventListener("click", async ()=>{
+        const warning = await openModal({
+          title: "Import Profiles",
+          body: "Imported data may grant account access and should only come from a trusted source. Keep exported files private, do not share them with other people, and use this feature at your own risk.\\n\\nContinue and choose an archive file?",
+          okText: "Choose Archive",
+          okClass: "btn-warning",
+        });
+        if(!warning || !warning.ok) return;
+        byId("importProfilesInput").click();
+      });
+      byId("importProfilesInput").addEventListener("change", async (e)=>{
+        const file = e?.target?.files && e.target.files[0] ? e.target.files[0] : null;
+        if(!file) return;
+        try{
+          await runAction("local.import_profiles.analyze", ()=>startProfilesImportFlow(file), { skipRefresh:true });
+        } finally {
+          e.target.value = "";
+        }
       });
       byId("addDeviceStartBtn").addEventListener("click", async ()=>{
         const name = getAddDeviceProfileName();
@@ -6465,11 +8115,43 @@ def render_ui_html(default_interval: float, token: str) -> str:
       });
       byId("colSettingsBtn").addEventListener("click", (e)=>{ e.stopPropagation(); openColumnsModal(); });
       byId("columnsDoneBtn").addEventListener("click", ()=>closeColumnsModal());
+      byId("exportProfilesCancelBtn").addEventListener("click", ()=>closeExportProfilesModal());
+      byId("exportProfilesConfirmBtn").addEventListener("click", ()=>runAction("local.export_profiles", ()=>startProfilesExportFlow(), { skipRefresh:true }));
+      byId("exportSelectAllBtn").addEventListener("click", ()=>toggleAllExportProfiles(true));
+      byId("exportUnselectAllBtn").addEventListener("click", ()=>toggleAllExportProfiles(false));
+      byId("exportHeaderCheckbox").addEventListener("change", (e)=>toggleAllExportProfiles(!!e.target.checked));
       byId("columnsResetBtn").addEventListener("click", ()=>{
         columnPrefs = { ...defaultColumns };
         saveColumnPrefs();
         applyColumnVisibility();
         renderColumnsModal();
+      });
+      byId("alarmPresetCancelBtn").addEventListener("click", ()=>closeAlarmPresetModal());
+      byId("alarmPresetUseBtn").addEventListener("click", ()=>applyAlarmPresetSelection().catch((e)=>setError(e?.message || String(e))));
+      byId("importReviewCloseBtn").addEventListener("click", ()=>closeImportReviewModal());
+      byId("importReviewCancelBtn").addEventListener("click", ()=>closeImportReviewModal());
+      byId("importReviewApplyBtn").addEventListener("click", async ()=>{
+        if(!importReviewState) return;
+        const risky = (importReviewState.profiles || []).some((row) => row.action === "overwrite");
+        if(risky){
+          const confirmOverwrite = await openModal({
+            title: "Confirm Import Apply",
+            body: "One or more profiles will overwrite existing saved profiles. Keep exported data private, do not share it with other people, and use this feature at your own risk.\\n\\nApply this import now?",
+            okText: "Apply Import",
+            okClass: "btn-primary-danger",
+          });
+          if(!confirmOverwrite || !confirmOverwrite.ok) return;
+        }
+        await runAction("local.import_profiles.apply", async ()=>{
+          const payload = await postApi("/api/local/import/apply", {
+            analysis_id: importReviewState.analysis_id,
+            profiles: importReviewState.profiles,
+          });
+          closeImportReviewModal();
+          const summary = payload?.summary || {};
+          showInAppNotice("Import Complete", `Imported ${summary.imported || 0}, skipped ${summary.skipped || 0}, overwritten ${summary.overwritten || 0}, failed ${summary.failed || 0}.`, { duration_ms: 9000 });
+          await refreshAll({ showLoading:false, clearUsageCache:true });
+        }, { skipRefresh:true });
       });
       byId("rowActionsCloseBtn").addEventListener("click", ()=>closeRowActionsModal());
       byId("rowActionsRenameBtn").addEventListener("click", async ()=>{
@@ -6502,6 +8184,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
       byId("alarmToggle").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { enabled: !!byId("alarmToggle").checked } }).catch((e)=>setError(e?.message || String(e))));
       byId("alarm5h").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { h5_warn_pct: Math.max(0, Math.min(100, parseInt(byId("alarm5h").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
       byId("alarmWeekly").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { weekly_warn_pct: Math.max(0, Math.min(100, parseInt(byId("alarmWeekly").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
+      byId("chooseAlarmBtn").addEventListener("click", ()=>openAlarmPresetModal());
+      byId("testAlarmBtn").addEventListener("click", async ()=>{
+        try{
+          await previewAlarmPreset(getSelectedAlarmPresetId(), { message: `Testing ${getSelectedAlarmPresetLabel()}. This preview uses the current warning alarm.` });
+        } catch(e){
+          setError(e?.message || String(e));
+        }
+      });
       byId("asEnabled").addEventListener("change", async ()=>{
         const next = !!byId("asEnabled").checked;
         const rankingNow = String(byId("asRanking", false)?.value || latestData?.config?.auto_switch?.ranking_mode || "balanced");
@@ -6762,15 +8452,45 @@ def render_ui_html(default_interval: float, token: str) -> str:
       byId("advAuthBtn").addEventListener("click", ()=>runAction("adv.auth", ()=>postApi("/api/adv/auth",{args:byId("advAuthArgs").value.trim(), timeout:60})));
       byId("modalCancelBtn").addEventListener("click", ()=>modalCancelAction());
       byId("modalOkBtn").addEventListener("click", ()=>modalOkAction());
+      byId("appUpdateCancelBtn").addEventListener("click", ()=>closeUpdateModal());
+      byId("appUpdateConfirmBtn").addEventListener("click", ()=>runAppUpdateFlow().catch((e)=>setError(e?.message || String(e))));
       byId("modalBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("modalBackdrop")) closeModal({ ok:false }); });
+      byId("appUpdateBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("appUpdateBackdrop")) closeUpdateModal(); });
       byId("addDeviceBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("addDeviceBackdrop")) closeAddDeviceModal(); });
+      byId("alarmPresetBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("alarmPresetBackdrop")) closeAlarmPresetModal(); });
+      byId("exportProfilesBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("exportProfilesBackdrop")) closeExportProfilesModal(); });
       byId("rowActionsBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("rowActionsBackdrop")) closeRowActionsModal(); });
       byId("chainEditBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("chainEditBackdrop")) closeChainEditModal(); });
+      byId("importReviewBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("importReviewBackdrop")) closeImportReviewModal(); });
       document.addEventListener("keydown", (e)=>{
         const chainEditBackdrop = byId("chainEditBackdrop", false);
         if(chainEditBackdrop && chainEditBackdrop.style.display === "flex" && e.key === "Escape"){
           e.preventDefault();
           closeChainEditModal();
+          return;
+        }
+        const importReviewBackdrop = byId("importReviewBackdrop", false);
+        if(importReviewBackdrop && importReviewBackdrop.style.display === "flex" && e.key === "Escape"){
+          e.preventDefault();
+          closeImportReviewModal();
+          return;
+        }
+        const alarmPresetBackdrop = byId("alarmPresetBackdrop", false);
+        if(alarmPresetBackdrop && alarmPresetBackdrop.style.display === "flex" && e.key === "Escape"){
+          e.preventDefault();
+          closeAlarmPresetModal();
+          return;
+        }
+        const exportProfilesBackdrop = byId("exportProfilesBackdrop", false);
+        if(exportProfilesBackdrop && exportProfilesBackdrop.style.display === "flex" && e.key === "Escape"){
+          e.preventDefault();
+          closeExportProfilesModal();
+          return;
+        }
+        const appUpdateBackdrop = byId("appUpdateBackdrop", false);
+        if(appUpdateBackdrop && appUpdateBackdrop.style.display === "flex" && e.key === "Escape"){
+          e.preventDefault();
+          closeUpdateModal();
           return;
         }
         const backdrop = byId("modalBackdrop", false);
@@ -6788,7 +8508,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
         }
       });
       byId("columnsModalBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("columnsModalBackdrop")) closeColumnsModal(); });
+      applyAppUpdateStatus({ update_available: false, latest_version: "", current_version: `v${UI_VERSION}` });
       renderColumnsModal();
+      updateExportSelectedSummary();
       applyColumnVisibility();
       initSteppers(document);
       renderSortIndicators();
@@ -6814,6 +8536,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         if(latestData.usage) renderTable(latestData.usage);
       }));
       await refreshAll({ showLoading: true, clearUsageCache: true });
+      await loadAppUpdateStatus(false);
       resetTimer();
       resetRemainTicker();
       eventsTimer = setInterval(async ()=>{
@@ -6849,6 +8572,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     html = html.replace("__INTERVAL_INT__", str(int(default_interval)))
     html = html.replace("__UI_VERSION__", APP_VERSION)
     html = html.replace("__UI_VERSION_JSON__", version_json)
+    html = html.replace("__ALARM_PRESETS_JSON__", alarm_presets_json)
     return html
 
 
@@ -7817,6 +9541,11 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 with release_notes_cache_lock:
                     payload = load_release_notes_payload(force_refresh=force, cache=release_notes_cache)
                 return _json_ok(payload)
+            if self.command == "GET" and path == "/api/app-update-status":
+                force = bool_value((q.get("force", ["false"])[0]), False)
+                with release_notes_cache_lock:
+                    payload = load_release_notes_payload(force_refresh=force, cache=release_notes_cache)
+                return _json_ok(build_update_status_payload(payload))
             if self.command == "GET" and path == "/api/adv/status":
                 return _json_ok(collect_status_data())
             if self.command == "GET" and path == "/api/list":
@@ -7902,6 +9631,55 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if req_token != token:
                     return _json_error("FORBIDDEN", "invalid session token", 403)
                 return _json_ok({"pong": True})
+            if self.command == "POST" and path == "/api/local/export/prepare":
+                scope = str(body.get("scope", "all") or "all").strip().lower()
+                if scope not in {"all", "selected"}:
+                    return _json_error("BAD_SCOPE", "scope must be 'all' or 'selected'")
+                names = None
+                filename = str(body.get("filename", "") or "").strip()
+                if scope == "selected":
+                    raw_names = body.get("names")
+                    if not isinstance(raw_names, list):
+                        return _json_error("BAD_NAMES", "selected export requires a names array")
+                    names = [str(item or "").strip() for item in raw_names if str(item or "").strip()]
+                    if not names:
+                        return _json_error("BAD_NAMES", "at least one profile name is required for selected export")
+                try:
+                    payload = prepare_profiles_export(names, filename=filename)
+                except Exception as e:
+                    return _json_error("EXPORT_FAILED", str(e), 400)
+                return _json_ok(payload)
+            if self.command == "POST" and path == "/api/local/import/analyze":
+                filename = str(body.get("filename", "") or "").strip()
+                content_b64 = str(body.get("content_b64", "") or "").strip()
+                if not content_b64:
+                    return _json_error("MISSING_CONTENT", "content_b64 is required")
+                try:
+                    archive_bytes = base64.b64decode(content_b64, validate=True)
+                except Exception:
+                    return _json_error("BAD_CONTENT", "content_b64 must be valid base64 data")
+                try:
+                    payload = store_import_analysis(filename, archive_bytes)
+                except Exception as e:
+                    return _json_error("IMPORT_ANALYZE_FAILED", str(e), 400)
+                return _json_ok(payload)
+            if self.command == "POST" and path == "/api/local/import/apply":
+                analysis_id = str(body.get("analysis_id", "") or "").strip()
+                rows = body.get("profiles")
+                if not analysis_id:
+                    return _json_error("MISSING_ID", "analysis_id is required")
+                if not isinstance(rows, list):
+                    return _json_error("BAD_PROFILES", "profiles must be an array")
+                stored = load_import_analysis(analysis_id)
+                if not stored:
+                    return _json_error("NOT_FOUND", "import analysis not found or expired", 404)
+                try:
+                    payload = apply_profiles_import(Path(stored["path"]), rows)
+                except Exception as e:
+                    return _json_error("IMPORT_APPLY_FAILED", str(e), 400)
+                invalidate_usage_cache("local-import-profiles")
+                clear_import_analysis(analysis_id)
+                return _json_ok(payload)
             if self.command == "GET" and path == "/api/local/add/session":
                 sid = str((q.get("id", [""])[0] or "")).strip()
                 if not sid:
@@ -8100,6 +9878,31 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     _log_runtime_safe("error", "ui restart spawn failed", {"error": str(e)})
                     return _json_error("RESTART_FAILED", f"failed to schedule restart: {e}", 500)
                 return _json_ok({"restarting": True, "reload_after_ms": 1200})
+            if self.command == "POST" and path == "/api/system/update":
+                result = run_app_update_command()
+                if not result.get("ok"):
+                    return _json_ok(
+                        {
+                            "updated": False,
+                            "error": str(result.get("stderr") or "update failed"),
+                            "stdout": result.get("stdout", ""),
+                            "stderr": result.get("stderr", ""),
+                            "command": result.get("command", []),
+                            "returncode": result.get("returncode"),
+                        }
+                    )
+                with release_notes_cache_lock:
+                    payload = load_release_notes_payload(force_refresh=True, cache=release_notes_cache)
+                return _json_ok(
+                    {
+                        "updated": True,
+                        "stdout": result.get("stdout", ""),
+                        "stderr": result.get("stderr", ""),
+                        "command": result.get("command", []),
+                        "returncode": result.get("returncode"),
+                        "update_status": build_update_status_payload(payload),
+                    }
+                )
             if self.command == "POST" and path == "/api/auto-switch/rapid-test":
                 if runtime.get("rapid_test_active"):
                     return _json_error("RAPID_TEST_BUSY", "rapid test is already running", 409)
@@ -8495,6 +10298,36 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             req_id = secrets.token_hex(6)
             parsed = urlparse(self.path)
             last_seen["ts"] = time.time()
+            if parsed.path == "/api/local/export/download":
+                q = parse_qs(parsed.query)
+                req_token = (q.get("token", [""])[0] or "").strip()
+                if req_token != token:
+                    self._reply(403, {"ok": False, "error": {"code": "FORBIDDEN", "message": "invalid session token"}})
+                    return
+                export_id = str((q.get("id", [""])[0] or "")).strip()
+                if not export_id:
+                    self._reply(400, {"ok": False, "error": {"code": "MISSING_ID", "message": "export id is required"}})
+                    return
+                entry = get_export_session(export_id)
+                if not entry:
+                    self._reply(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "export download is missing or expired"}})
+                    return
+                archive_path = Path(str(entry.get("path") or ""))
+                if not archive_path.exists():
+                    self._reply(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "export archive not found"}})
+                    return
+                raw = archive_path.read_bytes()
+                filename = str(entry.get("filename") or archive_path.name or _profile_archive_filename())
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.end_headers()
+                self.wfile.write(raw)
+                return
             if parsed.path == "/" or parsed.path == "/index.html":
                 html = render_ui_html(interval_sec, token)
                 self._reply(200, html, "text/html; charset=utf-8")
@@ -9215,6 +11048,13 @@ def main() -> int:
     p_rename.add_argument("old_name")
     p_rename.add_argument("new_name")
     p_rename.add_argument("--force", action="store_true", help="Overwrite destination if it exists")
+    p_export_profiles = sub.add_parser("export-profiles", help="Export saved local profiles into a migration archive")
+    p_export_profiles.add_argument("names", nargs="*", help="Optional profile names to export. Omit to export all profiles.")
+    p_export_profiles.add_argument("-o", "--output", help=f"Output archive path (default: ./{_profile_archive_filename()})")
+    p_import_profiles = sub.add_parser("import-profiles", help="Analyze or apply a local profile migration archive")
+    p_import_profiles.add_argument("archive", help=f"Path to a {PROFILE_ARCHIVE_EXT} archive")
+    p_import_profiles.add_argument("--apply", action="store_true", help="Apply the import after analysis")
+    p_import_profiles.add_argument("--overwrite", action="store_true", help="When used with --apply, overwrite conflicting profiles instead of skipping them")
 
     # codex-auth feature wrappers
     p_status = sub.add_parser("status", help="(Advanced) codex-auth status")
@@ -9330,6 +11170,10 @@ def main() -> int:
         return cmd_remove(args.name)
     if args.cmd == "rename":
         return cmd_rename(args.old_name, args.new_name, force=args.force)
+    if args.cmd == "export-profiles":
+        return cmd_export_profiles(profile_names=args.names, output=args.output)
+    if args.cmd == "import-profiles":
+        return cmd_import_profiles(args.archive, apply=args.apply, overwrite=args.overwrite)
     if args.cmd == "status":
         return cmd_status(as_json=args.json)
     if args.cmd == "login":

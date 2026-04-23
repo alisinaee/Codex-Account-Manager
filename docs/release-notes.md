@@ -6,6 +6,22 @@ This file tracks user-visible changes by version.
 
 No unreleased entries yet.
 
+## 0.0.11
+
+### Profiles, Alarms, and Update Flow
+
+- Replaced the old Export / Import settings card with a full-width `Profiles` panel that uses dedicated `Import` and `Export` actions.
+- Added a richer export dialog with profile checkboxes, `Select All` / `Unselect All`, and optional custom archive naming before downloading a `.camzip` migration archive.
+- Added 20 built-in alarm presets, a dedicated alarm picker dialog, per-preset preview buttons, and an inline `Test Alarm` action for warning sound checks.
+- Moved the app version next to the `Codex Account Manager` title and added in-app update availability checks with a release-notes review dialog before running `pipx upgrade codex-account-manager`.
+
+### Guidance, Tooltips, and Stability
+
+- Refreshed in-app `Guide & Help` content so it matches the current Profiles, Alarm, and Update experiences.
+- Expanded tooltip coverage on newer controls and modal actions so every visible section has clearer inline guidance.
+- Fixed a boot-breaking inline JavaScript escape issue in the new update flow that could prevent the accounts table from loading after restart.
+- Improved loading behavior so the accounts table can show placeholder rows sooner while slow usage refresh requests complete.
+
 ## 0.0.10
 
 ### UI and Workflow Refresh
