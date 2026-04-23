@@ -56,7 +56,7 @@ CAM_LOG_MAX_BYTES = 2 * 1024 * 1024
 CAM_LOG_BACKUPS = 4
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.11"
+DEFAULT_APP_VERSION = "0.0.12"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 PROFILE_ARCHIVE_VERSION = 1
 PROFILE_ARCHIVE_EXT = ".camzip"
@@ -4665,6 +4665,52 @@ def render_ui_html(default_interval: float, token: str) -> str:
       overflow:auto;
       max-height:160px;
     }
+    .update-modal-progress{
+      display:none;
+      gap:8px;
+      padding:10px 12px;
+      background:color-mix(in srgb,var(--surface-black) 84%, transparent);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+    }
+    .update-modal-progress.active{
+      display:grid;
+    }
+    .update-modal-progress-head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      font-size:12px;
+    }
+    .update-modal-progress-label{
+      color:var(--text);
+      font-weight:700;
+    }
+    .update-modal-progress-value{
+      color:var(--primary);
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+      font-size:11px;
+    }
+    .update-modal-progress-track{
+      height:10px;
+      border-radius:999px;
+      overflow:hidden;
+      background:color-mix(in srgb,var(--surface) 78%, transparent);
+      border:1px solid color-mix(in srgb,var(--line) 88%, transparent);
+    }
+    .update-modal-progress-bar{
+      height:100%;
+      width:0%;
+      border-radius:999px;
+      background:linear-gradient(90deg, var(--primary), color-mix(in srgb,var(--primary) 50%, white));
+      transition:width .22s ease;
+    }
+    .update-modal-progress-note{
+      color:var(--text-soft);
+      font-size:12px;
+      line-height:1.45;
+    }
     .update-modal-footer{
       display:flex;
       justify-content:flex-end;
@@ -5177,6 +5223,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
     <div class=\"update-modal\">
       <h3>Update App</h3>
       <p id=\"appUpdateIntro\" class=\"update-modal-intro\">Review the latest release notes before upgrading this app.</p>
+      <div id=\"appUpdateProgress\" class=\"update-modal-progress\" aria-live=\"polite\">
+        <div class=\"update-modal-progress-head\">
+          <span id=\"appUpdateProgressLabel\" class=\"update-modal-progress-label\">Preparing update...</span>
+          <span id=\"appUpdateProgressValue\" class=\"update-modal-progress-value\">0%</span>
+        </div>
+        <div class=\"update-modal-progress-track\"><div id=\"appUpdateProgressBar\" class=\"update-modal-progress-bar\"></div></div>
+        <div id=\"appUpdateProgressNote\" class=\"update-modal-progress-note\">The update can continue in the background if you close this dialog.</div>
+      </div>
       <div id=\"appUpdateRelease\" class=\"update-modal-release\"></div>
       <pre id=\"appUpdateOutput\" class=\"update-modal-output\" style=\"display:none;\"></pre>
       <div class=\"update-modal-footer\">
@@ -5231,6 +5285,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let guideReleaseLastPayload = null;
   let appUpdateState = null;
   let appUpdateInFlight = false;
+  let appUpdateRequestController = null;
+  let appUpdateProgressTimer = null;
+  let appUpdateProgressValue = 0;
+  let appUpdateProgressLabel = "";
+  let appUpdateProgressNote = "";
+  let appUpdateOutputLines = [];
   let diagnosticsHooksInstalled = false;
   let exportSelectedNames = [];
   let importReviewState = null;
@@ -5881,7 +5941,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       }
       if(code === "FORBIDDEN" && /invalid session token/i.test(msg)){
         setError("Session expired after service restart. Reloading panel...");
-        setTimeout(() => { try { window.location.href = "/?v="+encodeURIComponent(UI_VERSION)+"&r="+Date.now(); } catch(_) {} }, 350);
+        setTimeout(() => { try { window.location.href = "/?r="+Date.now(); } catch(_) {} }, 350);
       }
       throw new Error(msg);
     }
@@ -5894,8 +5954,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     return body.data;
   }
-  async function postApi(path, payload={}){
-    return callApi(path, { method:"POST", headers:{"Content-Type":"application/json","X-Codex-Token":token}, body: JSON.stringify(payload) });
+  async function postApi(path, payload={}, options={}){
+    return callApi(path, {
+      ...options,
+      method:"POST",
+      headers:{"Content-Type":"application/json","X-Codex-Token":token, ...(options?.headers || {})},
+      body: JSON.stringify(payload),
+    });
   }
   async function safeGet(path, options={}){
     try { return await callApi(path, options); }
@@ -6012,21 +6077,49 @@ def render_ui_html(default_interval: float, token: str) -> str:
     const releaseEl = byId("appUpdateRelease", false);
     const outputEl = byId("appUpdateOutput", false);
     const confirmBtn = byId("appUpdateConfirmBtn", false);
+    const cancelBtn = byId("appUpdateCancelBtn", false);
+    const progressEl = byId("appUpdateProgress", false);
+    const progressBar = byId("appUpdateProgressBar", false);
+    const progressValueEl = byId("appUpdateProgressValue", false);
+    const progressLabelEl = byId("appUpdateProgressLabel", false);
+    const progressNoteEl = byId("appUpdateProgressNote", false);
     const release = state?.latest_release || null;
     const latestVersion = String(state?.latest_version || "");
     if(outputEl){
-      outputEl.style.display = "none";
-      outputEl.textContent = "";
+      const text = appUpdateOutputLines.join("\\n");
+      outputEl.style.display = text ? "block" : "none";
+      outputEl.textContent = text;
     }
     if(intro){
       intro.textContent = latestVersion
         ? `Review the ${latestVersion} release notes before upgrading this app with pipx.`
         : "Review the latest release notes before upgrading this app.";
     }
+    if(progressEl){
+      progressEl.classList.toggle("active", !!appUpdateInFlight || appUpdateProgressValue > 0);
+    }
+    if(progressBar){
+      progressBar.style.width = `${Math.max(0, Math.min(100, Math.round(appUpdateProgressValue || 0)))}%`;
+    }
+    if(progressValueEl){
+      progressValueEl.textContent = `${Math.max(0, Math.min(100, Math.round(appUpdateProgressValue || 0)))}%`;
+    }
+    if(progressLabelEl){
+      progressLabelEl.textContent = appUpdateProgressLabel || (appUpdateInFlight ? "Updating..." : "Ready to update");
+    }
+    if(progressNoteEl){
+      progressNoteEl.textContent = appUpdateProgressNote || "The update can continue in the background if you close this dialog.";
+    }
     if(confirmBtn){
       confirmBtn.disabled = !state?.update_available || appUpdateInFlight;
       confirmBtn.textContent = appUpdateInFlight ? "Updating..." : "Update Now";
       confirmBtn.classList.toggle("btn-progress", !!appUpdateInFlight);
+    }
+    if(cancelBtn){
+      cancelBtn.textContent = appUpdateInFlight ? "Close" : "Cancel";
+      cancelBtn.title = appUpdateInFlight
+        ? "Close this dialog while the update continues in the background."
+        : "Close this update review without running the pipx upgrade.";
     }
     if(!releaseEl) return;
     if(!release){
@@ -6061,9 +6154,58 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(b) b.style.display = "flex";
   }
   function closeUpdateModal(){
-    if(appUpdateInFlight) return;
     const b = byId("appUpdateBackdrop", false);
     if(b) b.style.display = "none";
+    if(appUpdateInFlight){
+      showInAppNotice("Update Running", "The update is still running in the background. The panel will restart when it finishes.", { duration_ms: 7000 });
+    }
+  }
+  function setAppUpdateProgress(value, label="", note=""){
+    appUpdateProgressValue = Math.max(0, Math.min(100, Number(value) || 0));
+    if(label) appUpdateProgressLabel = String(label);
+    if(note !== undefined && note !== null && String(note) !== "") appUpdateProgressNote = String(note);
+    renderUpdateReleaseModal(appUpdateState || {});
+  }
+  function resetAppUpdateProgress(){
+    if(appUpdateProgressTimer){
+      clearInterval(appUpdateProgressTimer);
+      appUpdateProgressTimer = null;
+    }
+    appUpdateProgressValue = 0;
+    appUpdateProgressLabel = "";
+    appUpdateProgressNote = "";
+  }
+  function startAppUpdateProgress(){
+    resetAppUpdateProgress();
+    setAppUpdateProgress(8, "Preparing update request...", "Starting the local updater command.");
+    appUpdateProgressTimer = setInterval(() => {
+      if(!appUpdateInFlight) return;
+      const next = appUpdateProgressValue < 28 ? appUpdateProgressValue + 5
+        : appUpdateProgressValue < 58 ? appUpdateProgressValue + 3
+        : appUpdateProgressValue < 86 ? appUpdateProgressValue + 1.5
+        : appUpdateProgressValue;
+      if(next !== appUpdateProgressValue){
+        appUpdateProgressValue = Math.min(90, next);
+        renderUpdateReleaseModal(appUpdateState || {});
+      }
+    }, 850);
+  }
+  function pushAppUpdateOutput(line){
+    const text = String(line || "").trim();
+    if(!text) return;
+    appUpdateOutputLines.push(text);
+    if(appUpdateOutputLines.length > 14){
+      appUpdateOutputLines = appUpdateOutputLines.slice(-14);
+    }
+    renderUpdateReleaseModal(appUpdateState || {});
+  }
+  function summarizeUpdateOutput(raw){
+    return String(raw || "")
+      .split(/\\r?\\n/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean)
+      .filter((line) => /Processing |Preparing metadata|Building wheel|Created wheel|Installing collected packages|Attempting uninstall|Successfully uninstalled|Successfully installed|error[: ]/i.test(line))
+      .slice(0, 8);
   }
   function applyAppUpdateStatus(state){
     appUpdateState = state && typeof state === "object" ? state : {};
@@ -6100,34 +6242,48 @@ def render_ui_html(default_interval: float, token: str) -> str:
   async function runAppUpdateFlow(){
     if(appUpdateInFlight) return;
     appUpdateInFlight = true;
+    appUpdateRequestController = new AbortController();
+    appUpdateOutputLines = [];
+    startAppUpdateProgress();
+    pushAppUpdateOutput("[1/4] Opening updater...");
     applyAppUpdateStatus(appUpdateState || {});
     renderUpdateReleaseModal(appUpdateState || {});
     setError("");
     try{
-      const data = await postApi("/api/system/update", {});
+      setAppUpdateProgress(18, "Sending update command...", "Request accepted. Waiting for the upgrader to finish.");
+      pushAppUpdateOutput("[2/4] Running pipx upgrade...");
+      const data = await postApi("/api/system/update", {}, { signal: appUpdateRequestController.signal, timeoutMs: 180000 });
+      setAppUpdateProgress(78, "Applying updated package...", "The updater command finished. Preparing UI restart.");
+      pushAppUpdateOutput("[3/4] Upgrade command finished.");
       const output = [String(data?.stdout || "").trim(), String(data?.stderr || "").trim()].filter(Boolean).join("\\n\\n");
-      const outputEl = byId("appUpdateOutput", false);
-      if(outputEl){
-        outputEl.style.display = output ? "block" : "none";
-        outputEl.textContent = output || "Update finished without terminal output.";
-      }
+      summarizeUpdateOutput(output).forEach((line) => pushAppUpdateOutput(`  ${line}`));
       if(!data?.updated){
         throw new Error(String(data?.stderr || data?.error || "Update failed."));
       }
+      setAppUpdateProgress(92, "Restarting web panel...", "Reloading the UI service so the new version is active.");
+      pushAppUpdateOutput("[4/4] Restarting UI service...");
       showInAppNotice("Update Complete", "App updated successfully. Restarting the UI service now.", { duration_ms: 9000 });
       closeUpdateModal();
       await restartUiService();
+      setAppUpdateProgress(100, "Update complete", "The app finished upgrading successfully.");
     } catch(e){
+      if(e && e.name === "AbortError"){
+        pushAppUpdateOutput("Update request was cancelled in this dialog.");
+        setAppUpdateProgress(appUpdateProgressValue || 20, "Update request cancelled", "If the updater had already started, it may continue in the background.");
+        return;
+      }
       const msg = e?.message || String(e);
       setError(msg);
-      const outputEl = byId("appUpdateOutput", false);
-      if(outputEl && !outputEl.textContent.trim()){
-        outputEl.style.display = "block";
-        outputEl.textContent = msg;
-      }
+      pushAppUpdateOutput(`Update failed: ${msg}`);
+      setAppUpdateProgress(appUpdateProgressValue || 20, "Update failed", "The updater returned an error. Review the details below.");
       pushOverlayLog("error", "app_update.failed", { error: msg });
     } finally {
       appUpdateInFlight = false;
+      appUpdateRequestController = null;
+      if(appUpdateProgressTimer){
+        clearInterval(appUpdateProgressTimer);
+        appUpdateProgressTimer = null;
+      }
       applyAppUpdateStatus(appUpdateState || {});
       renderUpdateReleaseModal(appUpdateState || {});
     }
@@ -7163,7 +7319,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     }
     setTimeout(async () => {
       const body = String(message || "Notification");
-      const destination = "/?v="+encodeURIComponent(UI_VERSION);
+      const destination = "/?r="+Date.now();
       if(inAppAlways){
         showInAppNotice("Codex Account Manager", body, { require_interaction: requireInteraction });
       }
@@ -7860,6 +8016,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(refreshBtn) refreshBtn.disabled = true;
     setError("");
     let reloadAfterMs = 1200;
+    let previousHealthVersion = "";
+    try{
+      const initialHealth = await safeGet(`/api/health?r=${Date.now()}`, { timeoutMs: 900 });
+      if(!initialHealth.__error){
+        previousHealthVersion = String(initialHealth?.version || "").trim();
+      }
+    } catch(_) {}
     try{
       const data = await postApi("/api/system/restart", {});
       reloadAfterMs = Math.max(400, Number(data?.reload_after_ms || 1200));
@@ -7872,11 +8035,29 @@ def render_ui_html(default_interval: float, token: str) -> str:
     setError("Restarting UI service...");
     await waitMs(reloadAfterMs);
     const startedAt = Date.now();
+    let sawServiceDrop = false;
     while((Date.now() - startedAt) < 20000){
+      const health = await safeGet(`/api/health?r=${Date.now()}`, { timeoutMs: 900 });
+      if(health.__error){
+        sawServiceDrop = true;
+      } else {
+        const nextVersion = String(health?.version || "").trim();
+        const versionChanged = !!nextVersion && !!previousHealthVersion && nextVersion !== previousHealthVersion;
+        if(sawServiceDrop || versionChanged || !previousHealthVersion){
+          try {
+            window.location.href = "/?r="+Date.now();
+            return;
+          } catch(_) {}
+        }
+      }
+      await waitMs(700);
+    }
+    const fallbackStartedAt = Date.now();
+    while((Date.now() - fallbackStartedAt) < 4000){
       const health = await safeGet(`/api/health?r=${Date.now()}`, { timeoutMs: 900 });
       if(!health.__error){
         try {
-          window.location.href = "/?v="+encodeURIComponent(UI_VERSION)+"&r="+Date.now();
+          window.location.href = "/?r="+Date.now();
           return;
         } catch(_) {}
       }

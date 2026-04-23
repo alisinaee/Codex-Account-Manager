@@ -161,13 +161,13 @@ class CliCoreTests(unittest.TestCase):
             "repo_url": cli.PROJECT_RELEASES_URL,
             "releases": [
                 {"tag": "v9.9.9-rc1", "version": "v9.9.9-rc1", "title": "v9.9.9-rc1", "published_at": "2026-04-23T10:00:00Z", "body": "rc", "highlights": [], "url": "", "is_prerelease": True, "is_draft": False, "is_current": False, "source": "github"},
-                {"tag": "v0.0.12", "version": "v0.0.12", "title": "v0.0.12", "published_at": "2026-04-22T10:00:00Z", "body": "stable", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": False, "source": "github"},
+                {"tag": "v0.0.13", "version": "v0.0.13", "title": "v0.0.13", "published_at": "2026-04-22T10:00:00Z", "body": "stable", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": False, "source": "github"},
             ],
         }
         status = cli.build_update_status_payload(payload)
         self.assertTrue(status["update_available"])
-        self.assertEqual(status["latest_version"], "v0.0.12")
-        self.assertEqual((status["latest_release"] or {}).get("tag"), "v0.0.12")
+        self.assertEqual(status["latest_version"], "v0.0.13")
+        self.assertEqual((status["latest_release"] or {}).get("tag"), "v0.0.13")
 
     def test_update_status_returns_no_update_when_versions_match(self):
         payload = {
@@ -188,6 +188,9 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn('id="appUpdateBadge"', html)
         self.assertIn('id="appUpdateBtn"', html)
         self.assertIn('id="appUpdateBackdrop"', html)
+        self.assertIn('id="appUpdateProgress"', html)
+        self.assertIn('id="appUpdateProgressBar"', html)
+        self.assertIn('id="appUpdateProgressNote"', html)
         self.assertIn("/api/app-update-status", html)
         self.assertIn("/api/system/update", html)
 

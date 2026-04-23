@@ -6,6 +6,14 @@ This file tracks user-visible changes by version.
 
 No unreleased entries yet.
 
+## 0.0.12
+
+### Update Flow Fixes
+
+- Fixed the web-panel update flow so the dialog can be closed while an update continues in the background.
+- Added a progress bar, step text, and short updater output inside the update dialog.
+- Fixed post-update reload timing so the panel waits for the UI service to actually cycle before reloading into the new build.
+
 ## 0.0.11
 
 ### Profiles, Alarms, and Update Flow
