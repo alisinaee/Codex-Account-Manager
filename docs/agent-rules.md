@@ -16,6 +16,18 @@
 - Ensure more fucus on web ui also need to user this is cross platfrom too.
 
 ## Recent Changes (Last 20)
+### 2026-04-23T18:48:00+03:30
+- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `config.json`, `pyproject.toml`, `uv.lock`, `docs/release-notes.md`, `release.zip`
+- Summary: Prepared the 0.0.12 release by fixing the update dialog and post-update reload behavior, bumping package version metadata, updating release notes, rebuilding release.zip, and aligning the update-version test fixture.
+- Behavior impact: Recorded the current release packaging and update-flow behavior for future AI context.
+<!-- fingerprint:2d4a06f68555 -->
+
+### 2026-04-23T17:33:00+03:30
+- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`
+- Summary: Fixed the in-app update dialog so it can be closed while an update is running, added an update progress bar with stage text, and surfaced short in-dialog updater output summaries.
+- Behavior impact: Recorded the current update-dialog UX contract for future AI context.
+<!-- fingerprint:4e68cecb7cf1 -->
+
 ### 2026-04-23T15:40:03+03:30
 - Changed files: `README.md`
 - Summary: Rewrote README to be cross-platform and web-UI-first, with top-level Install, Update, Features, Web Panel, and CLI sections and lighter CLI duplication.
@@ -107,4 +119,4 @@
 <!-- fingerprint:2fc5b9367fb4 -->
 
 ## Last Updated
-- 2026-04-23T15:40:03+03:30
+- 2026-04-23T18:48:00+03:30
