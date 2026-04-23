@@ -13,8 +13,15 @@
 - Ensure documentation updates are thorough and written under the `docs/` folder.
 - Ensure i want one command to fullllly test.
 - Ensure dude its too slow similations i want to each swith happen about 30 sec also colorufll outputs , to know what happend what seelct in chain for next see the algorithm and.
+- Ensure more fucus on web ui also need to user this is cross platfrom too.
 
 ## Recent Changes (Last 20)
+### 2026-04-23T15:40:03+03:30
+- Changed files: `README.md`
+- Summary: Rewrote README to be cross-platform and web-UI-first, with top-level Install, Update, Features, Web Panel, and CLI sections and lighter CLI duplication.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:1337ef7a9976 -->
+
 ### 2026-04-23T14:10:11+03:30
 - Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `config.json`, `pyproject.toml`, `uv.lock`, `docs/release-notes.md`, `release.zip`
 - Summary: Prepared the 0.0.11 release by bumping version metadata, refreshing in-app help/tooltips for Profiles/Alarm/Update UI, updating release notes, rebuilding release.zip, and aligning update tests with the new current version.
@@ -100,4 +107,4 @@
 <!-- fingerprint:2fc5b9367fb4 -->
 
 ## Last Updated
-- 2026-04-23T14:10:11+03:30
+- 2026-04-23T15:40:03+03:30
