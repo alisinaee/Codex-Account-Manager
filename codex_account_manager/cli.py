@@ -40,7 +40,10 @@ except Exception:
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PACKAGE_ASSETS_DIR = PACKAGE_ROOT / "assets"
 PROJECT_CONFIG_FILE = PROJECT_ROOT / "config.json"
+APP_ICON_FILE = PACKAGE_ASSETS_DIR / "codex_account_manager.svg"
 AUTH_FILE = CODEX_HOME / "auth.json"
 PROFILES_DIR = CODEX_HOME / "account-profiles"
 BACKUPS_DIR = CODEX_HOME / "account-backups"
@@ -118,6 +121,25 @@ PROJECT_RELEASES_URL = "https://github.com/alisinaee/Codex-Account-Manager/relea
 GITHUB_RELEASES_API_URL = "https://api.github.com/repos/alisinaee/Codex-Account-Manager/releases"
 RELEASE_NOTES_FALLBACK_FILE = PROJECT_ROOT / "docs" / "release-notes.md"
 RELEASE_NOTES_CACHE_TTL_SEC = 180.0
+
+
+def load_app_icon_svg() -> str:
+    candidates = [
+        APP_ICON_FILE,
+        PROJECT_ROOT / "docs" / "assets" / "codex_account_manager.svg",
+    ]
+    for path in candidates:
+        try:
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    return (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+        "<rect width='64' height='64' rx='12' fill='#090d12'/>"
+        "<rect x='8' y='8' width='48' height='48' rx='10' fill='none' stroke='#57fd7c' stroke-width='4'/>"
+        "</svg>"
+    )
 
 
 def _load_project_config() -> dict:
@@ -3403,8 +3425,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <meta name=\"theme-color\" content=\"#0d8a44\" />
-  <link rel=\"icon\" type=\"image/svg+xml\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%230f172a'/%3E%3Cstop offset='100%25' stop-color='%23145f3f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='12' fill='url(%23g)'/%3E%3Crect x='8' y='8' width='48' height='48' rx='10' fill='none' stroke='%233fff8b' stroke-width='4'/%3E%3Cpath d='M21 42V22h9.5c6.4 0 10 3.7 10 10s-3.6 10-10 10z' fill='none' stroke='%233fff8b' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M43 22v20h-2' fill='none' stroke='%23ffd16c' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E\" />
-  <link rel=\"apple-touch-icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%230f172a'/%3E%3Cstop offset='100%25' stop-color='%23145f3f'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='12' fill='url(%23g)'/%3E%3Crect x='8' y='8' width='48' height='48' rx='10' fill='none' stroke='%233fff8b' stroke-width='4'/%3E%3Cpath d='M21 42V22h9.5c6.4 0 10 3.7 10 10s-3.6 10-10 10z' fill='none' stroke='%233fff8b' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M43 22v20h-2' fill='none' stroke='%23ffd16c' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E\" />
+  <link rel=\"icon\" type=\"image/svg+xml\" href=\"/app-icon.svg\" />
+  <link rel=\"apple-touch-icon\" href=\"/app-icon.svg\" />
   <title>Codex Account Manager</title>
   <style>
     @import url(\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap\");
@@ -3541,6 +3563,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
       align-items:center;
       gap:10px;
       min-width:0;
+    }
+    .app-brand-icon{
+      width:34px;
+      height:34px;
+      flex:0 0 34px;
+      display:block;
+      border-radius:10px;
+      box-shadow:0 10px 28px rgba(0,0,0,.24);
     }
     .app-title{
       font-family:Inter,"Segoe UI",-apple-system,sans-serif;
@@ -4779,6 +4809,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
   <main class=\"container\">
     <section class=\"app-header\">
       <div class=\"app-title-wrap\">
+        <img src=\"/app-icon.svg\" alt=\"Codex Account Manager\" class=\"app-brand-icon\" />
         <div class=\"app-title\">Codex Account Manager</div>
         <div class=\"app-version\">v__UI_VERSION__</div>
         <div id=\"appUpdateBadge\" class=\"app-update-pill\">Update available</div>
@@ -10512,6 +10543,9 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             if parsed.path == "/" or parsed.path == "/index.html":
                 html = render_ui_html(interval_sec, token)
                 self._reply(200, html, "text/html; charset=utf-8")
+                return
+            if parsed.path == "/app-icon.svg":
+                self._reply(200, load_app_icon_svg(), "image/svg+xml; charset=utf-8")
                 return
             if parsed.path == "/sw.js":
                 script = render_ui_sw_js()

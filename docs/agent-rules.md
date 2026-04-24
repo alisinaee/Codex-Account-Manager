@@ -14,8 +14,21 @@
 - Ensure i want one command to fullllly test.
 - Ensure dude its too slow similations i want to each swith happen about 30 sec also colorufll outputs , to know what happend what seelct in chain for next see the algorithm and.
 - Ensure more fucus on web ui also need to user this is cross platfrom too.
+- Ensure md file you need to blur my account emails first on image.
 
 ## Recent Changes (Last 20)
+### 2026-04-24T08:20:50+03:30
+- Changed files: `docs/assets/screenshots/web-ui-panel-blurred-emails.png`, `README.md`
+- Summary: Replaced the README web panel screenshot with the latest image and blurred account emails before committing it.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:38ea10b9051a -->
+
+### 2026-04-23T20:28:00+03:30
+- Changed files: `codex_account_manager/cli.py`, `pyproject.toml`, `README.md`, `tests/test_cli_core.py`
+- Summary: Added the tracked project SVG as the packaged web-panel/browser icon, showed it in the panel header, and reused it in the README project branding.
+- Behavior impact: Recorded the current branding asset usage across README and web UI surfaces.
+<!-- fingerprint:7d4d2bb2db09 -->
+
 ### 2026-04-23T18:48:00+03:30
 - Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `config.json`, `pyproject.toml`, `uv.lock`, `docs/release-notes.md`, `release.zip`
 - Summary: Prepared the 0.0.12 release by fixing the update dialog and post-update reload behavior, bumping package version metadata, updating release notes, rebuilding release.zip, and aligning the update-version test fixture.
@@ -119,4 +132,4 @@
 <!-- fingerprint:2fc5b9367fb4 -->
 
 ## Last Updated
-- 2026-04-23T18:48:00+03:30
+- 2026-04-24T08:20:50+03:30
