@@ -17,6 +17,12 @@
 - Ensure md file you need to blur my account emails first on image.
 
 ## Recent Changes (Last 20)
+### 2026-04-24T08:43:10+03:30
+- Changed files: `README.md`, `docs/assets/screenshots/web-ui-panel-v0.0.12-blurred-emails.png`, `docs/assets/screenshots/web-ui-panel-blurred-emails.png`
+- Summary: Renamed the README screenshot asset to a versioned filename so GitHub does not reuse a cached old image URL.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:7e744536d759 -->
+
 ### 2026-04-24T08:20:50+03:30
 - Changed files: `docs/assets/screenshots/web-ui-panel-blurred-emails.png`, `README.md`
 - Summary: Replaced the README web panel screenshot with the latest image and blurred account emails before committing it.
@@ -132,4 +138,4 @@
 <!-- fingerprint:2fc5b9367fb4 -->
 
 ## Last Updated
-- 2026-04-24T08:20:50+03:30
+- 2026-04-24T08:43:10+03:30

@@ -155,7 +155,7 @@ Why the panel matters:
 
 > Note: account emails are blurred in this image.
 
-![Codex Account Manager Web UI (emails blurred)](docs/assets/screenshots/web-ui-panel-blurred-emails.png)
+![Codex Account Manager Web UI (emails blurred)](docs/assets/screenshots/web-ui-panel-v0.0.12-blurred-emails.png)
 
 ## CLI
 
