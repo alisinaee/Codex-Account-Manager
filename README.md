@@ -147,6 +147,27 @@ What you can do in the panel:
 - Use the debug/system output panel for troubleshooting
 - Learn the UI through built-in guide/help content and broad tooltip coverage
 
+## Experimental Electron Desktop Shell
+
+The Electron shell is an optional desktop app for users who want a windowed experience, tray/menu-bar status, and Electron-native notifications. It does not replace the web panel; it starts or connects to the same local Python UI service but renders its own desktop-focused React interface.
+
+Developer run:
+
+```bash
+codex-account electron
+```
+
+What the dev shell adds:
+
+- Desktop window with a separate Electron UI
+- macOS menu-bar or Windows/Linux tray entry
+- Current profile usage in the tray tooltip/menu
+- Safe desktop switching that does not restart or close the Electron app
+- Electron-native test notifications that focus the desktop window when clicked
+- Project icon/name in the Electron window, menus, tray, notifications, and packaged app metadata
+
+Current limitation: this is a development shell, not a packaged installer. It requires the source checkout to include the `electron/` directory and `npm` to be available. When launched through the raw Electron development binary, macOS may still show `Electron` for the Dock app bundle even though the app menu/window/tray/notification identity is set to Codex Account Manager. The packaged `.app` metadata under `electron/package.json` is prepared for the real Dock name and icon in a later installer phase. Users should still install and run the main app with `pipx` and `codex-account ui`.
+
 ## CLI
 
 The CLI remains a first-class part of the project for scripting, terminal-first workflows, and advanced operations.
@@ -161,6 +182,7 @@ codex-account list --json
 codex-account current --json
 codex-account switch work
 codex-account ui
+codex-account electron
 codex-account export-profiles -o ./profiles.camzip
 codex-account import-profiles ./profiles.camzip
 ```
@@ -169,7 +191,7 @@ Useful command groups:
 
 - Local profile workflows: `save`, `add`, `list`, `current`, `switch`, `rename`, `remove`, `run`
 - Usage monitoring: `usage-local`, `usage`
-- Web UI control: `ui`, `ui-service`, `ui-autostart`
+- Web UI and desktop control: `ui`, `electron`, `ui-service`, `ui-autostart`
 - Advanced wrappers: `status`, `login`, `list-adv`, `switch-adv`, `import`, `remove-adv`, `config`, `daemon`, `clean`, `auth`
 
 ## FAQ
