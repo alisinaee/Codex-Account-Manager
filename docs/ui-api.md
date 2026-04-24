@@ -90,6 +90,7 @@ Error responses:
 ### Notifications
 
 - `POST /api/notifications/test`
+- `POST /api/notifications/native-test`
 
 ## UI Static Routes
 
