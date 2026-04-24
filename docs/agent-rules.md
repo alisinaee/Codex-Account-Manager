@@ -17,8 +17,83 @@
 - Ensure md file you need to blur my account emails first on image.
 - Update the readme to include this data ( update readme.
 - Ensure i dont want this scroll just on auto refresh , the loading cuase the change a little bit in columns , you need just fix that remove scroll on table.
+- Ensure i want to see details of that and progress bar for instalion to find the issue.
+- Ensure make codex-account electron command to show always info and progress.
+- Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-24T14:46:42+03:30
+- Changed files: `electron/assets/codex-account-manager-tray.svg`, `electron/src/icons.js`, `electron/src/tray.js`, `electron/tests/identity.test.js`, `electron/tests/desktop.test.js`
+- Summary: Electron macOS status bar now uses a dedicated small tray template SVG resized to 18x18 instead of the full Dock app icon, preventing oversized black/green menu-bar rendering.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:265c6c3568d9 -->
+
+### 2026-04-24T14:42:43+03:30
+- Changed files: `electron/src/tray.js`, `electron/tests/desktop.test.js`
+- Summary: Electron macOS status item now shows compact current profile plus 5H and weekly usage; tray context menu uses readable status rows with color-coded usage icons instead of a faded disabled summary row.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:b540e6979999 -->
+
+### 2026-04-24T14:40:35+03:30
+- Changed files: `electron/assets/codex-account-manager.svg`, `electron/assets/codex-account-manager.png`, `electron/assets/codex-account-manager.icns`, `electron/tests/identity.test.js`
+- Summary: Regenerated Electron app icons as macOS-style rounded-square assets with transparent corners and added a regression test preventing raw square source icons in Electron.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:48db8f326fda -->
+
+### 2026-04-24T14:37:57+03:30
+- Changed files: `electron/src/tray.js`, `electron/tests/desktop.test.js`
+- Summary: Electron macOS tray/status item is now icon-only; profile usage stays in tooltip/context menu instead of occupying menu-bar text.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:e6b75fe3d7e9 -->
+
+### 2026-04-24T14:34:29+03:30
+- Changed files: `electron/src/icons.js`, `electron/assets/codex-account-manager.svg`, `electron/assets/codex-account-manager.png`, `electron/assets/codex-account-manager.icns`, `electron/src/main.js`, `electron/src/tray.js`, `electron/src/menu.js`, `electron/src/renderer/App.jsx`, +10 more
+- Summary: Electron now uses project-owned icon assets and app identity metadata, fixes file:// renderer builds, and aligns the Electron React UI/switch progress with the stable web panel visual system while leaving render_ui_html unchanged.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:291d3b6f4f2b -->
+
+### 2026-04-24T14:05:57+03:30
+- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `docs/agent-rules.md`
+- Summary: Changed codex-account electron so the default path always runs a visible npm install/check with progress/info output, even when runtime deps already exist; --no-install remains the explicit skip path.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:6f1eb43ec81b -->
+
+### 2026-04-24T14:04:01+03:30
+- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `docs/agent-rules.md`
+- Summary: Made codex-account electron dependency installation transparent by printing missing Electron deps, working directory, and the exact npm install command with foreground scripts, progress, and loglevel info; verified npm logs now show registry fetch progress.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:3276ad084c46 -->
+
+### 2026-04-24T13:57:34+03:30
+- Changed files: `codex_account_manager/cli.py`, `electron/scripts/dev.js`, `electron/tests/dev-script.test.js`, `tests/test_cli_core.py`, `docs/agent-rules.md`
+- Summary: Fixed Electron --no-install missing dependency handling so it reports absent Vite/React/Electron deps before launching, and guarded the dev script against missing runtime binaries instead of throwing a Node spawn ENOENT stack trace.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:3ff869e7723c -->
+
+### 2026-04-24T13:52:02+03:30
+- Changed files: `README.md`, `codex_account_manager/cli.py`, `docs/architecture.md`, `docs/development.md`, `electron/package.json`, `electron/index.html`, `electron/vite.config.js`, `electron/scripts/dev.js`, +13 more
+- Summary: Implemented Electron Desktop V2 foundations with separate React/Vite renderer, safe no_restart switch flow, service token parsing, app menu/lifecycle helpers, notification icon support, and Electron switch smoke coverage; npm registry access blocked dependency installation/build locally.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:90ba5d103901 -->
+
+### 2026-04-24T13:50:29+03:30
+- Changed files: `README.md`, `codex_account_manager/cli.py`, `docs/architecture.md`, `docs/development.md`, `electron/package.json`, `electron/index.html`, `electron/vite.config.js`, `electron/scripts/dev.js`, +12 more
+- Summary: Implemented Electron Desktop V2 foundations: separate React/Vite renderer, safe no_restart desktop switch API client, service token parsing, app menu/lifecycle helpers, tray-stay behavior, notification icon support, docs updates, and regression tests while leaving the web panel unchanged.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:e7d5b2d9840e -->
+
+### 2026-04-24T13:07:24+03:30
+- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `README.md`, `docs/development.md`, `docs/cli-reference.md`, `docs/agent-rules.md`
+- Summary: Added codex-account electron convenience command that runs npm install when needed and starts the optional Electron dev shell from the source checkout; documented it as the preferred dev-shell launch command.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:1b987356e1ac -->
+
+### 2026-04-24T12:40:38+03:30
+- Changed files: `README.md`, `docs/architecture.md`, `docs/development.md`, `electron/package.json`, `electron/src/main.js`, `electron/src/preload.js`, `electron/src/backend.js`, `electron/src/usage.js`, +7 more
+- Summary: Added optional Electron development shell that loads the existing local web panel, starts or connects to ui-service, shows current usage in tray/menu-bar state, supports Electron-native test notifications, and includes Node plus Playwright Electron tests.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:7a74444da071 -->
+
 ### 2026-04-24T11:38:07+03:30
 - Changed files: `README.md`, `docs/agent-rules.md`
 - Summary: Expanded README Privacy / Security language to clearly state there is no live API server or hosted backend and that profile/auth data stays local unless users explicitly export/share it.
@@ -67,83 +142,5 @@
 - Behavior impact: Recorded the current branding asset usage across README and web UI surfaces.
 <!-- fingerprint:7d4d2bb2db09 -->
 
-### 2026-04-23T18:48:00+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `config.json`, `pyproject.toml`, `uv.lock`, `docs/release-notes.md`, `release.zip`
-- Summary: Prepared the 0.0.12 release by fixing the update dialog and post-update reload behavior, bumping package version metadata, updating release notes, rebuilding release.zip, and aligning the update-version test fixture.
-- Behavior impact: Recorded the current release packaging and update-flow behavior for future AI context.
-<!-- fingerprint:2d4a06f68555 -->
-
-### 2026-04-23T17:33:00+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`
-- Summary: Fixed the in-app update dialog so it can be closed while an update is running, added an update progress bar with stage text, and surfaced short in-dialog updater output summaries.
-- Behavior impact: Recorded the current update-dialog UX contract for future AI context.
-<!-- fingerprint:4e68cecb7cf1 -->
-
-### 2026-04-23T15:40:03+03:30
-- Changed files: `README.md`
-- Summary: Rewrote README to be cross-platform and web-UI-first, with top-level Install, Update, Features, Web Panel, and CLI sections and lighter CLI duplication.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:1337ef7a9976 -->
-
-### 2026-04-23T14:10:11+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `config.json`, `pyproject.toml`, `uv.lock`, `docs/release-notes.md`, `release.zip`
-- Summary: Prepared the 0.0.11 release by bumping version metadata, refreshing in-app help/tooltips for Profiles/Alarm/Update UI, updating release notes, rebuilding release.zip, and aligning update tests with the new current version.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:65563b7461eb -->
-
-### 2026-04-23T13:16:06+03:30
-- Changed files: `codex_account_manager/cli.py`
-- Summary: Fixed a boot-breaking inline JS string escape in the in-app update flow that prevented the UI, including the accounts table, from loading after restart.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:7ac48d1a8bc9 -->
-
-### 2026-04-23T13:01:55+03:30
-- Changed files: `codex_account_manager/cli.py`
-- Summary: Render loading placeholder rows immediately after /api/list returns so the accounts table does not stay blank while slow usage refresh completes after restart.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:5eefad97fcd7 -->
-
-### 2026-04-23T12:43:42+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`
-- Summary: Added in-app update availability checks, release-notes review modal, header update badge/button, and pipx-based update endpoint with tests.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:f6561c745c29 -->
-
-### 2026-04-23T11:32:07+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `docs/agent-rules.md`
-- Summary: Added a selectable alarm preset system with 20 built-in sound patterns, a modal picker with per-item preview, inline test alarm controls, and persisted notifications.alarm_preset config fallback coverage.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:f66db384f231 -->
-
-### 2026-04-23T11:13:33+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `docs/agent-rules.md`
-- Summary: Redesigned the settings migration UI into a full-width Profiles panel, replaced inline export mode controls with a bulk-select export modal, and added custom export filename support to the local export prepare API with tests.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:e494abd16792 -->
-
-### 2026-04-23T10:41:02+03:30
-- Changed files: `codex_account_manager/cli.py`, `docs/agent-rules.md`
-- Summary: Fixed the new export flow by removing invalid embedded JS strings, switching browser export to blob downloads, and keeping export sessions available during the TTL instead of deleting the archive immediately on first GET.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:85df301f51b0 -->
-
-### 2026-04-23T08:56:39+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `docs/agent-rules.md`
-- Summary: Added local camzip profile export/import commands, UI settings flows with warnings and conflict review, archive download/upload API endpoints, and automated tests for archive analysis/apply behavior.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:29dee45f42f5 -->
-
-### 2026-04-23T08:56:05+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`
-- Summary: Added local profile export/import migration support with camzip archives, browser UI warning/review flows, and tests for archive analysis and apply behavior.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:07f69298a16e -->
-
-### 2026-04-22T23:06:00+03:30
-- Changed files: `codex_account_manager/cli.py`, `config.json`, `pyproject.toml`, `uv.lock`, `docs/release-notes.md`, `docs/agent-rules.md`, `release.zip`
-- Summary: Prepared v0.0.10 release content by updating the in-app guide/help copy, bumping version metadata, documenting the new refresh/auth workflow, and rebuilding release.zip.
-- Behavior impact: Recorded release workflow and current UI/auth behavior for future AI context.
-<!-- fingerprint:82c73c7fd4ea -->
-
 ## Last Updated
-- 2026-04-24T11:38:07+03:30
+- 2026-04-24T14:46:42+03:30

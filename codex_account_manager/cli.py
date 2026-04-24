@@ -5565,6 +5565,20 @@ def electron_app_dir(project_root: Path | None = None) -> Path:
     return root / "electron"
 
 
+def _internet_available_for_npm(timeout_sec: float = 1.5) -> bool:
+    targets = [
+        ("registry.npmjs.org", 443),
+        ("8.8.8.8", 53),
+    ]
+    for host, port in targets:
+        try:
+            with socket.create_connection((host, port), timeout=timeout_sec):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def cmd_electron(no_install: bool = False, electron_dir: Path | None = None) -> int:
     app_dir = electron_dir or electron_app_dir()
     package_json = app_dir / "package.json"
@@ -5587,10 +5601,16 @@ def cmd_electron(no_install: bool = False, electron_dir: Path | None = None) -> 
             + ". Run `codex-account electron` without --no-install first."
         )
         return 1
-    if not no_install:
+    if missing_deps and not no_install:
         print("Checking Electron desktop shell dependencies...")
-        print(f"missing: {', '.join(missing_deps) if missing_deps else 'none'}")
+        print(f"missing: {', '.join(missing_deps)}")
         print(f"working directory: {app_dir}")
+        if not _internet_available_for_npm():
+            print(
+                "error: Electron dependencies are missing and no internet connection was detected. "
+                "Reconnect and retry, or install the missing npm packages manually."
+            )
+            return 1
         print("running: npm install --foreground-scripts --progress=true --loglevel=info")
         install = _subprocess_run(
             ["npm", "install", "--foreground-scripts", "--progress=true", "--loglevel=info"],

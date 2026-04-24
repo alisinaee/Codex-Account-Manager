@@ -110,7 +110,7 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(mock_run.call_args_list[1].args[0], ["npm", "run", "dev"])
 
     @mock.patch("codex_account_manager.cli._subprocess_run")
-    def test_cmd_electron_runs_install_check_even_when_runtime_deps_exist(self, mock_run):
+    def test_cmd_electron_skips_install_when_runtime_deps_exist(self, mock_run):
         mock_run.return_value = mock.Mock(returncode=0)
         electron_dir = Path(self.tmp.name) / "electron"
         electron_dir.mkdir()
@@ -121,8 +121,24 @@ class CliCoreTests(unittest.TestCase):
         rc = cli.cmd_electron(electron_dir=electron_dir)
 
         self.assertEqual(rc, 0)
-        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "install", "--foreground-scripts", "--progress=true", "--loglevel=info"])
-        self.assertEqual(mock_run.call_args_list[1].args[0], ["npm", "run", "dev"])
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "run", "dev"])
+        self.assertEqual(len(mock_run.call_args_list), 1)
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_offline_existing_runtime_still_starts(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+        for dep in ("electron", "vite", "react", "react-dom"):
+            (electron_dir / "node_modules" / dep).mkdir(parents=True)
+
+        with mock.patch("codex_account_manager.cli._internet_available_for_npm", return_value=False):
+            rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "run", "dev"])
+        self.assertEqual(len(mock_run.call_args_list), 1)
 
     def test_send_native_test_notification_returns_error_when_current_profile_missing(self):
         usage_payload = {"current_profile": None, "profiles": []}

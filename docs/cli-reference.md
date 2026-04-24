@@ -79,6 +79,9 @@ Raw passthrough to `codex-auth`.
 ### `ui [--host H] [--port P] [--no-open] [--interval S] [--idle-timeout SEC] [--foreground]`
 Start local web UI. Default detached background mode.
 
+### `electron [--no-install]`
+Run the optional Electron desktop shell from a source checkout.
+
 ### `ui-service <start|stop|restart|status> [--host H] [--port P] [--no-open] [--interval S] [--idle-timeout SEC]`
 Manage background UI process.
 

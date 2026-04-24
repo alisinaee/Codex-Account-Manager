@@ -4,6 +4,7 @@
 
 - Python `3.11+`
 - `codex` CLI available in `PATH` for local profile login/switch flows
+- Node.js/npm for the optional Electron desktop shell
 - Optional for advanced wrappers: `npx` or globally installed `codex-auth`
 
 ## Local Run
@@ -21,6 +22,36 @@ Or install package in environment:
 python -m pip install -e .
 codex-account --help
 ```
+
+## Electron Desktop Shell
+
+The Electron app is optional and currently targets development use. It keeps the Python backend and stable browser web panel intact, starts or connects to `codex-account ui-service`, and renders a separate React/Vite desktop UI with tray/status and Electron notification behavior.
+
+From repository root:
+
+```bash
+codex-account electron
+```
+
+Raw npm fallback:
+
+```bash
+cd electron
+npm install
+npm run dev
+```
+
+Electron test commands:
+
+```bash
+cd electron
+npm test
+npm run test:e2e
+```
+
+The Electron shell assumes `codex-account` is available in `PATH`. It does not bundle Python or produce platform installers yet. If the renderer dependencies are missing, `codex-account electron` runs `npm install` before starting the desktop shell.
+
+The development shell uses project-owned PNG/ICNS/SVG assets for the window, tray, notification, Dock icon API, and package metadata. macOS can still display `Electron` in the Dock when running the raw Electron development binary because the visible Dock name comes from the launched Electron app bundle. A packaged `.app` is required for the final launcher name and icon.
 
 ## Packaging
 
@@ -48,6 +79,7 @@ It validates:
 
 - `codex_account_manager/cli.py`: all runtime logic
 - `codex_account_manager/__main__.py`: module entrypoint
+- `electron/`: optional Electron desktop shell and tests
 - `bin/codex-account`: local launcher wrapper
 - `README.md`: user-facing install and command overview
 - `issues.md`: known platform and compatibility notes
@@ -72,6 +104,14 @@ python -m codex_account_manager ui-service status
 
 4. Keep docs updated in `docs/` with behavior changes.
 5. Update `docs/release-notes.md` for `Unreleased` and versioned entries before shipping.
+
+For Electron changes, also run:
+
+```bash
+cd electron
+npm test
+npm run test:e2e
+```
 
 ## Refactor Candidates
 
