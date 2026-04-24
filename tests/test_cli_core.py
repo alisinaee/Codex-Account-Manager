@@ -188,6 +188,8 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn('id="appUpdateBadge"', html)
         self.assertIn('id="appUpdateBtn"', html)
         self.assertIn('id="appUpdateBackdrop"', html)
+        self.assertIn('/app-icon.svg', html)
+        self.assertIn('class="app-brand-icon"', html)
         self.assertIn('id="appUpdateProgress"', html)
         self.assertIn('id="appUpdateProgressBar"', html)
         self.assertIn('id="appUpdateProgressNote"', html)

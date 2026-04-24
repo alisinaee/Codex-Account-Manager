@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/codex_account_manager.svg" alt="Codex Account Manager" width="120" />
+</p>
+
 # Codex Account Manager
 
 Codex Account Manager is a cross-platform local profile manager for Codex that works on macOS, Windows, and Linux. It gives you a polished local web panel for day-to-day account management, plus a CLI for scripting, automation, and advanced workflows.
