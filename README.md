@@ -4,120 +4,123 @@
 
 # Codex Account Manager
 
-Codex Account Manager is a cross-platform local profile manager for Codex that works on macOS, Windows, and Linux. It gives you a polished local web panel for day-to-day account management, plus a CLI for scripting, automation, and advanced workflows.
+Cross-platform Codex account manager with a local web UI, profile switching, usage tracking, native OS notifications, auto-switching, and migration tools.
 
-The project is built around a fast local UI instead of a heavy desktop stack. You can manage saved profiles, monitor live usage, import and export migration archives, tune alarms, run auto-switch flows, review release notes, and update the app from the web panel while still keeping the CLI available for power use.
+[![Latest Release](https://img.shields.io/github/v/release/alisinaee/Codex-Account-Manager?label=release)](https://github.com/alisinaee/Codex-Account-Manager/releases)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/alisinaee/Codex-Account-Manager/blob/main/pyproject.toml)
+[![MIT License](https://img.shields.io/github/license/alisinaee/Codex-Account-Manager)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-2ea44f)](README.md#faq)
+[![Windows CI](https://img.shields.io/github/actions/workflow/status/alisinaee/Codex-Account-Manager/windows-ci.yml?label=windows%20ci)](https://github.com/alisinaee/Codex-Account-Manager/actions/workflows/windows-ci.yml)
 
-## Install
+Manage multiple Codex accounts locally instead of hand-editing auth files. Save named profiles, switch faster, watch usage, tune native notifications, run auto-switch logic, and keep everything in a local-first workflow on macOS, Windows, and Linux.
 
-Recommended install for macOS, Windows, and Linux:
+![Codex Account Manager demo](docs/assets/screenshots/codex-account-manager-demo.gif)
+
+![Codex Account Manager web panel showing local profiles, usage, and controls](docs/assets/screenshots/web-ui-panel-v0.0.12-blurred-emails.png)
+
+The web panel keeps profile switching, usage monitoring, import/export, native notifications, and update controls in one local browser UI without requiring Electron, Tauri, Node, or Rust.
+
+## 3-Minute Quick Start
+
+Install:
 
 ```bash
 pipx install "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"
-codex-account --help
 ```
 
-Requirements:
-
-- Python `3.11+`
-- Codex CLI installed and available as `codex` in your `PATH`
-- Optional for advanced wrapper commands: `npx` for `@loongphy/codex-auth`
-
-Developer or local-repo run:
-
-```bash
-chmod +x bin/codex-account
-./bin/codex-account --help
-```
-
-Quick start:
+Save your current Codex auth as a named profile:
 
 ```bash
 codex-account save work
-codex-account list --json
-codex-account switch work
+```
+
+Open the local web UI:
+
+```bash
 codex-account ui
 ```
 
 If the browser does not open automatically, open `http://127.0.0.1:4673`.
 
-Short troubleshooting notes:
+Helpful links:
 
-- Port busy: `codex-account ui --port 7788`
-- Browser not opening: `codex-account ui --no-open`
-- Codex CLI path issues on Windows: set `CODEX_CLI_PATH` or use the project `config.json` override described in the app docs
+- [GitHub Releases](https://github.com/alisinaee/Codex-Account-Manager/releases)
+- [CLI Reference](docs/cli-reference.md)
+- [UI API](docs/ui-api.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
-If you need to remove the app later:
+## Why Use Codex Account Manager?
 
-```bash
-pipx uninstall codex-account-manager
-```
+- Manage multiple Codex accounts locally with named profiles instead of raw auth-file juggling.
+- Switch faster than manual auth handling and keep the current active account visible in both CLI and web UI.
+- Watch quota usage and auto-switch before `5H` or weekly limits block your workflow.
+- Keep the workflow local-first and cross-platform with the same install and UI model on macOS, Windows, and Linux.
 
-## Update
+## Who This Is For
 
-CLI update path:
+- Solo developers who move between multiple Codex accounts during the day.
+- Heavy Codex users who want usage warnings, native OS notifications, and auto-switch assistance.
+- Users who want a polished local UI instead of memorizing raw command sequences.
 
-```bash
-pipx upgrade codex-account-manager
-```
+## Manual Workflow vs Codex Account Manager
 
-The web panel also supports in-app update checks. When a newer release is available, the header shows an `Update available` badge and an `Update` button. The app opens the latest release notes first, then can run the pipx upgrade flow from the UI.
+| Workflow | Manual Codex account handling | Codex Account Manager |
+| --- | --- | --- |
+| Save current auth | Copy files manually and label them yourself | `codex-account save <name>` |
+| Switch accounts | Replace auth files and restart apps manually | CLI switch or local web panel actions |
+| Monitor usage | Query usage ad hoc per account | Track `5H` and weekly usage per profile |
+| Stay ahead of limits | Manual checking and guesswork | Warnings, native notifications, and auto-switch rules |
+| Move profiles between machines | Manual file copying | Private `.camzip` import/export flow |
 
-This means the same cross-platform install path also gives you a cross-platform update path on macOS, Windows, and Linux.
+## Privacy / Security
 
-## Features
+Codex Account Manager is built for local-first account management:
 
-### Profile Management
+- No live API server or hosted backend is used by this project for storing your accounts.
+- The web UI runs locally on your machine (default bind: `127.0.0.1`).
+- Profile/auth snapshots, settings, and migration archives remain on your system unless you explicitly export/share them.
 
-- Save the current Codex auth as a named local profile
-- Add accounts through a guided login flow with device-login and normal-login options
-- List, switch, rename, and remove saved profiles
-- Keep the current active account visible in both the CLI and the web panel
+This project may call upstream services that Codex itself uses for account and usage operations, but Codex Account Manager does not add its own cloud account-storage service. See [SECURITY.md](SECURITY.md) for detailed storage and reporting guidance.
 
-### Usage Monitoring
+## Codex Profile Switching
 
-- Track per-profile `5H` and `Weekly` usage locally
-- Refresh only the current account on a fast timer or sweep all saved accounts on a slower background timer
-- Show live remaining percentages, reset timers, plan metadata, account IDs, and account health states
-- Improve reliability by syncing healthy live auth back into the saved profile snapshot when appropriate
+- Save the current Codex auth as a named local profile.
+- Add accounts through a guided login flow with device-login and normal-login options.
+- List, switch, rename, and remove saved profiles from the CLI or web panel.
+- Keep the active account visible so you can see what is live before you switch.
+- Current support targets the Codex CLI and the Codex VS Code extension.
+- On some operating systems and client launch paths, the Codex CLI or VS Code extension may need a manual reload after a switch before the new account becomes active in that client.
 
-### Import / Export Migration
+## Codex Usage Monitoring
 
-- Export all saved profiles or selected profiles into private `.camzip` migration archives
-- Review imports before applying them
-- Detect conflicts before overwrite/import actions are applied
-- Support migration workflows between machines while keeping the process local-first
+- Track per-profile `5H` and weekly usage locally.
+- Refresh the current account on a fast timer and sweep all accounts on a slower background timer.
+- Show remaining percentages, reset timers, plan metadata, account IDs, and account health states.
+- Sync healthy live auth back into saved profiles only when identity matches, reducing stale-token drift without cross-profile overwrite.
 
-### Alarm Presets and Warnings
+## Codex Account Migration
 
-- Configure warning thresholds for both `5H` and `Weekly` usage
-- Choose from 20 built-in alarm presets
-- Preview alarm presets before saving one
-- Run a `Test Alarm` flow directly from the web panel
+- Export all saved profiles or selected profiles into private `.camzip` migration archives.
+- Review imports before applying them and detect conflicts before overwrite actions happen.
+- Move profiles between machines while keeping the process local-first.
 
-### Auto-Switch Automation
+## Codex Auto-Switch Automation
 
-- Enable or disable auto-switching rules locally
-- Configure thresholds, delay, ranking mode, and candidate eligibility
-- Preview and manually edit the switch chain
-- Run one-off switch tests, rapid tests, and controlled auto-switch test flows
+- Enable or disable auto-switching rules locally.
+- Configure thresholds, delay, ranking mode, and candidate eligibility.
+- Preview and manually edit the switch chain.
+- Run one-off switch tests, rapid tests, and controlled auto-switch test flows.
+- Send native heads-up notifications about 30 seconds before delayed auto-switch execution.
 
-### Release Notes and App Updates
+## Release Notes and App Updates
 
-- Load release notes from GitHub with local fallback
-- Show update availability inside the header
-- Review release notes before starting an in-app upgrade flow
-
-### Diagnostics and Control
-
-- View a local debug/system output panel in the web UI
-- Export debug logs
-- Restart the local UI service from the panel
-- Use wrapped advanced commands when you need deeper `codex-auth` operations
+- Review the latest release notes on [GitHub Releases](https://github.com/alisinaee/Codex-Account-Manager/releases).
+- Use the detailed in-repo release log in [CHANGELOG.md](CHANGELOG.md) or [docs/release-notes.md](docs/release-notes.md).
+- The web panel can detect updates and run the `pipx upgrade codex-account-manager` flow from the UI.
 
 ## Web Panel
 
-The web panel is the main experience of Codex Account Manager. It runs locally on your machine, opens in your browser, and gives you a fast, modern control surface without requiring Electron, Tauri, Node, Rust, Cargo, or a heavy desktop runtime.
+The web panel is the main day-to-day experience. It runs locally in your browser and gives you a fast control surface without a heavyweight desktop runtime.
 
 Start it with:
 
@@ -138,28 +141,15 @@ What you can do in the panel:
 - Manage profiles from the full-width `Profiles` section with `Import` and `Export`
 - Export selected profiles with bulk selection and custom archive naming
 - Review migration imports before applying them
-- Configure warning thresholds, choose alarm presets, and run alarm previews
+- Configure warning thresholds and send native notification test alerts
 - Control auto-switch behavior, test it, and edit the switch chain
 - Read in-app release notes and trigger app updates when a newer version exists
 - Use the debug/system output panel for troubleshooting
 - Learn the UI through built-in guide/help content and broad tooltip coverage
 
-Why the panel matters:
-
-- It keeps account management local and visual
-- It is faster to operate than raw command sequences for daily use
-- It exposes the project’s strongest features in one place
-- It is available across macOS, Windows, and Linux with the same workflow
-
-### Web UI Screenshot
-
-> Note: account emails are blurred in this image.
-
-![Codex Account Manager Web UI (emails blurred)](docs/assets/screenshots/web-ui-panel-v0.0.12-blurred-emails.png)
-
 ## CLI
 
-The CLI is still a first-class part of the project, especially for scripting, terminal-first workflows, and advanced operations.
+The CLI remains a first-class part of the project for scripting, terminal-first workflows, and advanced operations.
 
 Most important commands:
 
@@ -182,34 +172,60 @@ Useful command groups:
 - Web UI control: `ui`, `ui-service`, `ui-autostart`
 - Advanced wrappers: `status`, `login`, `list-adv`, `switch-adv`, `import`, `remove-adv`, `config`, `daemon`, `clean`, `auth`
 
-For the full CLI command surface, flags, and command behavior, use the dedicated reference:
+## FAQ
 
-- [CLI Reference](docs/cli-reference.md)
+### Does this work on Windows, macOS, and Linux?
 
-For local UI endpoints and runtime API behavior:
+Yes. The project is designed for cross-platform local use and documents the same install and web UI workflow across macOS, Windows, and Linux.
 
-- [UI API](docs/ui-api.md)
+### Is this local-only?
+
+Yes. The web panel runs on your machine and binds to `127.0.0.1` by default. Profile management, imports/exports, and local state stay on your system unless you explicitly move an archive elsewhere.
+
+### Does it require Electron, Tauri, Node, or Rust?
+
+No. The UI is a local browser panel served by the Python app. Optional advanced wrapper commands may use `npx` for `@loongphy/codex-auth`, but the project does not depend on Electron, Tauri, Node, or Rust for the main experience.
+
+### How are credentials stored?
+
+Saved profile snapshots are stored locally under your Codex home and related local storage paths used by this tool. See [docs/config-and-storage.md](docs/config-and-storage.md) and [SECURITY.md](SECURITY.md) for details.
+
+### Do I need Codex installed first?
+
+Yes. Codex CLI must already be installed and available as `codex` in your `PATH`.
+
+### Which Codex clients are supported after switching?
+
+The app currently supports the Codex CLI and the Codex VS Code extension. On some OS/client combinations, switching updates the local auth immediately but the active client may still need a manual reload or restart before it starts using the newly switched account.
+
+## Install and Update
+
+Recommended install for macOS, Windows, and Linux:
+
+```bash
+pipx install "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"
+codex-account --help
+```
+
+Requirements:
+
+- Python `3.11+`
+- Codex CLI installed and available as `codex` in your `PATH`
+- Optional for advanced wrapper commands: `npx` for `@loongphy/codex-auth`
+
+Developer or local-repo run:
+
+```bash
+chmod +x bin/codex-account
+./bin/codex-account --help
+```
+
+Update:
+
+```bash
+pipx upgrade codex-account-manager
+```
 
 ## License
 
-MIT License
-
-Copyright (c) 2026 drnoobmaster
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+MIT License. See [LICENSE](LICENSE).

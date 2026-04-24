@@ -32,10 +32,12 @@ from urllib.parse import parse_qs, quote, urlparse
 
 try:
     from .contracts import CommandResult
+    from . import native_notifications
     from .services import DiagnosticsLogger, UiConfigService, UsageService
 except Exception:
     # Support direct script execution (python path/to/cli.py ...)
     from contracts import CommandResult  # type: ignore
+    import native_notifications  # type: ignore
     from services import DiagnosticsLogger, UiConfigService, UsageService  # type: ignore
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
@@ -220,7 +222,6 @@ DEFAULT_CAM_CONFIG = {
     "notifications": {
         "enabled": False,
         "scope": "any",
-        "alarm_preset": "beacon",
         "thresholds": {
             "h5_warn_pct": 20,
             "weekly_warn_pct": 20,
@@ -252,32 +253,6 @@ DEFAULT_CAM_CONFIG = {
         "eligibility": {},
     },
 }
-
-ALARM_PRESETS = [
-    {"id": "beacon", "label": "Beacon", "tones": [{"t": 0.00, "f": 880, "d": 0.22, "g": 0.18}, {"t": 0.28, "f": 1046, "d": 0.22, "g": 0.18}, {"t": 0.56, "f": 1318, "d": 0.34, "g": 0.2}]},
-    {"id": "pulse", "label": "Pulse", "tones": [{"t": 0.00, "f": 740, "d": 0.18, "g": 0.16}, {"t": 0.22, "f": 740, "d": 0.18, "g": 0.18}, {"t": 0.44, "f": 740, "d": 0.22, "g": 0.2}]},
-    {"id": "sentinel", "label": "Sentinel", "tones": [{"t": 0.00, "f": 523, "d": 0.24, "g": 0.16}, {"t": 0.30, "f": 659, "d": 0.24, "g": 0.17}, {"t": 0.60, "f": 784, "d": 0.30, "g": 0.19}]},
-    {"id": "radar", "label": "Radar", "tones": [{"t": 0.00, "f": 640, "d": 0.12, "g": 0.14}, {"t": 0.16, "f": 760, "d": 0.12, "g": 0.15}, {"t": 0.32, "f": 920, "d": 0.16, "g": 0.18}, {"t": 0.56, "f": 1120, "d": 0.24, "g": 0.2}]},
-    {"id": "lantern", "label": "Lantern", "tones": [{"t": 0.00, "f": 660, "d": 0.20, "g": 0.14}, {"t": 0.24, "f": 990, "d": 0.28, "g": 0.18}]},
-    {"id": "signal", "label": "Signal", "tones": [{"t": 0.00, "f": 784, "d": 0.16, "g": 0.16}, {"t": 0.20, "f": 932, "d": 0.16, "g": 0.17}, {"t": 0.40, "f": 1174, "d": 0.16, "g": 0.18}, {"t": 0.66, "f": 1568, "d": 0.26, "g": 0.19}]},
-    {"id": "harbor", "label": "Harbor", "tones": [{"t": 0.00, "f": 440, "d": 0.26, "g": 0.16}, {"t": 0.34, "f": 554, "d": 0.26, "g": 0.16}, {"t": 0.68, "f": 659, "d": 0.36, "g": 0.19}]},
-    {"id": "nova", "label": "Nova", "tones": [{"t": 0.00, "f": 988, "d": 0.12, "g": 0.15}, {"t": 0.18, "f": 1244, "d": 0.14, "g": 0.16}, {"t": 0.38, "f": 1568, "d": 0.30, "g": 0.21}]},
-    {"id": "ripple", "label": "Ripple", "tones": [{"t": 0.00, "f": 698, "d": 0.14, "g": 0.13}, {"t": 0.16, "f": 740, "d": 0.14, "g": 0.13}, {"t": 0.32, "f": 784, "d": 0.14, "g": 0.14}, {"t": 0.48, "f": 831, "d": 0.24, "g": 0.16}]},
-    {"id": "flare", "label": "Flare", "tones": [{"t": 0.00, "f": 880, "d": 0.10, "g": 0.14}, {"t": 0.14, "f": 1108, "d": 0.10, "g": 0.16}, {"t": 0.28, "f": 1396, "d": 0.12, "g": 0.18}, {"t": 0.46, "f": 1760, "d": 0.28, "g": 0.2}]},
-    {"id": "quartz", "label": "Quartz", "tones": [{"t": 0.00, "f": 587, "d": 0.18, "g": 0.15}, {"t": 0.24, "f": 880, "d": 0.18, "g": 0.17}, {"t": 0.50, "f": 1174, "d": 0.30, "g": 0.19}]},
-    {"id": "orbit", "label": "Orbit", "tones": [{"t": 0.00, "f": 523, "d": 0.12, "g": 0.13}, {"t": 0.16, "f": 659, "d": 0.12, "g": 0.14}, {"t": 0.32, "f": 831, "d": 0.12, "g": 0.15}, {"t": 0.52, "f": 1046, "d": 0.22, "g": 0.18}]},
-    {"id": "echo", "label": "Echo", "tones": [{"t": 0.00, "f": 660, "d": 0.22, "g": 0.12}, {"t": 0.30, "f": 660, "d": 0.18, "g": 0.10}, {"t": 0.56, "f": 990, "d": 0.26, "g": 0.17}]},
-    {"id": "summit", "label": "Summit", "tones": [{"t": 0.00, "f": 784, "d": 0.18, "g": 0.15}, {"t": 0.24, "f": 988, "d": 0.18, "g": 0.16}, {"t": 0.50, "f": 1318, "d": 0.24, "g": 0.18}, {"t": 0.82, "f": 1568, "d": 0.32, "g": 0.2}]},
-    {"id": "drift", "label": "Drift", "tones": [{"t": 0.00, "f": 494, "d": 0.24, "g": 0.15}, {"t": 0.28, "f": 622, "d": 0.24, "g": 0.15}, {"t": 0.60, "f": 740, "d": 0.34, "g": 0.18}]},
-    {"id": "vector", "label": "Vector", "tones": [{"t": 0.00, "f": 932, "d": 0.12, "g": 0.16}, {"t": 0.16, "f": 1174, "d": 0.12, "g": 0.17}, {"t": 0.32, "f": 1480, "d": 0.12, "g": 0.18}, {"t": 0.52, "f": 1864, "d": 0.26, "g": 0.19}]},
-    {"id": "glow", "label": "Glow", "tones": [{"t": 0.00, "f": 698, "d": 0.18, "g": 0.14}, {"t": 0.22, "f": 880, "d": 0.18, "g": 0.16}, {"t": 0.48, "f": 1046, "d": 0.28, "g": 0.18}]},
-    {"id": "strobe", "label": "Strobe", "tones": [{"t": 0.00, "f": 1046, "d": 0.09, "g": 0.15}, {"t": 0.12, "f": 1046, "d": 0.09, "g": 0.15}, {"t": 0.24, "f": 1318, "d": 0.09, "g": 0.16}, {"t": 0.36, "f": 1318, "d": 0.09, "g": 0.16}, {"t": 0.52, "f": 1568, "d": 0.24, "g": 0.19}]},
-    {"id": "ember", "label": "Ember", "tones": [{"t": 0.00, "f": 554, "d": 0.22, "g": 0.14}, {"t": 0.28, "f": 698, "d": 0.22, "g": 0.15}, {"t": 0.58, "f": 831, "d": 0.30, "g": 0.17}]},
-    {"id": "zenith", "label": "Zenith", "tones": [{"t": 0.00, "f": 988, "d": 0.16, "g": 0.16}, {"t": 0.22, "f": 1244, "d": 0.16, "g": 0.17}, {"t": 0.46, "f": 1661, "d": 0.18, "g": 0.18}, {"t": 0.74, "f": 1976, "d": 0.30, "g": 0.2}]},
-]
-DEFAULT_ALARM_PRESET_ID = ALARM_PRESETS[0]["id"]
-ALARM_PRESET_IDS = {item["id"] for item in ALARM_PRESETS}
-
 
 ADD_LOGIN_LOCK = threading.Lock()
 CAM_CONFIG_LOCK = threading.RLock()
@@ -763,9 +738,7 @@ def sanitize_cam_config(raw: dict) -> dict:
     notif = cfg.get("notifications", {})
     notif["enabled"] = bool(notif.get("enabled", False))
     notif["scope"] = notif.get("scope") if notif.get("scope") in ("any", "5h", "weekly") else "any"
-    notif["alarm_preset"] = str(notif.get("alarm_preset") or "").strip()
-    if notif["alarm_preset"] not in ALARM_PRESET_IDS:
-        notif["alarm_preset"] = DEFAULT_ALARM_PRESET_ID
+    notif.pop("alarm_preset", None)
     thresholds = notif.get("thresholds", {})
     notif["thresholds"] = {
         "h5_warn_pct": clamp_int(thresholds.get("h5_warn_pct"), 20, minimum=0, maximum=100),
@@ -2418,7 +2391,12 @@ def cmd_import_profiles(archive_path: str, apply: bool = False, overwrite: bool 
         return 1
 
 
-def sync_profile_auth_snapshot(name: str, source_auth: Path, source_label: str | None = None) -> bool:
+def sync_profile_auth_snapshot(
+    name: str,
+    source_auth: Path,
+    source_label: str | None = None,
+    expected_principal_id: str | None = None,
+) -> bool:
     name = (name or "").strip()
     if not name or not source_auth.exists():
         return False
@@ -2426,14 +2404,29 @@ def sync_profile_auth_snapshot(name: str, source_auth: Path, source_label: str |
     if not target_dir.exists():
         return False
     target_auth = target_dir / "auth.json"
+    expected_pid = str(expected_principal_id or "").strip()
+    source_data: dict | None = None
+    target_data: dict | None = None
     try:
-        source_canonical = json.dumps(load_json(source_auth), sort_keys=True, separators=(",", ":"))
+        source_data = load_json(source_auth)
+        source_canonical = json.dumps(source_data, sort_keys=True, separators=(",", ":"))
     except Exception:
         return False
     try:
-        target_canonical = json.dumps(load_json(target_auth), sort_keys=True, separators=(",", ":")) if target_auth.exists() else None
+        target_data = load_json(target_auth) if target_auth.exists() else None
+        target_canonical = json.dumps(target_data, sort_keys=True, separators=(",", ":")) if target_data else None
     except Exception:
         target_canonical = None
+        target_data = None
+    source_pid = str(_principal_id_from_data(source_data) or "").strip()
+    target_pid = str(_principal_id_from_data(target_data) or "").strip()
+    if expected_pid and source_pid and source_pid != expected_pid:
+        # Guard against stale "current profile" detection races that can overwrite
+        # the wrong saved profile snapshot during concurrent switch + refresh.
+        return False
+    if source_pid and target_pid and source_pid != target_pid:
+        # Snapshot sync is for token refresh on the same account identity only.
+        return False
     if target_canonical == source_canonical:
         return False
     shutil.copy2(source_auth, target_auth)
@@ -2721,7 +2714,12 @@ def _build_usage_profile_row(profile_dir: Path, context: dict, timeout_sec: int)
     usage_5h, usage_weekly, plan_type, is_paid, err = fetch_usage_from_auth(auth_path, timeout_sec=timeout_sec)
     if current_profile and p.name == current_profile and auth_path == AUTH_FILE and err is None:
         try:
-            sync_profile_auth_snapshot(p.name, AUTH_FILE, str(AUTH_FILE))
+            sync_profile_auth_snapshot(
+                p.name,
+                AUTH_FILE,
+                str(AUTH_FILE),
+                expected_principal_id=str(entry.get("principal_id") or ""),
+            )
         except Exception:
             pass
     cell_5h = format_usage_cell(*(usage_5h or (None, None)))
@@ -2765,6 +2763,19 @@ def collect_usage_local_data(timeout_sec: int, config: dict | None = None, profi
     for p in selected_profiles:
         json_rows.append(_build_usage_profile_row(p, context, timeout_sec))
     return {"refreshed_at": dt.datetime.now().isoformat(), "current_profile": current_profile, "profiles": json_rows}
+
+
+def _native_notification_test_base_url(host: str, port: int) -> str:
+    return f"http://{host}:{int(port)}/"
+
+
+def run_native_notification_test(host: str, port: int, timeout_sec: int = 7) -> dict:
+    cfg = load_cam_config()
+    usage_payload = collect_usage_local_data(timeout_sec=timeout_sec, config=cfg)
+    return native_notifications.send_native_test_notification(
+        usage_payload=usage_payload,
+        base_url=_native_notification_test_base_url(host, port),
+    )
 
 
 def cmd_usage_local(timeout_sec: int, as_json: bool = False) -> int:
@@ -3148,6 +3159,41 @@ def _command_result(name: str, rc: int, stdout: str, stderr: str):
     return CommandResult(command=name, exit_code=rc, stdout=stdout, stderr=stderr).to_dict()
 
 
+def build_auto_switch_state_payload(runtime: dict, cfg: dict, now: float | None = None) -> dict:
+    now_ts = time.time() if now is None else float(now)
+    auto_cfg = cfg.get("auto_switch") or {}
+    cooldown_cfg = int((cfg.get("auto_switch") or {}).get("cooldown_sec", 60))
+    cooldown_sec = max(AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC, cooldown_cfg)
+    last_sw = runtime.get("last_switch_ts")
+    cooldown_until = (last_sw + cooldown_sec) if last_sw else None
+    return {
+        "active": bool(runtime.get("active", False)),
+        "last_evaluated_at": runtime.get("last_eval_ts"),
+        "last_evaluated_at_text": epoch_to_text(runtime.get("last_eval_ts")),
+        "pending_warning": runtime.get("pending_warning"),
+        "pending_switch_due_at": runtime.get("pending_switch_due_at"),
+        "pending_switch_due_at_text": epoch_to_text(runtime.get("pending_switch_due_at")),
+        "cooldown_until": cooldown_until,
+        "cooldown_until_text": epoch_to_text(cooldown_until),
+        "cooldown_remaining_sec": max(0, int(cooldown_until - now_ts)) if cooldown_until else 0,
+        "last_switch_at": runtime.get("last_switch_ts"),
+        "last_switch_at_text": epoch_to_text(runtime.get("last_switch_ts")),
+        "events_count": len(runtime.get("events") or []),
+        "config_enabled": bool(auto_cfg.get("enabled")),
+        "config_delay_sec": int(auto_cfg.get("delay_sec", 60)),
+        "rapid_test_active": bool(runtime.get("rapid_test_active", False)),
+        "rapid_test_started_at": runtime.get("rapid_test_started_at"),
+        "rapid_test_started_at_text": epoch_to_text(runtime.get("rapid_test_started_at")),
+        "rapid_test_wait_sec": runtime.get("rapid_test_wait_sec"),
+        "rapid_test_step": int(runtime.get("rapid_test_step") or 0),
+        "test_run_active": bool(runtime.get("test_run_active", False)),
+        "switch_in_flight": bool(runtime.get("switch_in_flight", False)),
+        "switch_target": str(runtime.get("switch_target") or ""),
+        "switch_started_at": runtime.get("switch_started_at") or None,
+        "switch_started_at_text": epoch_to_text(runtime.get("switch_started_at")),
+    }
+
+
 def _normalize_release_tag(raw: str | None) -> str:
     tag = str(raw or "").strip().lower()
     if tag.startswith("release "):
@@ -3418,7 +3464,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
     token_json = json.dumps(token)
     interval_json = json.dumps(default_interval)
     version_json = json.dumps(APP_VERSION)
-    alarm_presets_json = json.dumps(ALARM_PRESETS, separators=(",", ":"))
     html = """<!doctype html>
 <html lang=\"en\">
 <head>
@@ -3684,16 +3729,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .section{margin-top:var(--gap)}
     .card,.table-wrap,.toolbar{background:var(--surface-low);border-radius:var(--radius);border:1px solid transparent;box-shadow:var(--ambient)}
     .toolbar{padding:14px}
-    .controls-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:12px}
+    .controls-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .control-card,.rules-col{background:var(--surface-card);border:1px solid var(--line);border-radius:var(--radius);padding:12px;display:flex;flex-direction:column;gap:10px}
     .control-card.control-card-full{grid-column:1 / -1}
     .group-title,.rules-title{font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.12em}
     .settings-card{padding:14px 14px 12px;gap:12px}
-    .notify-card{
-      display:grid;
-      grid-template-rows:auto auto minmax(48px,1fr) auto;
-      align-content:stretch;
-    }
+    .notify-card{display:grid;grid-template-rows:auto auto auto;align-content:stretch}
     .settings-card .group-title{
       font-family:Inter,"Segoe UI",-apple-system,sans-serif;
       font-size:14px;
@@ -3760,9 +3801,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .metric-pair-grid .stepper{
       flex-shrink:0;
     }
-    .notify-card .metric-pair-grid{
-      align-self:end;
-    }
+    .notify-card .metric-pair-grid{align-self:stretch}
     .btn-block{width:100%;display:flex;align-items:center;justify-content:center}
     .settings-footer-btn{margin-top:auto}
     .settings-footer-actions{
@@ -3824,8 +3863,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
     #autoSwitchRulesSection.auto-switch-armed{
       border-color:var(--switch-urgency-border, var(--accent-ring));
       box-shadow:0 0 0 1px var(--switch-urgency-inset, var(--accent-inset)) inset;
-      animation:none;
+      animation:autoSwitchArmedPulse 1.35s ease-in-out infinite;
       background:var(--surface-low);
+    }
+    @keyframes autoSwitchArmedPulse{
+      0%,100%{box-shadow:0 0 0 1px var(--switch-urgency-inset, var(--accent-inset)) inset,0 0 0 transparent}
+      50%{box-shadow:0 0 0 1px var(--switch-urgency-border, var(--accent-ring)) inset,0 0 18px var(--switch-urgency-inset, var(--accent-inset))}
     }
     #autoSwitchRulesSection.auto-switch-armed.switch-urgency-green{
       --switch-urgency-border:var(--accent-ring);
@@ -4020,7 +4063,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     .usage-mid{color:var(--usage-mid);font-weight:700}
     .usage-good{color:var(--ok);font-weight:700}
     .usage-cell{display:flex;align-items:center;gap:12px}
-    .usage-pct{min-width:46px}
+    .usage-pct{display:inline-block;min-width:72px}
     .usage-meter{flex:1;min-width:92px;height:6px;background:var(--surface-highest);border-radius:999px;overflow:hidden}
     .usage-fill{height:100%;display:block;background:var(--primary)}
     .usage-fill.low{background:var(--usage-low)}
@@ -4510,99 +4553,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
       grid-template-columns:1fr 1fr;
       gap:8px;
     }
-    .alarm-selected-row{
-      display:grid;
-      gap:6px;
-      padding:9px 10px;
-      background:var(--surface-black);
-      border:1px solid var(--line);
-      border-radius:var(--radius);
-    }
-    .alarm-selected-head{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:12px;
-    }
-    .alarm-selected-label{
-      font-size:11px;
-      color:var(--text-soft);
-      text-transform:uppercase;
-      letter-spacing:.08em;
-    }
-    .alarm-selected-value{
-      font-size:13px;
-      color:var(--text);
-      font-weight:600;
-    }
-    .alarm-modal{
-      width:min(860px,96vw);
-      max-height:84vh;
-      display:flex;
-      flex-direction:column;
-      gap:12px;
-      background:color-mix(in srgb,var(--surface-highest) 64%, transparent);
-      backdrop-filter:blur(24px);
-      border:1px solid var(--line);
-      border-radius:var(--radius);
-      padding:14px;
-    }
-    .alarm-modal h3{margin:0}
-    .alarm-modal-intro{
-      margin:0;
-      color:var(--text-soft);
-      font-size:12px;
-      line-height:1.45;
-    }
-    .alarm-preset-list{
-      display:grid;
-      gap:8px;
-      overflow:auto;
-      max-height:52vh;
-      padding-right:4px;
-    }
-    .alarm-preset-item{
-      display:grid;
-      grid-template-columns:minmax(0,1fr) auto;
-      gap:10px;
-      align-items:center;
-      background:var(--surface-black);
-      border:1px solid var(--line);
-      border-radius:var(--radius);
-      padding:10px;
-      transition:border-color .15s ease, background .15s ease, box-shadow .15s ease;
-    }
-    .alarm-preset-item.selected{
-      border-color:var(--accent-border);
-      background:color-mix(in srgb,var(--accent-bg) 55%, var(--surface-black));
-      box-shadow:0 0 0 1px var(--accent-inset) inset;
-    }
-    .alarm-preset-main{
-      min-width:0;
-      display:grid;
-      gap:4px;
-      cursor:pointer;
-    }
-    .alarm-preset-name{
-      font-size:13px;
-      font-weight:600;
-      color:var(--text);
-    }
-    .alarm-preset-meta{
-      font-size:12px;
-      color:var(--text-soft);
-    }
-    .alarm-preset-actions{
-      display:flex;
-      align-items:center;
-      gap:8px;
-      flex-shrink:0;
-    }
-    .alarm-modal-footer{
-      display:flex;
-      justify-content:flex-end;
-      gap:8px;
-    }
     .update-modal{
       width:min(780px,96vw);
       max-height:84vh;
@@ -4863,27 +4813,23 @@ def render_ui_html(default_interval: float, token: str) -> str:
         </section>
 
         <section class=\"control-card notify-card settings-card\">
-          <div class=\"group-title\">Alarm</div>
-          <div class=\"alarm-selected-row\">
-            <div class=\"alarm-selected-head\">
-              <div class=\"alarm-selected-label\">Selected Alarm</div>
-              <label class=\"toggle\" title=\"Turn sound alarms on or off for usage warnings.\"><input id=\"alarmToggle\" type=\"checkbox\" title=\"Turn sound alarms on or off for usage warnings.\" /></label>
-            </div>
-            <div id=\"alarmPresetValue\" class=\"alarm-selected-value\">Beacon</div>
+          <div class=\"group-title\">Notification</div>
+          <div class=\"setting-row inset-row\">
+            <span class=\"setting-label\" title=\"Turn native warning notifications on or off.\">Enable notifications</span>
+            <label class=\"toggle\" title=\"Turn native warning notifications on or off.\"><input id=\"alarmToggle\" type=\"checkbox\" title=\"Turn native warning notifications on or off.\" /></label>
           </div>
           <div class=\"metric-pair-grid\">
             <div class=\"setting-row metric inset-row\">
-              <span class=\"setting-label\" title=\"Trigger an alarm when 5-hour remaining usage falls below this percentage.\">5H alarm %</span>
-              <div class=\"stepper compact\" data-stepper title=\"5-hour warning threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease 5-hour alarm threshold by 1 percent.\">-</button><input id=\"alarm5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"5-hour warning threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase 5-hour alarm threshold by 1 percent.\">+</button></div>
+              <span class=\"setting-label\" title=\"Trigger a notification when 5-hour remaining usage falls below this percentage.\">5H notify %</span>
+              <div class=\"stepper compact\" data-stepper title=\"5-hour warning threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease 5-hour notification threshold by 1 percent.\">-</button><input id=\"alarm5h\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"5-hour warning threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase 5-hour notification threshold by 1 percent.\">+</button></div>
             </div>
             <div class=\"setting-row metric inset-row\">
-              <span class=\"setting-label\" title=\"Trigger an alarm when weekly remaining usage falls below this percentage.\">Weekly alarm %</span>
-              <div class=\"stepper compact\" data-stepper title=\"Weekly warning threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease weekly alarm threshold by 1 percent.\">-</button><input id=\"alarmWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"Weekly warning threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase weekly alarm threshold by 1 percent.\">+</button></div>
+              <span class=\"setting-label\" title=\"Trigger a notification when weekly remaining usage falls below this percentage.\">Weekly notify %</span>
+              <div class=\"stepper compact\" data-stepper title=\"Weekly warning threshold percentage.\"><button data-stepper-dec type=\"button\" title=\"Decrease weekly notification threshold by 1 percent.\">-</button><input id=\"alarmWeekly\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" title=\"Weekly warning threshold percentage.\" /><button data-stepper-inc type=\"button\" title=\"Increase weekly notification threshold by 1 percent.\">+</button></div>
             </div>
           </div>
           <div class=\"alarm-actions\">
-            <button id=\"chooseAlarmBtn\" class=\"btn\" type=\"button\" title=\"Browse built-in alarm presets and preview alternatives before saving one.\">Choose Alarm</button>
-            <button id=\"testAlarmBtn\" class=\"btn-warning\" type=\"button\" title=\"Play the currently selected alarm preset and show the warning preview now.\">Test Alarm</button>
+            <button id=\"testAlarmBtn\" class=\"btn-warning btn-block\" type=\"button\" title=\"Send a native notification test using the current profile usage.\">Test Notification</button>
           </div>
         </section>
 
@@ -4921,7 +4867,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
             <div class=\"stepper compact\" data-stepper title=\"Delay before an automatic switch executes.\"><button data-stepper-dec type=\"button\" title=\"Decrease auto-switch delay by 1 second.\">-</button><input id=\"asDelay\" type=\"number\" min=\"0\" step=\"1\" title=\"Auto-switch delay in seconds.\" /><button data-stepper-inc type=\"button\" title=\"Increase auto-switch delay by 1 second.\">+</button></div>
           </div>
           <div class=\"exec-actions\">
-            <button id=\"asRunSwitchBtn\" class=\"btn btn-block settings-footer-btn\" title=\"Run the next switch immediately using the current chain and rules.\">Run Switch</button>
+            <button id=\"asRunSwitchBtn\" class=\"btn btn-block settings-footer-btn btn-primary\" title=\"Run the next switch immediately using the current chain and rules.\">Run Switch</button>
             <button id=\"asRapidTestBtn\" class=\"btn btn-block settings-footer-btn\" title=\"Run a fast diagnostic pass to test switching behavior.\">Rapid Test</button>
             <button id=\"asForceStopBtn\" class=\"btn btn-block settings-footer-btn btn-danger\" title=\"Stop running auto-switch test jobs.\">Stop Tests</button>
             <button id=\"asTestAutoSwitchBtn\" class=\"btn btn-block settings-footer-btn\" title=\"Start a controlled auto-switch test using the current thresholds.\">Test Auto Switch</button>
@@ -5005,7 +4951,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
         <span class=\"guide-title\">Guide & Help</span>
       </summary>
       <div class=\"guide-body\">
-        <p class=\"guide-intro\">Use this panel to add accounts, monitor live usage, import or export saved profiles, tune alarms and auto-switch behavior, review release notes, and update the app from one place.</p>
+        <p class=\"guide-intro\">Use this panel to add accounts, monitor live usage, import or export saved profiles, tune native notification and auto-switch behavior, review release notes, and update the app from one place.</p>
         <div class=\"guide-grid\">
           <section class=\"guide-block\">
             <h4>Quick Start</h4>
@@ -5013,6 +4959,8 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <li>Use <b>Add Account</b> to open the combined login dialog, enter a profile name, then choose <b>Device Login</b> or <b>Normal Login</b>.</li>
               <li>Use <b>Switch</b> on any row to activate a saved profile in Codex; the active account gets the green status dot and stays pinned first.</li>
               <li>Use <b>Refresh</b> for a full immediate sync after switching, login, config changes, or recovering from stale data.</li>
+              <li>Current client support targets the <b>Codex CLI</b> and the <b>Codex VS Code extension</b>.</li>
+              <li>On some OS/client combinations, the CLI or VS Code extension may still need a manual reload or restart after switching before the new account is picked up.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -5034,12 +4982,13 @@ def render_ui_html(default_interval: float, token: str) -> str:
             </ul>
           </section>
           <section class=\"guide-block\">
-            <h4>Alarm & Notification</h4>
+            <h4>Native Notifications</h4>
             <ul>
-              <li>Use the toggle in <b>Selected Alarm</b> to turn usage warning alarms on/off.</li>
-              <li><b>Choose Alarm</b> opens a built-in preset browser with preview buttons, and <b>Test Alarm</b> plays the currently selected preset immediately.</li>
-              <li>Set warning thresholds with <b>5H alarm %</b> and <b>Weekly alarm %</b>.</li>
-              <li>Alarm warnings are based on remaining percentage and work with the refreshed table values shown in the Accounts section.</li>
+              <li>Use the <b>Notification</b> card toggle to turn native usage notifications on or off.</li>
+              <li><b>Test Notification</b> sends a real OS notification using the current active profile usage.</li>
+              <li>Set warning thresholds with <b>5H notify %</b> and <b>Weekly notify %</b>.</li>
+              <li>When warning thresholds are breached, notifications use the same native OS path as the test button.</li>
+              <li>Before a delayed auto-switch executes, the app also sends a native heads-up about 30 seconds before the switch time.</li>
             </ul>
           </section>
           <section class=\"guide-block\">
@@ -5060,7 +5009,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
               <li><b>Plan</b> and <b>Paid</b> fields are available as optional columns (hidden by default).</li>
               <li>Mobile cards open full detail modal and include switch + row-actions shortcuts.</li>
               <li>Tooltips are available across controls, headers, and row actions to explain what each setting or button does.</li>
-              <li>Current-account usage is read from the live active auth session, and healthy current sessions automatically sync back into the saved profile snapshot to avoid stale-token drift later.</li>
+              <li>Current-account usage is read from the live active auth session, and healthy current sessions sync back only when identity matches to avoid stale-token drift without cross-profile overwrite risk.</li>
               <li>If a row shows <b>auth expired</b>, the saved profile auth snapshot no longer works for usage API calls and that account needs a fresh healthy session.</li>
             </ul>
           </section>
@@ -5238,18 +5187,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
     </div>
   </div>
 
-  <div id=\"alarmPresetBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\" style=\"display:none;\">
-    <div class=\"alarm-modal\">
-      <h3>Choose Alarm</h3>
-      <p class=\"alarm-modal-intro\">Browse built-in alarm presets, preview them with the play button, then save the one you want for warning alerts.</p>
-      <div id=\"alarmPresetList\" class=\"alarm-preset-list\"></div>
-      <div class=\"alarm-modal-footer\">
-        <button id=\"alarmPresetCancelBtn\" class=\"btn\" type=\"button\" title=\"Close the alarm picker without changing the current preset.\">Cancel</button>
-        <button id=\"alarmPresetUseBtn\" class=\"btn-primary\" type=\"button\" title=\"Save the selected alarm preset for future warning sounds.\">Use Selected</button>
-      </div>
-    </div>
-  </div>
-
   <div id=\"appUpdateBackdrop\" class=\"modal-backdrop\" role=\"dialog\" aria-modal=\"true\" style=\"display:none;\">
     <div class=\"update-modal\">
       <h3>Update App</h3>
@@ -5274,10 +5211,10 @@ def render_ui_html(default_interval: float, token: str) -> str:
   <script>
   const token = __TOKEN_JSON__;
   const UI_VERSION = __UI_VERSION_JSON__;
-  const ALARM_PRESETS = __ALARM_PRESETS_JSON__;
   let currentRefreshTimer = null;
   let allRefreshTimer = null;
   let remainTicker = null;
+  let autoSwitchStateTimer = null;
   let eventsTimer = null;
   let sortState = JSON.parse(localStorage.getItem("codex_sort_state") || '{"key":"savedAt","dir":"desc"}');
   let latestData = { status: null, usage: null, list: null, config: null, autoState: null, autoChain: null, events: [] };
@@ -5307,6 +5244,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let pendingAutoSwitchEnabled = null;
   let switchInFlight = false;
   let switchPendingName = "";
+  let autoSwitchRunActionInFlight = false;
+  let autoSwitchRapidActionInFlight = false;
+  let suppressCurrentProfileAutoAnimation = false;
   let refreshRunning = false;
   let refreshQueuedOpts = null;
   let currentRefreshRunning = false;
@@ -5325,8 +5265,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
   let diagnosticsHooksInstalled = false;
   let exportSelectedNames = [];
   let importReviewState = null;
-  let alarmPresetDraftId = "";
-  const alarmPresetMap = new Map((Array.isArray(ALARM_PRESETS) ? ALARM_PRESETS : []).map((item) => [String(item.id || ""), item]));
+  const DEFAULT_NOTIFICATION_TONES = [
+    { t: 0.0, f: 880, d: 0.22, g: 0.18 },
+    { t: 0.28, f: 1046, d: 0.22, g: 0.18 },
+    { t: 0.56, f: 1318, d: 0.34, g: 0.2 },
+  ];
   const MAX_OVERLAY_LOGS = 900;
   const LOG_COALESCE_WINDOW_MS = 3500;
   const LOG_STRING_LIMIT = 360;
@@ -6434,6 +6377,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
       return false;
     }
   }
+  async function runNativeNotificationTest(){
+    await runAction("notifications.native_test", async ()=>{
+      const payload = await postApi("/api/notifications/native-test", {});
+      const profileName = String(payload?.profile_name || "").trim();
+      setError(profileName ? `Native notification sent for ${profileName}.` : "Native notification sent.");
+      return payload;
+    }, { skipRefresh:true });
+  }
   function exportDebugSnapshot(){
     pushOverlayLog("ui", "ui.click export_snapshot");
     const payload={
@@ -6510,6 +6461,70 @@ def render_ui_html(default_interval: float, token: str) -> str:
   }
   function waitMs(ms){
     return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+  }
+  function getRowRectByName(name){
+    const target = String(name || "").trim();
+    if(!target) return null;
+    try{
+      const row = byId("rows", false)?.querySelector(`tr[data-row-name="${CSS.escape(target)}"]`);
+      if(!row) return null;
+      const rect = row.getBoundingClientRect();
+      if(!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return null;
+      return { left: rect.left, top: rect.top };
+    } catch(_) {
+      return null;
+    }
+  }
+  function applyOptimisticSwitchTarget(targetName){
+    const target = String(targetName || "").trim();
+    const usage = latestData?.usage;
+    if(!target || !usage || !Array.isArray(usage.profiles) || !usage.profiles.length) return false;
+    let found = false;
+    const nextProfiles = usage.profiles.map((profile) => {
+      const rowName = String(profile?.name || "").trim();
+      const isTarget = rowName === target;
+      if(isTarget) found = true;
+      return {
+        ...profile,
+        is_current: isTarget,
+      };
+    });
+    if(!found) return false;
+    latestData.usage = {
+      ...usage,
+      current_profile: target,
+      profiles: nextProfiles,
+    };
+    renderTable(latestData.usage);
+    return true;
+  }
+  async function animateSwitchFromEvent(ev){
+    const targetFromEvent = String(ev?.details?.target || "").trim();
+    const fromRect = getRowRectByName(targetFromEvent);
+    const optimisticApplied = applyOptimisticSwitchTarget(targetFromEvent);
+    if(optimisticApplied && targetFromEvent){
+      await animateSwitchRowToTop(targetFromEvent, fromRect);
+    }
+    const prevSuppress = suppressCurrentProfileAutoAnimation;
+    suppressCurrentProfileAutoAnimation = true;
+    try{
+      await refreshAll({ showLoading:false, clearUsageCache:true, usageForce:true });
+    } finally {
+      suppressCurrentProfileAutoAnimation = prevSuppress;
+    }
+    const target = targetFromEvent || String(latestData?.usage?.current_profile || "").trim();
+    if(target && !optimisticApplied){
+      await animateSwitchRowToTop(target, fromRect);
+    }
+  }
+  async function animateSwitchFromEventLocal(ev){
+    const targetFromEvent = String(ev?.details?.target || "").trim();
+    const fromRect = getRowRectByName(targetFromEvent);
+    const optimisticApplied = applyOptimisticSwitchTarget(targetFromEvent);
+    const target = targetFromEvent || String(latestData?.usage?.current_profile || "").trim();
+    if(target && optimisticApplied){
+      await animateSwitchRowToTop(target, fromRect);
+    }
   }
   async function animateSwitchRowToTop(name, fromRect=null){
     const tbody = byId("rows", false);
@@ -6774,73 +6789,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
   function closeExportProfilesModal(){
     const b = byId("exportProfilesBackdrop", false);
     if(b) b.style.display = "none";
-  }
-  function renderAlarmPresetModal(){
-    const list = byId("alarmPresetList", false);
-    const useBtn = byId("alarmPresetUseBtn", false);
-    if(!list) return;
-    list.innerHTML = "";
-    const activeId = String(alarmPresetDraftId || getSelectedAlarmPresetId());
-    (Array.isArray(ALARM_PRESETS) ? ALARM_PRESETS : []).forEach((preset) => {
-      const row = document.createElement("div");
-      row.className = `alarm-preset-item${preset.id === activeId ? " selected" : ""}`;
-      const main = document.createElement("div");
-      main.className = "alarm-preset-main";
-      main.addEventListener("click", () => {
-        alarmPresetDraftId = preset.id;
-        renderAlarmPresetModal();
-      });
-      const name = document.createElement("div");
-      name.className = "alarm-preset-name";
-      name.textContent = preset.label || preset.id;
-      const meta = document.createElement("div");
-      meta.className = "alarm-preset-meta";
-      meta.textContent = preset.id === getSelectedAlarmPresetId() ? "Current selection" : `Preset: ${preset.id}`;
-      main.appendChild(name);
-      main.appendChild(meta);
-      const actions = document.createElement("div");
-      actions.className = "alarm-preset-actions";
-      const playBtn = document.createElement("button");
-      playBtn.className = "btn";
-      playBtn.type = "button";
-      playBtn.textContent = "Play";
-      playBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        alarmPresetDraftId = preset.id;
-        renderAlarmPresetModal();
-        await previewAlarmPreset(preset.id, { message: `Previewing ${preset.label}. This is how warning alarms will sound.` });
-      });
-      actions.appendChild(playBtn);
-      row.appendChild(main);
-      row.appendChild(actions);
-      list.appendChild(row);
-    });
-    if(useBtn) useBtn.disabled = !activeId || activeId === getSelectedAlarmPresetId();
-  }
-  function openAlarmPresetModal(){
-    alarmPresetDraftId = getSelectedAlarmPresetId();
-    renderAlarmPresetModal();
-    const b = byId("alarmPresetBackdrop", false);
-    if(b) b.style.display = "flex";
-  }
-  function closeAlarmPresetModal(){
-    alarmPresetDraftId = "";
-    const b = byId("alarmPresetBackdrop", false);
-    if(b) b.style.display = "none";
-  }
-  async function applyAlarmPresetSelection(){
-    const nextId = String(alarmPresetDraftId || "").trim();
-    if(!nextId || nextId === getSelectedAlarmPresetId()){
-      closeAlarmPresetModal();
-      return;
-    }
-    await saveUiConfigPatch({ notifications: { alarm_preset: nextId } });
-    latestData.config = latestData.config || {};
-    latestData.config.notifications = latestData.config.notifications || {};
-    latestData.config.notifications.alarm_preset = nextId;
-    updateAlarmPresetSummary();
-    closeAlarmPresetModal();
-    showInAppNotice("Alarm Updated", `${getSelectedAlarmPresetLabel(nextId)} is now the active warning alarm.`, { duration_ms: 5000 });
   }
   async function fileToBase64(file){
     const buf = await file.arrayBuffer();
@@ -7180,6 +7128,33 @@ def render_ui_html(default_interval: float, token: str) -> str:
       renderTable(latestData.usage);
     }
   }
+  function renderAutoSwitchActionButtons(autoStateOverride=null){
+    const autoState = (autoStateOverride && typeof autoStateOverride === "object") ? autoStateOverride : (latestData?.autoState || {});
+    const runBtn = byId("asRunSwitchBtn", false);
+    if(runBtn){
+      const activeRun = !!autoSwitchRunActionInFlight || !!autoState.switch_in_flight;
+      const disableRun = activeRun || !!autoSwitchRapidActionInFlight || !!autoState.rapid_test_active;
+      runBtn.disabled = disableRun;
+      runBtn.textContent = activeRun ? "Running..." : "Run Switch";
+      runBtn.classList.add("btn-primary");
+      runBtn.classList.toggle("btn-progress", activeRun);
+    }
+    const rapidBtn = byId("asRapidTestBtn", false);
+    if(rapidBtn){
+      const activeRapid = !!autoSwitchRapidActionInFlight || !!autoState.rapid_test_active;
+      const disableRapid = activeRapid || !!autoSwitchRunActionInFlight || !!autoState.switch_in_flight;
+      rapidBtn.disabled = disableRapid;
+      rapidBtn.textContent = activeRapid ? "Rapid Running..." : "Rapid Test";
+      rapidBtn.classList.toggle("btn-progress", activeRapid);
+    }
+  }
+  async function refreshAutoSwitchState(){
+    const payload = await safeGet("/api/auto-switch/state", { timeoutMs: 2500 });
+    if(payload.__error) return;
+    latestData.autoState = payload;
+    renderAutoSwitchActionButtons(payload);
+    updateAutoSwitchArmedUI();
+  }
   async function runSwitchAction(name){
     const target = String(name || "").trim();
     if(!target) return;
@@ -7199,12 +7174,14 @@ def render_ui_html(default_interval: float, token: str) -> str:
     renderSwitchProgressState();
     try{
       await switchProfile(target);
+      suppressCurrentProfileAutoAnimation = true;
       await refreshAll({ usageTimeoutSec: 8, usageForce: true, showLoading: false });
       switchInFlight = false;
       renderSwitchProgressState();
       await waitMs(70);
       await animateSwitchRowToTop(target, startRect);
     } finally {
+      suppressCurrentProfileAutoAnimation = false;
       switchInFlight = false;
       switchPendingName = "";
       renderSwitchProgressState();
@@ -7263,29 +7240,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
     return alarmAudioCtx.state === "running";
   }
 
-  function getAlarmPresetById(presetId){
-    const id = String(presetId || "");
-    return alarmPresetMap.get(id) || alarmPresetMap.get("beacon") || (Array.isArray(ALARM_PRESETS) ? ALARM_PRESETS[0] : null);
-  }
-
-  function getSelectedAlarmPresetId(){
-    return String(latestData?.config?.notifications?.alarm_preset || "beacon");
-  }
-
-  function getSelectedAlarmPresetLabel(presetId){
-    const preset = getAlarmPresetById(presetId || getSelectedAlarmPresetId());
-    return String(preset?.label || "Beacon");
-  }
-
-  function updateAlarmPresetSummary(){
-    const valueEl = byId("alarmPresetValue", false);
-    if(valueEl) valueEl.textContent = getSelectedAlarmPresetLabel();
-  }
-
-  function playAlarmPreset(presetId, delayMs){
+  function playNotificationAlarm(delayMs){
     if(!alarmAudioCtx || alarmAudioCtx.state !== "running") return;
-    const preset = getAlarmPresetById(presetId);
-    const tones = Array.isArray(preset?.tones) ? preset.tones : [];
+    const tones = Array.isArray(DEFAULT_NOTIFICATION_TONES) ? DEFAULT_NOTIFICATION_TONES : [];
     if(!tones.length) return;
     const now = alarmAudioCtx.currentTime + Math.max(0, Number(delayMs || 0)) / 1000;
     tones.forEach((tone) => {
@@ -7308,75 +7265,19 @@ def render_ui_html(default_interval: float, token: str) -> str:
     });
   }
 
-  async function previewAlarmPreset(presetId, opts){
-    const options = opts || {};
-    const preset = getAlarmPresetById(presetId);
-    if(!preset) return;
-    await primeAlarmAudio();
-    playAlarmPreset(preset.id, 0);
-    const message = options.message || `Previewing ${preset.label}. This is how warning alarms will sound.`;
-    await triggerSystemNotification(message, 0, {
-      play_alarm: false,
-      in_app_always: true,
-      require_interaction: false,
-      renotify: false,
-      suppress_permission_error: true,
-      tag: `cam-alarm-preview-${preset.id}`,
-    });
-  }
-
-  async function triggerSystemNotification(message, delaySec, opts){
+  async function dispatchNativeNotification(message, delaySec, opts){
     const delayMs = Math.max(0, Number(delaySec || 0) * 1000);
     const playAlarm = !!(opts && opts.play_alarm);
-    const tag = String((opts && opts.tag) || ("cam-manual-" + Date.now()));
-    const requireInteraction = !!(opts && opts.require_interaction);
-    const renotify = !!(opts && opts.renotify);
     const inAppAlways = !!(opts && opts.in_app_always);
-    const suppressPermissionError = !!(opts && opts.suppress_permission_error);
-    if(playAlarm) playAlarmPreset(getSelectedAlarmPresetId(), delayMs);
-    if(!(await ensureNotificationPermission(false))){
-      if(inAppAlways){
-        setTimeout(() => {
-          showInAppNotice("Codex Account Manager", String(message || "Notification"), { require_interaction: requireInteraction });
-        }, delayMs);
-      }
-      if(suppressPermissionError) return;
-      if(playAlarm){
-        setError("Browser notification permission is blocked. Alarm sound played instead.");
-      } else {
-        setError("Notification permission is blocked. Enable it in browser settings.");
-      }
-      return;
-    }
+    const notificationText = String(message || "Notification");
+    if(playAlarm) playNotificationAlarm(Math.max(0, delayMs - 2000));
     setTimeout(async () => {
-      const body = String(message || "Notification");
-      const destination = "/?r="+Date.now();
-      if(inAppAlways){
-        showInAppNotice("Codex Account Manager", body, { require_interaction: requireInteraction });
-      }
-      const options = {
-        body,
-        tag,
-        renotify,
-        requireInteraction,
-        data: { url: destination, source: "codex-account-ui" },
-      };
       try {
-        const reg = await ensureNotificationServiceWorker();
-        if(reg && typeof reg.showNotification === "function"){
-          await reg.showNotification("Codex Account Manager", options);
-          return;
+        if(inAppAlways){
+          showInAppNotice("Codex Account Manager", notificationText, { require_interaction: false });
         }
-      } catch(_) {}
-      try {
-        const n = new Notification("Codex Account Manager", options);
-        n.onclick = () => { try { window.focus(); window.location.href = destination; } catch(_) {} };
       } catch(e) {
-        if(playAlarm){
-          setError("Alarm played, but the browser blocked the notification card.");
-        } else {
-          setError("Failed to display notification card.");
-        }
+        setError(e?.message || String(e));
       }
     }, delayMs);
   }
@@ -7387,24 +7288,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
     if(!ev || ev.id <= lastEventId || notifiedEventIds.has(ev.id)) return;
     if(ev.type !== "warning") return;
     notifiedEventIds.add(ev.id);
-    const details = ev.details || {};
-    const alarmCfg = (cfg.notifications || {});
-    const ath = alarmCfg.thresholds || {};
-    const rem5 = Number(details.remaining_5h);
-    const remW = Number(details.remaining_weekly);
-    const h5Hit = Number.isFinite(rem5) ? rem5 < Number(ath.h5_warn_pct ?? 20) : !!details.h5_hit;
-    const wHit = Number.isFinite(remW) ? remW < Number(ath.weekly_warn_pct ?? 20) : !!details.weekly_hit;
-    if(!(h5Hit || wHit)) return;
-    await primeAlarmAudio();
-    playAlarmPreset(alarmCfg.alarm_preset, 0);
-    await triggerSystemNotification(ev.message || "Usage warning", 0, {
-      play_alarm: false,
-      in_app_always: true,
-      require_interaction: false,
-      renotify: true,
-      suppress_permission_error: true,
-      tag: `cam-warning-${ev.id || Date.now()}`,
-    });
+    showInAppNotice("Codex Account Manager", ev.message || "Usage warning", { require_interaction: false });
   }
 
   function renderTable(usage){
@@ -7603,7 +7487,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
     byId("alarmToggle").checked = !!n.enabled;
     byId("alarm5h").value = String(n.thresholds?.h5_warn_pct ?? 20);
     byId("alarmWeekly").value = String(n.thresholds?.weekly_warn_pct ?? 20);
-    updateAlarmPresetSummary();
     const a = cfg.auto_switch || {};
     byId("asEnabled").checked = pendingAutoSwitchEnabled === null ? !!a.enabled : !!pendingAutoSwitchEnabled;
     setControlValueIfPristine("asDelay", String(a.delay_sec ?? 60));
@@ -7699,6 +7582,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
 
   function commitUsagePayload(payload, opts={}){
     if(!payload || payload.__error) return false;
+    const prevCurrentProfile = String(latestData?.usage?.current_profile || sessionUsageCache?.current_profile || "").trim();
+    const nextCurrentProfile = String(payload?.current_profile || "").trim();
+    const switchFromRect = (!suppressCurrentProfileAutoAnimation && prevCurrentProfile && nextCurrentProfile && prevCurrentProfile !== nextCurrentProfile)
+      ? getRowRectByName(nextCurrentProfile)
+      : null;
     const prevUsageForFlash = (!opts.showLoading && sessionUsageCache && Array.isArray(sessionUsageCache.profiles) && sessionUsageCache.profiles.length)
       ? sessionUsageCache
       : null;
@@ -7708,6 +7596,11 @@ def render_ui_html(default_interval: float, token: str) -> str:
     latestData.usage = payload;
     sessionUsageCache = payload;
     renderTable(payload);
+    if(!suppressCurrentProfileAutoAnimation && prevCurrentProfile && nextCurrentProfile && prevCurrentProfile !== nextCurrentProfile){
+      setTimeout(() => {
+        animateSwitchRowToTop(nextCurrentProfile, switchFromRect).catch(() => {});
+      }, 50);
+    }
     return true;
   }
 
@@ -7855,12 +7748,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       }
       if(!autoState.__error){
         latestData.autoState = autoState;
-        const rapidBtn = byId("asRapidTestBtn", false);
-        if(rapidBtn){
-          const activeRapid = !!autoState.rapid_test_active;
-          rapidBtn.disabled = activeRapid;
-          rapidBtn.textContent = activeRapid ? "Rapid Running..." : "Rapid Test";
-        }
+        renderAutoSwitchActionButtons(autoState);
         updateAutoSwitchArmedUI();
       }
       if(!list.__error){
@@ -7986,6 +7874,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
             lastEventId = Math.max(lastEventId, Number(ev.id || 0));
             latestData.events.push(ev);
             pushOverlayLog("event", `${ev.type || "event"}: ${ev.message || ""}`, ev.details || null);
+            if(ev.type === "switch"){
+              await animateSwitchFromEventLocal(ev);
+            }
           }
         }
         renderEvents(latestData.events);
@@ -8034,6 +7925,12 @@ def render_ui_html(default_interval: float, token: str) -> str:
   function resetRemainTicker(){
     if(remainTicker) clearInterval(remainTicker);
     remainTicker = setInterval(refreshRemainCountdowns, 1000);
+  }
+  function resetAutoSwitchStateTimer(){
+    if(autoSwitchStateTimer) clearInterval(autoSwitchStateTimer);
+    autoSwitchStateTimer = setInterval(() => {
+      refreshAutoSwitchState().catch(() => {});
+    }, 1000);
   }
 
   async function restartUiService(){
@@ -8338,8 +8235,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
         applyColumnVisibility();
         renderColumnsModal();
       });
-      byId("alarmPresetCancelBtn").addEventListener("click", ()=>closeAlarmPresetModal());
-      byId("alarmPresetUseBtn").addEventListener("click", ()=>applyAlarmPresetSelection().catch((e)=>setError(e?.message || String(e))));
       byId("importReviewCloseBtn").addEventListener("click", ()=>closeImportReviewModal());
       byId("importReviewCancelBtn").addEventListener("click", ()=>closeImportReviewModal());
       byId("importReviewApplyBtn").addEventListener("click", async ()=>{
@@ -8396,10 +8291,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
       byId("alarmToggle").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { enabled: !!byId("alarmToggle").checked } }).catch((e)=>setError(e?.message || String(e))));
       byId("alarm5h").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { h5_warn_pct: Math.max(0, Math.min(100, parseInt(byId("alarm5h").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
       byId("alarmWeekly").addEventListener("change", ()=> saveUiConfigPatch({ notifications: { thresholds: { weekly_warn_pct: Math.max(0, Math.min(100, parseInt(byId("alarmWeekly").value || "20", 10))) } } }).catch((e)=>setError(e?.message || String(e))));
-      byId("chooseAlarmBtn").addEventListener("click", ()=>openAlarmPresetModal());
       byId("testAlarmBtn").addEventListener("click", async ()=>{
         try{
-          await previewAlarmPreset(getSelectedAlarmPresetId(), { message: `Testing ${getSelectedAlarmPresetLabel()}. This preview uses the current warning alarm.` });
+          await runNativeNotificationTest();
         } catch(e){
           setError(e?.message || String(e));
         }
@@ -8415,8 +8309,28 @@ def render_ui_html(default_interval: float, token: str) -> str:
           pendingAutoSwitchEnabled = null;
         }
       });
-      byId("asRunSwitchBtn").addEventListener("click", ()=> runAction("auto_switch.run_switch", ()=>postApi("/api/auto-switch/run-switch", {})));
-      byId("asRapidTestBtn").addEventListener("click", ()=> runAction("auto_switch.rapid_test", ()=>postApi("/api/auto-switch/rapid-test", {})));
+      byId("asRunSwitchBtn").addEventListener("click", async ()=>{
+        if(autoSwitchRunActionInFlight) return;
+        autoSwitchRunActionInFlight = true;
+        renderAutoSwitchActionButtons();
+        try{
+          await runAction("auto_switch.run_switch", ()=>postApi("/api/auto-switch/run-switch", {}));
+        } finally {
+          autoSwitchRunActionInFlight = false;
+          renderAutoSwitchActionButtons();
+        }
+      });
+      byId("asRapidTestBtn").addEventListener("click", async ()=>{
+        if(autoSwitchRapidActionInFlight) return;
+        autoSwitchRapidActionInFlight = true;
+        renderAutoSwitchActionButtons();
+        try{
+          await runAction("auto_switch.rapid_test", ()=>postApi("/api/auto-switch/rapid-test", {}));
+        } finally {
+          autoSwitchRapidActionInFlight = false;
+          renderAutoSwitchActionButtons();
+        }
+      });
       byId("asForceStopBtn").addEventListener("click", ()=> runAction("auto_switch.stop_tests", ()=>postApi("/api/auto-switch/stop-tests", {})));
       byId("asTestAutoSwitchBtn").addEventListener("click", async ()=>{
         const ask = await openModal({
@@ -8669,7 +8583,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
       byId("modalBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("modalBackdrop")) closeModal({ ok:false }); });
       byId("appUpdateBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("appUpdateBackdrop")) closeUpdateModal(); });
       byId("addDeviceBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("addDeviceBackdrop")) closeAddDeviceModal(); });
-      byId("alarmPresetBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("alarmPresetBackdrop")) closeAlarmPresetModal(); });
       byId("exportProfilesBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("exportProfilesBackdrop")) closeExportProfilesModal(); });
       byId("rowActionsBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("rowActionsBackdrop")) closeRowActionsModal(); });
       byId("chainEditBackdrop").addEventListener("click", (e)=>{ if(e.target === byId("chainEditBackdrop")) closeChainEditModal(); });
@@ -8685,12 +8598,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
         if(importReviewBackdrop && importReviewBackdrop.style.display === "flex" && e.key === "Escape"){
           e.preventDefault();
           closeImportReviewModal();
-          return;
-        }
-        const alarmPresetBackdrop = byId("alarmPresetBackdrop", false);
-        if(alarmPresetBackdrop && alarmPresetBackdrop.style.display === "flex" && e.key === "Escape"){
-          e.preventDefault();
-          closeAlarmPresetModal();
           return;
         }
         const exportProfilesBackdrop = byId("exportProfilesBackdrop", false);
@@ -8751,6 +8658,7 @@ def render_ui_html(default_interval: float, token: str) -> str:
       await loadAppUpdateStatus(false);
       resetTimer();
       resetRemainTicker();
+      resetAutoSwitchStateTimer();
       eventsTimer = setInterval(async ()=>{
         const eventsPayload = await safeGet("/api/events?since_id="+encodeURIComponent(String(lastEventId)));
         if(eventsPayload.__error) return;
@@ -8761,6 +8669,9 @@ def render_ui_html(default_interval: float, token: str) -> str:
             lastEventId = Math.max(lastEventId, Number(ev.id || 0));
             latestData.events.push(ev);
             pushOverlayLog("event", `${ev.type || "event"}: ${ev.message || ""}`, ev.details || null);
+            if(ev.type === "switch"){
+              await animateSwitchFromEvent(ev);
+            }
           }
           renderEvents(latestData.events);
         }
@@ -8784,7 +8695,6 @@ def render_ui_html(default_interval: float, token: str) -> str:
     html = html.replace("__INTERVAL_INT__", str(int(default_interval)))
     html = html.replace("__UI_VERSION__", APP_VERSION)
     html = html.replace("__UI_VERSION_JSON__", version_json)
-    html = html.replace("__ALARM_PRESETS_JSON__", alarm_presets_json)
     return html
 
 
@@ -9216,6 +9126,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
         "last_event_obj": None,
         "pending_warning": None,
         "pending_switch_due_at": None,
+        "pending_switch_notice_sent_for_due_at": None,
         "last_switch_ts": None,
         "last_eval_ts": None,
         "last_eval_ok": None,
@@ -9461,32 +9372,20 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 runtime["switch_target"] = ""
 
     def auto_switch_state_payload(cfg: dict):
-        now = time.time()
-        cooldown_cfg = int((cfg.get("auto_switch") or {}).get("cooldown_sec", 60))
-        cooldown_sec = max(AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC, cooldown_cfg)
-        last_sw = runtime.get("last_switch_ts")
-        cooldown_until = (last_sw + cooldown_sec) if last_sw else None
-        return {
-            "active": bool(runtime.get("active", False)),
-            "last_evaluated_at": runtime.get("last_eval_ts"),
-            "last_evaluated_at_text": epoch_to_text(runtime.get("last_eval_ts")),
-            "pending_warning": runtime.get("pending_warning"),
-            "pending_switch_due_at": runtime.get("pending_switch_due_at"),
-            "pending_switch_due_at_text": epoch_to_text(runtime.get("pending_switch_due_at")),
-            "cooldown_until": cooldown_until,
-            "cooldown_until_text": epoch_to_text(cooldown_until),
-            "cooldown_remaining_sec": max(0, int(cooldown_until - now)) if cooldown_until else 0,
-            "last_switch_at": runtime.get("last_switch_ts"),
-            "last_switch_at_text": epoch_to_text(runtime.get("last_switch_ts")),
-            "events_count": len(runtime["events"]),
-            "config_enabled": bool(((cfg.get("auto_switch") or {}).get("enabled"))),
-            "rapid_test_active": bool(runtime.get("rapid_test_active", False)),
-            "rapid_test_started_at": runtime.get("rapid_test_started_at"),
-            "rapid_test_started_at_text": epoch_to_text(runtime.get("rapid_test_started_at")),
-            "rapid_test_wait_sec": runtime.get("rapid_test_wait_sec"),
-            "rapid_test_step": int(runtime.get("rapid_test_step") or 0),
-            "test_run_active": bool(runtime.get("test_run_active", False)),
-        }
+        return build_auto_switch_state_payload(runtime, cfg)
+
+    def send_native_usage_notice(usage_payload: dict, message_prefix: str):
+        if not bool(((load_cam_config().get("notifications") or {}).get("enabled", False))):
+            return None
+        try:
+            return native_notifications.send_native_usage_notification(
+                usage_payload=usage_payload,
+                base_url=_native_notification_test_base_url(default_host, port),
+                message_prefix=message_prefix,
+            )
+        except Exception as e:
+            log_runtime("warn", "native notification failed", {"error": str(e), "message_prefix": message_prefix})
+            return None
 
     def _run_rapid_test():
         runtime["rapid_test_active"] = True
@@ -9528,10 +9427,20 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     "created_at": time.time(),
                 }
                 runtime["pending_switch_due_at"] = time.time() + wait_sec
+                runtime["pending_switch_notice_sent_for_due_at"] = None
                 push_event("rapid-test", f"step {step}: switching '{current_name}' -> '{target}' in {wait_sec}s", {"step": step, "current": current_name, "target": target})
                 while not runtime["rapid_test_stop"].is_set():
                     due = float(runtime.get("pending_switch_due_at") or 0.0)
-                    if due <= 0.0 or time.time() >= due:
+                    now_tick = time.time()
+                    if runtime.get("pending_switch_notice_sent_for_due_at") != due:
+                        notice_at = due - 30.0
+                        if now_tick >= notice_at:
+                            runtime["pending_switch_notice_sent_for_due_at"] = due
+                            send_native_usage_notice(
+                                usage_payload,
+                                "Auto switch starts in about 30 seconds",
+                            )
+                    if due <= 0.0 or now_tick >= due:
                         break
                     if runtime["stop_event"].wait(0.25):
                         runtime["rapid_test_stop"].set()
@@ -9553,6 +9462,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     break
                 runtime["pending_warning"] = None
                 runtime["pending_switch_due_at"] = None
+                runtime["pending_switch_notice_sent_for_due_at"] = None
         except Exception as e:
             push_event("error", f"rapid-test exception: {e}")
         finally:
@@ -9562,6 +9472,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             runtime["rapid_test_wait_sec"] = None
             runtime["pending_warning"] = None
             runtime["pending_switch_due_at"] = None
+            runtime["pending_switch_notice_sent_for_due_at"] = None
             runtime["rapid_test_stop"].clear()
 
     def auto_switch_tick():
@@ -9600,6 +9511,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                         push_event("cancel", "auto-switch warning canceled (threshold recovered)", {"current": current_name})
                     runtime["pending_warning"] = None
                     runtime["pending_switch_due_at"] = None
+                    runtime["pending_switch_notice_sent_for_due_at"] = None
                     runtime["last_eval_ok"] = True
                     runtime["stop_event"].wait(5.0)
                     continue
@@ -9610,11 +9522,24 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 if runtime["pending_warning"] is None:
                     runtime["pending_warning"] = {"current": current_name, "detail": detail, "created_at": now}
                     runtime["pending_switch_due_at"] = now + delay_sec
+                    runtime["pending_switch_notice_sent_for_due_at"] = None
                     push_event("warning", f"usage threshold reached for '{current_name}'", detail)
+                    send_native_usage_notice(
+                        usage_payload,
+                        "Usage warning",
+                    )
                     runtime["last_eval_ok"] = True
                     runtime["stop_event"].wait(1.0)
                     continue
                 due = runtime.get("pending_switch_due_at") or now
+                if runtime.get("pending_switch_notice_sent_for_due_at") != due:
+                    notice_at = due - 30.0
+                    if now >= notice_at:
+                        runtime["pending_switch_notice_sent_for_due_at"] = due
+                        send_native_usage_notice(
+                            usage_payload,
+                            "Auto switch starts in about 30 seconds",
+                        )
                 if now < due:
                     runtime["last_eval_ok"] = True
                     runtime["stop_event"].wait(1.0)
@@ -9628,6 +9553,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     push_event("error", "auto-switch: no target found in switch chain", {"current": current_name})
                     runtime["pending_warning"] = None
                     runtime["pending_switch_due_at"] = None
+                    runtime["pending_switch_notice_sent_for_due_at"] = None
                     runtime["last_eval_ok"] = False
                     runtime["stop_event"].wait(3.0)
                     continue
@@ -9644,6 +9570,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     push_event("error", f"auto-switch failed for '{candidate.get('name')}'", {"target": candidate.get("name"), "stdout": out.strip(), "stderr": err.strip()})
                 runtime["pending_warning"] = None
                 runtime["pending_switch_due_at"] = None
+                runtime["pending_switch_notice_sent_for_due_at"] = None
                 runtime["last_eval_ok"] = (rc == 0)
             except Exception as e:
                 runtime["last_eval_ok"] = False
@@ -9976,6 +9903,14 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 delay_sec = int_value(body.get("delay_sec"), 5, minimum=0)
                 ev = push_event("notify-test", f"test notification requested (delay {delay_sec}s)", {"delay_sec": delay_sec})
                 return _json_ok({"event": ev})
+            if self.command == "POST" and path == "/api/notifications/native-test":
+                try:
+                    payload = run_native_notification_test(host=default_host, port=port, timeout_sec=7)
+                except RuntimeError as e:
+                    return _json_error("NATIVE_NOTIFICATION_FAILED", str(e), 400)
+                except Exception as e:
+                    return _json_error("NATIVE_NOTIFICATION_FAILED", str(e), 500)
+                return _json_ok(payload)
             if self.command == "POST" and path == "/api/auto-switch/enable":
                 enabled = bool_value(body.get("enabled"), False)
                 cfg = config_service.patch({"auto_switch": {"enabled": enabled}})

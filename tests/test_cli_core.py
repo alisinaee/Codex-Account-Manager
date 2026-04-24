@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from codex_account_manager import cli
+from codex_account_manager import cli, native_notifications
 
 
 class CliCoreTests(unittest.TestCase):
@@ -44,6 +44,159 @@ class CliCoreTests(unittest.TestCase):
         cli.IMPORT_ANALYSES.update(self._orig["IMPORT_ANALYSES"])
         self.tmp.cleanup()
 
+    def test_build_native_notification_payload_uses_current_profile_usage(self):
+        usage_payload = {
+            "current_profile": "noob",
+            "profiles": [
+                {
+                    "name": "noob",
+                    "is_current": True,
+                    "usage_5h": {"remaining_percent": 49.0},
+                    "usage_weekly": {"remaining_percent": 88.0},
+                }
+            ],
+        }
+
+        payload = native_notifications.build_native_notification_payload(usage_payload)
+
+        self.assertEqual(payload["profile_name"], "noob")
+        self.assertEqual(payload["title"], "Codex Account Manager")
+        self.assertEqual(payload["subtitle"], "Profile noob")
+        self.assertEqual(payload["message"], "5H 49% left • Weekly 88% left")
+
+    def test_send_native_test_notification_returns_error_when_current_profile_missing(self):
+        usage_payload = {"current_profile": None, "profiles": []}
+
+        with self.assertRaises(RuntimeError) as ctx:
+            native_notifications.send_native_test_notification(
+                usage_payload=usage_payload,
+                base_url="http://127.0.0.1:4673/",
+                platform_name="darwin",
+            )
+
+        self.assertIn("current profile", str(ctx.exception).lower())
+
+    @mock.patch("codex_account_manager.native_notifications.subprocess.run")
+    @mock.patch("codex_account_manager.native_notifications._prepare_macos_notification_icon")
+    @mock.patch("codex_account_manager.native_notifications.shutil.which")
+    def test_send_native_test_notification_dispatches_terminal_notifier_on_macos(
+        self,
+        mock_which,
+        mock_prepare_icon,
+        mock_run,
+    ):
+        usage_payload = {
+            "current_profile": "noob",
+            "profiles": [
+                {
+                    "name": "noob",
+                    "is_current": True,
+                    "usage_5h": {"remaining_percent": 49.0},
+                    "usage_weekly": {"remaining_percent": 88.0},
+                }
+            ],
+        }
+        mock_which.return_value = "/opt/homebrew/bin/terminal-notifier"
+        mock_prepare_icon.return_value = "file:///tmp/cam-icon.png"
+        mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+
+        result = native_notifications.send_native_test_notification(
+            usage_payload=usage_payload,
+            base_url="http://127.0.0.1:4673/",
+            platform_name="darwin",
+        )
+
+        self.assertTrue(result["ok"])
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[0], "/opt/homebrew/bin/terminal-notifier")
+        self.assertIn("Codex Account Manager", cmd)
+        self.assertIn("Profile noob", cmd)
+        self.assertIn("5H 49% left • Weekly 88% left", cmd)
+        self.assertIn("-open", cmd)
+        self.assertNotIn("-execute", cmd)
+        self.assertIn("http://127.0.0.1:4673/", cmd)
+        self.assertIn("file:///tmp/cam-icon.png", cmd)
+
+    @mock.patch("codex_account_manager.native_notifications.subprocess.run")
+    @mock.patch("codex_account_manager.native_notifications._prepare_macos_notification_icon")
+    @mock.patch("codex_account_manager.native_notifications.shutil.which")
+    def test_send_native_switch_notification_uses_lead_message(
+        self,
+        mock_which,
+        mock_prepare_icon,
+        mock_run,
+    ):
+        usage_payload = {
+            "current_profile": "noob",
+            "profiles": [
+                {
+                    "name": "noob",
+                    "is_current": True,
+                    "usage_5h": {"remaining_percent": 49.0},
+                    "usage_weekly": {"remaining_percent": 88.0},
+                }
+            ],
+        }
+        mock_which.return_value = "/opt/homebrew/bin/terminal-notifier"
+        mock_prepare_icon.return_value = "file:///tmp/cam-icon.png"
+        mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+
+        result = native_notifications.send_native_switch_notification(
+            usage_payload=usage_payload,
+            base_url="http://127.0.0.1:4673/",
+            seconds_until_switch=30,
+            platform_name="darwin",
+        )
+
+        self.assertTrue(result["ok"])
+        cmd = mock_run.call_args.args[0]
+        self.assertIn("Auto switch starts in 30 seconds • 5H 49% left • Weekly 88% left", cmd)
+
+    def test_send_native_test_notification_rejects_unsupported_platform(self):
+        usage_payload = {
+            "current_profile": "noob",
+            "profiles": [
+                {
+                    "name": "noob",
+                    "is_current": True,
+                    "usage_5h": {"remaining_percent": 49.0},
+                    "usage_weekly": {"remaining_percent": 88.0},
+                }
+            ],
+        }
+
+        with self.assertRaises(RuntimeError) as ctx:
+            native_notifications.send_native_test_notification(
+                usage_payload=usage_payload,
+                base_url="http://127.0.0.1:4673/",
+                platform_name="linux",
+            )
+
+        self.assertIn("not implemented yet on this os", str(ctx.exception).lower())
+
+    @mock.patch("codex_account_manager.native_notifications.shutil.which", return_value=None)
+    def test_send_native_test_notification_reports_missing_terminal_notifier(self, mock_which):
+        usage_payload = {
+            "current_profile": "noob",
+            "profiles": [
+                {
+                    "name": "noob",
+                    "is_current": True,
+                    "usage_5h": {"remaining_percent": 49.0},
+                    "usage_weekly": {"remaining_percent": 88.0},
+                }
+            ],
+        }
+
+        with self.assertRaises(RuntimeError) as ctx:
+            native_notifications.send_native_test_notification(
+                usage_payload=usage_payload,
+                base_url="http://127.0.0.1:4673/",
+                platform_name="darwin",
+            )
+
+        self.assertIn("terminal-notifier", str(ctx.exception))
+
     def test_log_redaction_applies_to_message_and_details(self):
         cli.cam_log(
             "info",
@@ -75,17 +228,10 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(cli._error_type_for_code("COMMAND_FAILED", 400), "transient")
         self.assertEqual(cli._error_type_for_code("INTERNAL", 500), "internal")
 
-    def test_notification_alarm_preset_defaults_when_missing(self):
-        cfg = cli.sanitize_cam_config({"notifications": {"enabled": True}})
-        self.assertEqual(cfg["notifications"]["alarm_preset"], cli.DEFAULT_ALARM_PRESET_ID)
-
-    def test_notification_alarm_preset_rejects_unknown_values(self):
-        cfg = cli.sanitize_cam_config({"notifications": {"alarm_preset": "nope"}})
-        self.assertEqual(cfg["notifications"]["alarm_preset"], cli.DEFAULT_ALARM_PRESET_ID)
-
-    def test_notification_alarm_preset_keeps_known_value(self):
-        cfg = cli.sanitize_cam_config({"notifications": {"alarm_preset": "zenith"}})
-        self.assertEqual(cfg["notifications"]["alarm_preset"], "zenith")
+    def test_notification_thresholds_are_sanitized(self):
+        cfg = cli.sanitize_cam_config({"notifications": {"thresholds": {"h5_warn_pct": 120, "weekly_warn_pct": -10}}})
+        self.assertEqual(cfg["notifications"]["thresholds"]["h5_warn_pct"], 100)
+        self.assertEqual(cfg["notifications"]["thresholds"]["weekly_warn_pct"], 0)
 
     def test_local_release_notes_parser_handles_unreleased_and_versions(self):
         fallback = Path(self.tmp.name) / "release-notes.md"
@@ -195,6 +341,80 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn('id="appUpdateProgressNote"', html)
         self.assertIn("/api/app-update-status", html)
         self.assertIn("/api/system/update", html)
+
+    def test_render_ui_html_contains_native_notification_test_controls(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token")
+
+        self.assertIn(">Notification<", html)
+        self.assertIn('id="testAlarmBtn"', html)
+        self.assertIn("/api/notifications/native-test", html)
+        self.assertIn("runNativeNotificationTest", html)
+        self.assertNotIn('id="nativeNotifTestBtn"', html)
+        self.assertNotIn("Choose Alarm", html)
+        self.assertNotIn("Selected Alarm", html)
+
+    def test_render_ui_html_uses_equal_width_settings_cards(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token")
+
+        self.assertIn(".controls-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}", html)
+        self.assertNotIn("grid-template-columns:1.2fr 1fr", html)
+
+    def test_render_ui_html_offsets_alarm_two_seconds_before_notification(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token")
+
+        self.assertIn("Math.max(0, delayMs - 2000)", html)
+        self.assertIn('showInAppNotice("Codex Account Manager", ev.message || "Usage warning"', html)
+
+    def test_render_ui_html_marks_run_switch_primary_and_auto_action_progress_hooks(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token")
+        self.assertIn('id="asRunSwitchBtn" class="btn btn-block settings-footer-btn btn-primary"', html)
+        self.assertIn("function renderAutoSwitchActionButtons(autoStateOverride=null)", html)
+        self.assertIn("async function refreshAutoSwitchState()", html)
+        self.assertIn('safeGet("/api/auto-switch/state", { timeoutMs: 2500 })', html)
+        self.assertIn("resetAutoSwitchStateTimer();", html)
+        self.assertIn("animation:autoSwitchArmedPulse 1.35s ease-in-out infinite", html)
+        self.assertIn('runBtn.classList.toggle("btn-progress", activeRun);', html)
+        self.assertIn('rapidBtn.classList.toggle("btn-progress", activeRapid);', html)
+        self.assertIn("const switchFromRect = (!suppressCurrentProfileAutoAnimation", html)
+        self.assertIn("getRowRectByName(nextCurrentProfile)", html)
+        self.assertIn("animateSwitchRowToTop(nextCurrentProfile, switchFromRect).catch(() => {});", html)
+
+    def test_render_ui_html_reserves_fixed_width_for_loading_table_columns(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token")
+        self.assertIn('table{width:100%;min-width:100%;border-collapse:separate;border-spacing:0 8px;padding:0 0 10px}', html)
+        self.assertIn('.usage-pct{display:inline-block;min-width:72px}', html)
+        self.assertIn('.usage-cell-loading .usage-pct{min-width:72px}', html)
+
+    def test_render_ui_html_guide_mentions_supported_clients_and_manual_reload_caveat(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token")
+        self.assertIn("Current client support targets the <b>Codex CLI</b> and the <b>Codex VS Code extension</b>.", html)
+        self.assertIn("manual reload or restart after switching", html)
+
+    def test_build_auto_switch_state_payload_exposes_switch_runtime(self):
+        runtime = {
+            "events": [{"id": 1}],
+            "active": True,
+            "last_eval_ts": 120.0,
+            "pending_warning": {"reason": "threshold"},
+            "pending_switch_due_at": 160.0,
+            "last_switch_ts": 100.0,
+            "rapid_test_active": True,
+            "rapid_test_started_at": 110.0,
+            "rapid_test_wait_sec": 7,
+            "rapid_test_step": 2,
+            "test_run_active": False,
+            "switch_in_flight": True,
+            "switch_target": "work",
+            "switch_started_at": 150.0,
+        }
+        cfg = {"auto_switch": {"enabled": True, "cooldown_sec": 60, "delay_sec": 45}}
+        payload = cli.build_auto_switch_state_payload(runtime, cfg, now=155.0)
+        self.assertTrue(payload["switch_in_flight"])
+        self.assertEqual(payload["switch_target"], "work")
+        self.assertEqual(payload["switch_started_at"], 150.0)
+        self.assertEqual(payload["events_count"], 1)
+        self.assertEqual(payload["cooldown_remaining_sec"], 5)
+        self.assertEqual(payload["config_delay_sec"], 45)
 
     def test_trigger_breached_hits_when_remaining_equals_threshold(self):
         cfg = {
