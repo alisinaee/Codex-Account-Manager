@@ -64,6 +64,66 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(payload["subtitle"], "Profile noob")
         self.assertEqual(payload["message"], "5H 49% left • Weekly 88% left")
 
+    def test_electron_app_dir_resolves_repo_electron_folder(self):
+        self.assertEqual(cli.electron_app_dir().name, "electron")
+        self.assertTrue((cli.electron_app_dir() / "package.json").exists())
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_runs_npm_install_then_dev_when_deps_missing(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = self.tmp.name and Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+
+        rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "install", "--foreground-scripts", "--progress=true", "--loglevel=info"])
+        self.assertEqual(mock_run.call_args_list[0].kwargs["cwd"], str(electron_dir))
+        self.assertEqual(mock_run.call_args_list[1].args[0], ["npm", "run", "dev"])
+        self.assertEqual(mock_run.call_args_list[1].kwargs["cwd"], str(electron_dir))
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_no_install_reports_missing_runtime_deps(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+
+        rc = cli.cmd_electron(electron_dir=electron_dir, no_install=True)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(mock_run.call_args_list, [])
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_installs_when_renderer_deps_are_missing(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+        (electron_dir / "node_modules" / "electron").mkdir(parents=True)
+
+        rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "install", "--foreground-scripts", "--progress=true", "--loglevel=info"])
+        self.assertEqual(mock_run.call_args_list[1].args[0], ["npm", "run", "dev"])
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_runs_install_check_even_when_runtime_deps_exist(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+        for dep in ("electron", "vite", "react", "react-dom"):
+            (electron_dir / "node_modules" / dep).mkdir(parents=True)
+
+        rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "install", "--foreground-scripts", "--progress=true", "--loglevel=info"])
+        self.assertEqual(mock_run.call_args_list[1].args[0], ["npm", "run", "dev"])
+
     def test_send_native_test_notification_returns_error_when_current_profile_missing(self):
         usage_payload = {"current_profile": None, "profiles": []}
 
@@ -330,7 +390,7 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(status["latest_version"], f"v{cli.APP_VERSION}")
 
     def test_render_ui_html_contains_update_controls(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
         self.assertIn('id="appUpdateBadge"', html)
         self.assertIn('id="appUpdateBtn"', html)
         self.assertIn('id="appUpdateBackdrop"', html)
@@ -343,7 +403,7 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn("/api/system/update", html)
 
     def test_render_ui_html_contains_native_notification_test_controls(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
 
         self.assertIn(">Notification<", html)
         self.assertIn('id="testAlarmBtn"', html)
@@ -354,19 +414,19 @@ class CliCoreTests(unittest.TestCase):
         self.assertNotIn("Selected Alarm", html)
 
     def test_render_ui_html_uses_equal_width_settings_cards(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
 
         self.assertIn(".controls-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}", html)
         self.assertNotIn("grid-template-columns:1.2fr 1fr", html)
 
     def test_render_ui_html_offsets_alarm_two_seconds_before_notification(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
 
         self.assertIn("Math.max(0, delayMs - 2000)", html)
         self.assertIn('showInAppNotice("Codex Account Manager", ev.message || "Usage warning"', html)
 
     def test_render_ui_html_marks_run_switch_primary_and_auto_action_progress_hooks(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
         self.assertIn('id="asRunSwitchBtn" class="btn btn-block settings-footer-btn btn-primary"', html)
         self.assertIn("function renderAutoSwitchActionButtons(autoStateOverride=null)", html)
         self.assertIn("async function refreshAutoSwitchState()", html)
@@ -380,13 +440,13 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn("animateSwitchRowToTop(nextCurrentProfile, switchFromRect).catch(() => {});", html)
 
     def test_render_ui_html_reserves_fixed_width_for_loading_table_columns(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
         self.assertIn('table{width:100%;min-width:100%;border-collapse:separate;border-spacing:0 8px;padding:0 0 10px}', html)
         self.assertIn('.usage-pct{display:inline-block;min-width:72px}', html)
         self.assertIn('.usage-cell-loading .usage-pct{min-width:72px}', html)
 
     def test_render_ui_html_guide_mentions_supported_clients_and_manual_reload_caveat(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
         self.assertIn("Current client support targets the <b>Codex CLI</b> and the <b>Codex VS Code extension</b>.", html)
         self.assertIn("manual reload or restart after switching", html)
 
