@@ -25,7 +25,7 @@ codex-account --help
 
 ## Electron Desktop Shell
 
-The Electron app is optional and currently targets development use. It keeps the Python backend and stable browser web panel intact, starts or connects to `codex-account ui-service`, and renders a separate React/Vite desktop UI with tray/status and Electron notification behavior.
+The Electron app is optional. It keeps the Python backend and stable browser web panel intact, starts or connects to `codex-account ui-service`, and renders a separate React/Vite desktop UI with tray/status and Electron notification behavior.
 
 From repository root:
 
@@ -47,9 +47,11 @@ Electron test commands:
 cd electron
 npm test
 npm run test:e2e
+npm run smoke:prod
+npm run dist:dir
 ```
 
-The Electron shell assumes `codex-account` is available in `PATH`. It does not bundle Python or produce platform installers yet. If the renderer dependencies are missing, `codex-account electron` runs `npm install` before starting the desktop shell.
+The development shell still assumes `codex-account` is available in `PATH`. The packaged shell now checks runtime health through `codex-account doctor --json`, starts or reconnects to `codex-account ui-service`, and shows a setup/bootstrap screen when Python or the Python core is missing. If the renderer dependencies are missing, `codex-account electron` runs `npm install` before starting the dev shell.
 
 The development shell uses project-owned PNG/ICNS/SVG assets for the window, tray, notification, Dock icon API, and package metadata. macOS can still display `Electron` in the Dock when running the raw Electron development binary because the visible Dock name comes from the launched Electron app bundle. A packaged `.app` is required for the final launcher name and icon.
 
@@ -58,7 +60,7 @@ The development shell uses project-owned PNG/ICNS/SVG assets for the window, tra
 Packaging is defined in `pyproject.toml` using `setuptools`:
 
 - Package name: `codex-account-manager`
-- Version: `0.0.8`
+- Version: `0.0.12`
 - Console script: `codex-account`
 - Supported Python: `>=3.11`
 
@@ -111,6 +113,7 @@ For Electron changes, also run:
 cd electron
 npm test
 npm run test:e2e
+npm run smoke:prod
 ```
 
 ## Refactor Candidates

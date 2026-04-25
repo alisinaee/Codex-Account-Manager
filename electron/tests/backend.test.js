@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   buildServiceCommand,
+  buildServiceRuntimeContract,
   getDefaultBackendState,
   normalizeServiceStatus,
 } = require("../src/backend");
@@ -35,6 +36,26 @@ test("normalizeServiceStatus accepts healthy service state", () => {
       host: "127.0.0.1",
       port: 4673,
       baseUrl: "http://127.0.0.1:4673/",
+    },
+  );
+});
+
+test("buildServiceRuntimeContract carries desktop-ready backend details", () => {
+  assert.deepEqual(
+    buildServiceRuntimeContract({
+      running: true,
+      host: "127.0.0.1",
+      port: 4673,
+      baseUrl: "http://127.0.0.1:4673/",
+      token: "session-token",
+    }),
+    {
+      running: true,
+      healthy: true,
+      host: "127.0.0.1",
+      port: 4673,
+      baseUrl: "http://127.0.0.1:4673/",
+      token: "session-token",
     },
   );
 });

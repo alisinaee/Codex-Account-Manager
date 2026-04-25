@@ -32,6 +32,201 @@ test("launches the Electron shell and exposes the desktop preload bridge", async
   await quitApp(app);
 });
 
+test("shows the runtime setup screen when the Python core is missing", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+      CAM_ELECTRON_RUNTIME_FIXTURE: JSON.stringify({
+        phase: "core_missing",
+        python: { available: true, supported: true, version: "3.11.9", path: "/usr/bin/python3" },
+        core: { installed: false, version: "", commandPath: "" },
+        uiService: { running: false, healthy: false, host: "127.0.0.1", port: 4673, baseUrl: "http://127.0.0.1:4673/", token: "" },
+        errors: [{ code: "CORE_MISSING", message: "Codex Account Manager core is not installed." }],
+      }),
+    },
+  });
+
+  const window = await app.firstWindow();
+  await expect(window.getByTestId("runtime-setup-view")).toBeVisible();
+  await expect(window.getByRole("heading", { name: /set up python core/i })).toBeVisible();
+  await expect(window.getByRole("button", { name: /install core/i })).toBeVisible();
+  await expect(window.getByTestId("runtime-details")).toHaveCount(0);
+
+  const pageFitsViewport = await window.evaluate(() => {
+    const node = document.scrollingElement || document.documentElement;
+    return node.scrollHeight <= node.clientHeight;
+  });
+  expect(pageFitsViewport).toBe(true);
+
+  await quitApp(app);
+});
+
+test("runtime setup view supports scrolling through long bootstrap errors", async () => {
+  const verboseErrors = Array.from({ length: 28 }, (_, index) => ({
+    code: `CORE_INSTALL_FAILED_${index + 1}`,
+    message: `error line ${index + 1}: externally managed environment blocked bootstrap install`,
+  }));
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+      CAM_ELECTRON_RUNTIME_FIXTURE: JSON.stringify({
+        phase: "error",
+        reason: "core_install_failed",
+        message: "Codex Account Manager core install failed.",
+        python: { available: true, supported: true, version: "3.14.4", path: "/opt/homebrew/bin/python3" },
+        core: { installed: false, version: "", commandPath: "" },
+        uiService: { running: false, healthy: false, host: "127.0.0.1", port: 4673, baseUrl: "http://127.0.0.1:4673/", token: "" },
+        errors: verboseErrors,
+      }),
+    },
+  });
+
+  const window = await app.firstWindow();
+  await window.setViewportSize({ width: 820, height: 720 });
+  await window.getByTestId("runtime-details-toggle").click();
+  const scroller = window.getByTestId("runtime-details-body");
+  await expect(scroller).toBeVisible();
+  const canScroll = await window.getByTestId("runtime-setup-view").evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    return node.scrollTop > 0;
+  });
+  expect(canScroll).toBe(true);
+  await expect(window.getByRole("button", { name: /Install Core/i })).toBeVisible();
+
+  await quitApp(app);
+});
+
+test("runtime setup view uses the available width on wide windows when details are open", async () => {
+  const verboseErrors = Array.from({ length: 28 }, (_, index) => ({
+    code: `CORE_INSTALL_FAILED_${index + 1}`,
+    message: `error line ${index + 1}: externally managed environment blocked bootstrap install`,
+  }));
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+      CAM_ELECTRON_RUNTIME_FIXTURE: JSON.stringify({
+        phase: "error",
+        reason: "core_install_failed",
+        message: "Codex Account Manager core install failed.",
+        python: { available: true, supported: true, version: "3.14.4", path: "/opt/homebrew/bin/python3" },
+        core: { installed: false, version: "", commandPath: "" },
+        uiService: { running: false, healthy: false, host: "127.0.0.1", port: 4673, baseUrl: "http://127.0.0.1:4673/", token: "" },
+        errors: verboseErrors,
+      }),
+    },
+  });
+
+  const window = await app.firstWindow();
+  await window.setViewportSize({ width: 1560, height: 940 });
+  await window.getByTestId("runtime-details-toggle").click();
+  await expect(window.getByTestId("runtime-progress-bar")).toBeVisible();
+  await expect(window.getByTestId("runtime-progress-label")).toContainText("%");
+
+  const layout = await window.getByTestId("runtime-card").evaluate((node) => {
+    const bounds = node.getBoundingClientRect();
+    return {
+      width: bounds.width,
+      height: bounds.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    };
+  });
+
+  expect(layout.width).toBeGreaterThan(layout.viewportWidth * 0.8);
+  expect(layout.height).toBeGreaterThan(layout.viewportHeight * 0.7);
+
+  const pageCanScroll = await window.getByTestId("runtime-setup-view").evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    return node.scrollTop > 0;
+  });
+  expect(pageCanScroll).toBe(false);
+
+  const logPanelCanScroll = await window.getByTestId("runtime-details-body").evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    return node.scrollTop > 0;
+  });
+  expect(logPanelCanScroll).toBe(true);
+
+  const footerPinned = await window.getByTestId("runtime-card").evaluate((node) => {
+    const footer = node.querySelector(".runtime-footer");
+    if (!footer) return false;
+    const cardBounds = node.getBoundingClientRect();
+    const footerBounds = footer.getBoundingClientRect();
+    return cardBounds.bottom - footerBounds.bottom < 48;
+  });
+  expect(footerPinned).toBe(true);
+
+  await quitApp(app);
+});
+
+test("runtime setup view collapses cleanly on narrow windows", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+      CAM_ELECTRON_RUNTIME_FIXTURE: JSON.stringify({
+        phase: "core_missing",
+        python: { available: true, supported: true, version: "3.14.4", path: "/opt/homebrew/bin/python3" },
+        core: { installed: false, version: "", commandPath: "" },
+        uiService: { running: false, healthy: false, host: "127.0.0.1", port: 4673, baseUrl: "http://127.0.0.1:4673/", token: "" },
+        errors: [{ code: "CORE_MISSING", message: "Codex Account Manager core is not installed." }],
+      }),
+    },
+  });
+
+  const window = await app.firstWindow();
+  await window.setViewportSize({ width: 420, height: 900 });
+  await expect(window.getByTestId("runtime-setup-view")).toBeVisible();
+  await expect(window.getByRole("button", { name: /install core/i })).toBeVisible();
+
+  const pageFitsViewport = await window.evaluate(() => {
+    const node = document.scrollingElement || document.documentElement;
+    return node.scrollWidth <= node.clientWidth;
+  });
+  expect(pageFitsViewport).toBe(true);
+
+  const actionButtonBox = await window.getByRole("button", { name: /install core/i }).boundingBox();
+  expect(actionButtonBox?.width).toBeGreaterThan(180);
+
+  await quitApp(app);
+});
+
+test("runtime setup view copies diagnostics when backend is unavailable", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+      CAM_ELECTRON_RUNTIME_FIXTURE: JSON.stringify({
+        phase: "core_missing",
+        python: { available: true, supported: true, version: "3.14.4", path: "/opt/homebrew/bin/python3" },
+        core: { installed: false, version: "", commandPath: "" },
+        uiService: { running: false, healthy: false, host: "127.0.0.1", port: 4673, baseUrl: "http://127.0.0.1:4673/", token: "" },
+        errors: [{ code: "CORE_MISSING", message: "Codex Account Manager core is not installed." }],
+      }),
+    },
+  });
+
+  const window = await app.firstWindow();
+  await window.getByTestId("runtime-details-toggle").click();
+  await window.getByRole("button", { name: /copy logs/i }).click();
+  await expect(window.getByRole("status")).toContainText("Copied");
+
+  await quitApp(app);
+});
+
 test("desktop switch bridge keeps the Electron app running", async () => {
   const app = await electron.launch({
     args: ["."],

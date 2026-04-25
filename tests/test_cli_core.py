@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import unittest
@@ -67,6 +68,59 @@ class CliCoreTests(unittest.TestCase):
     def test_electron_app_dir_resolves_repo_electron_folder(self):
         self.assertEqual(cli.electron_app_dir().name, "electron")
         self.assertTrue((cli.electron_app_dir() / "package.json").exists())
+
+    @mock.patch("codex_account_manager.cli.is_ui_healthy", return_value=True)
+    @mock.patch("codex_account_manager.cli.read_ui_pid_info", return_value={"host": "127.0.0.1", "port": 4673, "pid": 4242, "token": "session-token"})
+    @mock.patch("codex_account_manager.cli.detect_core_runtime")
+    @mock.patch("codex_account_manager.cli.detect_python_runtime")
+    def test_build_doctor_report_includes_python_core_and_ui_service_contract(
+        self,
+        mock_python,
+        mock_core,
+        _mock_pid,
+        _mock_healthy,
+    ):
+        mock_python.return_value = {
+            "available": True,
+            "supported": True,
+            "version": "3.11.9",
+            "path": "/usr/bin/python3",
+            "command": "python3",
+        }
+        mock_core.return_value = {
+            "installed": True,
+            "version": "0.0.12",
+            "command_path": "/Users/test/.local/bin/codex-account",
+            "min_supported_version": "0.0.12",
+            "meets_minimum_version": True,
+        }
+
+        report = cli.build_doctor_report()
+
+        self.assertEqual(report["python"]["version"], "3.11.9")
+        self.assertEqual(report["core"]["command_path"], "/Users/test/.local/bin/codex-account")
+        self.assertTrue(report["ui_service"]["running"])
+        self.assertTrue(report["ui_service"]["healthy"])
+        self.assertEqual(report["ui_service"]["token"], "session-token")
+        self.assertEqual(report["errors"], [])
+
+    @mock.patch("codex_account_manager.cli.build_doctor_report")
+    def test_cmd_doctor_prints_json_payload(self, mock_report):
+        mock_report.return_value = {
+            "python": {"available": True, "supported": True, "version": "3.11.9", "path": "/usr/bin/python3"},
+            "core": {"installed": True, "version": "0.0.12", "command_path": "/Users/test/.local/bin/codex-account"},
+            "ui_service": {"running": False, "healthy": False, "host": "127.0.0.1", "port": 4673, "base_url": "http://127.0.0.1:4673/", "token": ""},
+            "errors": [],
+        }
+
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            rc = cli.cmd_doctor(as_json=True)
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["python"]["version"], "3.11.9")
+        self.assertEqual(payload["core"]["version"], "0.0.12")
 
     @mock.patch("codex_account_manager.cli._subprocess_run")
     def test_cmd_electron_runs_npm_install_then_dev_when_deps_missing(self, mock_run):

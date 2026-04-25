@@ -869,6 +869,239 @@ function AboutView({ backendState }) {
   );
 }
 
+function RuntimeSetupView({ runtimeStatus, runtimeProgress, busy, onRetry, onInstallCore, onStartBackend, onOpenExternal, onCopyDiagnostics }) {
+  const phase = runtimeStatus?.phase || "checking_runtime";
+  const pythonInstallUrl = runtimeStatus?.python?.installUrl;
+  const errorMessages = Array.isArray(runtimeStatus?.errors) ? runtimeStatus.errors : [];
+  const progressRows = Array.isArray(runtimeProgress) ? runtimeProgress : [];
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [copyState, setCopyState] = useState("");
+  const heading = phase === "python_missing" ? "Install Python"
+    : phase === "service_starting" ? "Starting local service"
+      : phase === "error" && runtimeStatus?.reason === "core_update_required" ? "Update Python Core"
+        : "Set up Python Core";
+
+  useEffect(() => {
+    if (!copyState) return undefined;
+    const timer = window.setTimeout(() => setCopyState(""), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
+
+  const statusTone = phase === "error"
+    ? "danger"
+    : (phase === "service_starting" || busy || phase === "core_missing" || phase === "python_missing")
+      ? "warning"
+      : "success";
+  const hasPython = Boolean(runtimeStatus?.python?.supported);
+  const hasCore = Boolean(runtimeStatus?.core?.installed);
+  const hasBackend = Boolean(runtimeStatus?.uiService?.running);
+  const activeStep = !hasPython ? 0 : !hasCore ? 1 : !hasBackend ? 2 : 2;
+  const stepRows = [
+    {
+      title: "Python runtime",
+      detail: hasPython
+        ? `Detected ${runtimeStatus?.python?.version || "supported"}`
+        : phase === "python_missing"
+          ? "Install Python 3.11+ first"
+          : "Python version is unsupported",
+      state: hasPython ? "done" : "current",
+    },
+    {
+      title: "Install core",
+      detail: hasCore
+        ? `Core ${runtimeStatus?.core?.version || "detected"}`
+        : busy
+          ? "Installing Codex Account Manager core"
+          : "Install Codex Account Manager core",
+      state: hasCore ? "done" : (hasPython ? "current" : "todo"),
+    },
+    {
+      title: "Start service",
+      detail: hasBackend ? "Local API is reachable" : "Start the local background service",
+      state: hasBackend ? "done" : (hasCore ? "current" : "todo"),
+    },
+  ];
+  const summaryBits = [
+    runtimeStatus?.python?.version ? `Python ${runtimeStatus.python.version}` : "Python missing",
+    hasCore ? `Core ${runtimeStatus?.core?.version || "installed"}` : "Core missing",
+    hasBackend ? "Backend online" : "Backend offline",
+  ];
+  const completedSteps = [hasPython, hasCore, hasBackend].filter(Boolean).length;
+  const progressPercent = hasBackend
+    ? 100
+    : Math.min(
+      99,
+      Math.round(((completedSteps + (busy ? 0.5 : 0)) / stepRows.length) * 100),
+    );
+  const progressTone = phase === "error" ? "danger" : (busy ? "active" : "default");
+  const progressLabel = progressPercent === 100
+    ? "Setup complete"
+    : busy
+      ? `${progressPercent}% complete · installing`
+      : `${progressPercent}% complete`;
+  const infoMessage = phase === "python_missing"
+    ? "Python 3.11 or newer is required before the desktop app can continue."
+    : phase === "core_missing"
+      ? "Install the Python core to unlock the desktop app."
+      : runtimeStatus?.reason === "backend_start_failed"
+        ? "The Python core is installed, but the local background service could not start."
+        : runtimeStatus?.reason === "core_update_required"
+          ? "The detected Python core is too old for this desktop build."
+          : phase === "service_starting"
+            ? "The installer finished. The app is now starting the local service."
+            : "The desktop shell needs the local Python core before the main UI can open.";
+  const primaryAction = phase === "python_missing"
+    ? { label: "Install Python", onClick: () => onOpenExternal(pythonInstallUrl), disabled: !pythonInstallUrl || busy }
+    : phase === "service_starting" || runtimeStatus?.reason === "backend_start_failed"
+      ? { label: "Start Service", onClick: onStartBackend, disabled: busy }
+      : { label: "Install Core", onClick: onInstallCore, disabled: busy };
+  const showRetry = phase === "error" || phase === "core_missing" || phase === "python_missing";
+  const diagnosticsSections = [
+    {
+      label: "Runtime",
+      body: [
+        `Phase: ${phase}`,
+        `Reason: ${runtimeStatus?.reason || "-"}`,
+        `Python: ${runtimeStatus?.python?.path || "not detected"}`,
+        `Core: ${runtimeStatus?.core?.commandPath || "not installed"}`,
+        `Backend: ${runtimeStatus?.uiService?.baseUrl || "http://127.0.0.1:4673/"}`,
+      ],
+    },
+    errorMessages.length ? {
+      label: "Errors",
+      body: errorMessages.map((item) => `${item.code}: ${item.message}`),
+    } : null,
+    {
+      label: "Progress",
+      body: progressRows.length
+        ? progressRows.map((entry) => `${entry.label || entry.type || "Step"}${entry.status ? ` (${entry.status})` : ""}${entry.message ? `: ${entry.message}` : ""}`)
+        : ["No bootstrap output captured yet."],
+    },
+  ].filter(Boolean);
+
+  async function handleCopyDiagnostics() {
+    try {
+      await onCopyDiagnostics();
+      setCopyState("Copied");
+    } catch (error) {
+      setCopyState("Copy failed");
+    }
+  }
+
+  return (
+    <main className="desktop-shell runtime-shell" data-testid="runtime-setup-view">
+      <section className={`runtime-stage ${detailsOpen ? "details-open" : ""}`}>
+        <div className="runtime-card" data-testid="runtime-card">
+          <header className="runtime-card-head">
+            <div className="runtime-card-title">
+              <span className="runtime-kicker">Setup Assistant</span>
+              <h1>{heading}</h1>
+              <p className="runtime-copy">{infoMessage}</p>
+            </div>
+            <div className={`runtime-status-pill ${statusTone}`}>{phase.replaceAll("_", " ")}</div>
+          </header>
+          <div className={`runtime-workspace ${detailsOpen ? "details-open" : ""}`}>
+            <div className="runtime-main-panel">
+              <div className="runtime-summary-row" aria-label="Runtime summary">
+                {summaryBits.map((bit) => <span key={bit}>{bit}</span>)}
+              </div>
+
+              <section className="runtime-stepper" aria-label="Installer steps">
+                {stepRows.map((step, index) => (
+                  <article
+                    key={step.title}
+                    className={`runtime-step-item ${step.state} ${index === activeStep ? "active" : ""}`}
+                  >
+                    <div className="runtime-step-marker" aria-hidden="true">{index + 1}</div>
+                    <div className="runtime-step-body">
+                      <strong>{step.title}</strong>
+                      <p>{step.detail}</p>
+                    </div>
+                  </article>
+                ))}
+              </section>
+
+              <div className="runtime-footer">
+                <section className="runtime-progress" aria-label="Overall setup progress">
+                  <div className="runtime-progress-head">
+                    <strong>Overall progress</strong>
+                    <span data-testid="runtime-progress-label">{progressLabel}</span>
+                  </div>
+                  <div
+                    className={`runtime-progress-bar ${progressTone}`}
+                    data-testid="runtime-progress-bar"
+                    aria-hidden="true"
+                  >
+                    <span style={{ width: `${progressPercent}%` }} />
+                  </div>
+                </section>
+
+                <div className="runtime-action-row">
+                  <button
+                    className={busy ? "btn btn-primary btn-progress" : "btn btn-primary"}
+                    onClick={primaryAction.onClick}
+                    disabled={primaryAction.disabled}
+                  >
+                    {primaryAction.label}
+                  </button>
+                  {showRetry ? <button className="btn" onClick={onRetry} disabled={busy}>Retry</button> : null}
+                </div>
+
+                <div className="runtime-utility-row">
+                  <button
+                    type="button"
+                    className="runtime-text-button"
+                    onClick={() => setDetailsOpen((value) => !value)}
+                    aria-expanded={detailsOpen}
+                    data-testid="runtime-details-toggle"
+                  >
+                    {detailsOpen ? "Hide details" : "Show details"}
+                  </button>
+                  {copyState ? <span className="runtime-copy-state" role="status" aria-live="polite">{copyState}</span> : null}
+                </div>
+              </div>
+            </div>
+
+            {detailsOpen ? (
+              <section className="runtime-details" data-testid="runtime-details">
+                <div className="runtime-details-head">
+                  <strong>Diagnostics</strong>
+                  <button type="button" className="runtime-mini-button" onClick={handleCopyDiagnostics}>Copy logs</button>
+                </div>
+                <div className="runtime-details-body" data-testid="runtime-details-body">
+                  {diagnosticsSections.map((section) => (
+                    <section key={section.label} className="runtime-detail-section">
+                      <h2>{section.label}</h2>
+                      <pre>{section.body.join("\n")}</pre>
+                    </section>
+                  ))}
+                  <div className="runtime-detail-grid">
+                    <div>
+                      <label>Python</label>
+                      <span>{runtimeStatus?.python?.version || "missing"}</span>
+                      <small>{runtimeStatus?.python?.path || "Installer required"}</small>
+                    </div>
+                    <div>
+                      <label>Core</label>
+                      <span>{runtimeStatus?.core?.version || "not installed"}</span>
+                      <small>{runtimeStatus?.core?.commandPath || "Bootstrap required"}</small>
+                    </div>
+                    <div>
+                      <label>Backend</label>
+                      <span>{runtimeStatus?.uiService?.running ? "running" : "offline"}</span>
+                      <small>{runtimeStatus?.uiService?.baseUrl || "http://127.0.0.1:4673/"}</small>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function App() {
   const desktop = window.codexAccountDesktop;
   const [activeView, setActiveView] = useState("profiles");
@@ -885,6 +1118,9 @@ function App() {
   const [columnPrefs, setColumnPrefs] = useState(loadStoredColumns());
   const [sort, setSort] = useState({ key: "profile", dir: "asc" });
   const [modal, setModal] = useState(null);
+  const [runtimeStatus, setRuntimeStatus] = useState({ phase: "checking_runtime", python: {}, core: {}, uiService: {}, errors: [] });
+  const [runtimeProgress, setRuntimeProgress] = useState([]);
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
   const switchControllerRef = useRef(null);
   const fileInputRef = useRef(null);
   const exportSelectionRef = useRef([]);
@@ -910,6 +1146,13 @@ function App() {
     setLoading(true);
     setError("");
     try {
+      const runtime = await desktop.getRuntimeStatus();
+      setRuntimeStatus(runtime);
+      if (runtime?.phase !== "ready") {
+        setState(null);
+        setBackendState(null);
+        return;
+      }
       const [core, backend] = await Promise.all([
         desktop.getState(),
         desktop.getBackendState(),
@@ -938,6 +1181,59 @@ function App() {
 
   async function refreshState() {
     await loadAll();
+  }
+
+  async function retryRuntimeCheck() {
+    setRuntimeBusy(true);
+    setError("");
+    try {
+      const next = await desktop.retryRuntimeCheck();
+      setRuntimeStatus(next);
+      if (next?.phase === "ready") {
+        await loadAll();
+      }
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }
+
+  async function installCore() {
+    setRuntimeBusy(true);
+    setError("");
+    setRuntimeProgress([]);
+    try {
+      const next = await desktop.installPythonCore();
+      setRuntimeStatus(next);
+      if (next?.phase === "ready") {
+        await loadAll();
+      }
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }
+
+  async function startBackendService() {
+    setRuntimeBusy(true);
+    setError("");
+    try {
+      const next = await desktop.startBackendService();
+      setRuntimeStatus(next);
+      if (next?.phase === "ready") {
+        await loadAll();
+      }
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }
+
+  async function copyRuntimeDiagnostics() {
+    return desktop.copyRuntimeDiagnostics();
   }
 
   async function saveUiPatch(patch) {
@@ -1234,9 +1530,20 @@ function App() {
     loadAll();
     const offNavigate = desktop.onNavigate((view) => setActiveView(view === "usage" ? "profiles" : view));
     const offSidebar = desktop.onToggleSidebar(() => setSidebarMode((mode) => (mode === "fixed" ? "minimal" : "fixed")));
+    const offRuntime = desktop.onRuntimeStatus((status) => {
+      setRuntimeStatus(status);
+      if (status?.phase === "ready") {
+        loadAll().catch(() => {});
+      }
+    });
+    const offProgress = desktop.onRuntimeProgress((progress) => {
+      setRuntimeProgress((current) => [...current, progress]);
+    });
     return () => {
       offNavigate?.();
       offSidebar?.();
+      offRuntime?.();
+      offProgress?.();
     };
   }, []);
 
@@ -1245,6 +1552,21 @@ function App() {
     if (activeView === "debug") loadDebugLogs().catch(() => {});
     if (activeView === "update") loadAll().catch(() => {});
   }, [activeView]);
+
+  if (runtimeStatus?.phase !== "ready") {
+    return (
+      <RuntimeSetupView
+        runtimeStatus={runtimeStatus}
+        runtimeProgress={runtimeProgress}
+        busy={runtimeBusy}
+        onRetry={retryRuntimeCheck}
+        onInstallCore={installCore}
+        onStartBackend={startBackendService}
+        onOpenExternal={(url) => desktop.openExternal(url)}
+        onCopyDiagnostics={copyRuntimeDiagnostics}
+      />
+    );
+  }
 
   return (
     <main className="desktop-shell" data-testid="electron-renderer">

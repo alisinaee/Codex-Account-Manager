@@ -36,24 +36,28 @@ function compactProfileName(name) {
   return value.length > 12 ? `${value.slice(0, 11)}…` : value;
 }
 
+function statusItem(label, tone, platform) {
+  if (platform === "darwin") {
+    return { label, enabled: true };
+  }
+  return {
+    label,
+    enabled: true,
+    icon: buildStatusIconDataUrl(tone),
+  };
+}
+
 function buildTrayMenuTemplate(actions = {}) {
   const summary = actions.summary || {};
+  const platform = actions.platform || process.platform;
   const profileName = compactProfileName(summary.profileName);
   const statusItems = summary.available
     ? [
         { label: `Current ${profileName}`, enabled: true },
-        {
-          label: `5H ${toPercentLabel(summary.fiveHourPercent)} left`,
-          enabled: true,
-          icon: buildStatusIconDataUrl(buildStatusTone(summary.fiveHourPercent)),
-        },
-        {
-          label: `Weekly ${toPercentLabel(summary.weeklyPercent)} left`,
-          enabled: true,
-          icon: buildStatusIconDataUrl(buildStatusTone(summary.weeklyPercent)),
-        },
+        statusItem(`5H ${toPercentLabel(summary.fiveHourPercent)} left`, buildStatusTone(summary.fiveHourPercent), platform),
+        statusItem(`Weekly ${toPercentLabel(summary.weeklyPercent)} left`, buildStatusTone(summary.weeklyPercent), platform),
       ]
-    : [{ label: "Usage unavailable", enabled: true, icon: buildStatusIconDataUrl("neutral") }];
+    : [statusItem("Usage unavailable", "neutral", platform)];
   return [
     ...statusItems,
     { type: "separator" },
