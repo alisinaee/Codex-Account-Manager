@@ -51,6 +51,8 @@ This module implements:
 6. `Optional Electron Desktop Shell`
 - Lives under `electron/` and is not required for the main Python package.
 - Starts or connects to the local `ui-service`, then renders a separate React/Vite desktop UI.
+- Uses `codex-account doctor --json` as the machine-readable runtime contract for packaged desktop startup.
+- Can bootstrap the Python core with an in-app installer flow when Python 3.11+ exists but `codex-account-manager` is not installed yet.
 - Adds desktop-only behavior: sidebar navigation, tray/menu-bar status, current usage tooltip/menu text, and Electron-native notifications.
 - Uses project-owned Electron icon assets and package metadata for desktop identity; raw Electron dev runs may still show the Electron Dock bundle name until packaged.
 - Keeps account, profile, usage, and switching logic in the Python backend.

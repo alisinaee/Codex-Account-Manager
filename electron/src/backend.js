@@ -44,6 +44,20 @@ function normalizeServiceStatus(status = {}) {
   };
 }
 
+function buildServiceRuntimeContract(status = {}) {
+  const normalized = normalizeServiceStatus({
+    running: status.running,
+    host: status.host,
+    port: status.port,
+    url: status.baseUrl || status.url,
+  });
+  return {
+    ...normalized,
+    healthy: Boolean(status.healthy ?? normalized.running),
+    token: String(status.token || ""),
+  };
+}
+
 function runServiceCommand(action, options = {}) {
   const spec = buildServiceCommand(action, options);
   const result = spawnSync(spec.command, spec.args, {
@@ -135,6 +149,7 @@ async function fetchCurrentUsage(state = getDefaultBackendState(), options = {})
 
 module.exports = {
   buildServiceCommand,
+  buildServiceRuntimeContract,
   ensureBackendRunning,
   fetchCurrentUsage,
   getDefaultBackendState,

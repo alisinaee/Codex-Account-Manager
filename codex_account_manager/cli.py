@@ -3114,6 +3114,71 @@ def cmd_status(as_json: bool = False) -> int:
     return 0 if payload["ok"] else 1
 
 
+def detect_python_runtime() -> dict:
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    return {
+        "available": True,
+        "supported": sys.version_info >= (3, 11),
+        "version": version,
+        "path": sys.executable,
+        "command": Path(sys.executable).name,
+    }
+
+
+def detect_core_runtime(command_name: str = "codex-account") -> dict:
+    command_path = shutil.which(command_name)
+    argv0 = str(Path(sys.argv[0]).resolve()) if sys.argv and sys.argv[0] else ""
+    installed = bool(command_path or argv0)
+    resolved = str(command_path or argv0)
+    return {
+        "installed": installed,
+        "version": APP_VERSION if installed else "",
+        "command_path": resolved,
+        "min_supported_version": APP_VERSION,
+        "meets_minimum_version": installed,
+    }
+
+
+def build_doctor_report(command_name: str = "codex-account", host: str = UI_DEFAULT_HOST, port: int = UI_DEFAULT_PORT) -> dict:
+    python_runtime = detect_python_runtime()
+    core_runtime = detect_core_runtime(command_name=command_name)
+    info = read_ui_pid_info() or {}
+    service_host = str(info.get("host") or host)
+    service_port = int(info.get("port") or port)
+    running = is_ui_healthy(service_host, service_port)
+    ui_service = {
+        "running": running,
+        "healthy": running,
+        "host": service_host,
+        "port": service_port,
+        "base_url": ui_url(service_host, service_port),
+        "token": str(info.get("token") or ""),
+        "pid": info.get("pid"),
+    }
+    errors = []
+    if not python_runtime["available"]:
+        errors.append({"code": "PYTHON_MISSING", "message": "Python runtime was not detected."})
+    elif not python_runtime["supported"]:
+        errors.append({"code": "PYTHON_UNSUPPORTED", "message": "Python 3.11+ is required."})
+    if not core_runtime["installed"]:
+        errors.append({"code": "CORE_MISSING", "message": "Codex Account Manager core is not installed."})
+    return {
+        "python": python_runtime,
+        "core": core_runtime,
+        "ui_service": ui_service,
+        "errors": errors,
+    }
+
+
+def cmd_doctor(as_json: bool = False) -> int:
+    payload = build_doctor_report()
+    if as_json:
+        print_json(payload)
+    else:
+        print_json(payload)
+    return 0
+
+
 def cmd_auth_passthrough(command_args) -> int:
     if command_args and command_args[0] == "--":
         command_args = command_args[1:]
@@ -6043,6 +6108,9 @@ def main() -> int:
     p_status = sub.add_parser("status", help="(Advanced) codex-auth status")
     p_status.add_argument("--json", action="store_true", help="Output structured JSON")
 
+    p_doctor = sub.add_parser("doctor", help="Report local desktop runtime diagnostics")
+    p_doctor.add_argument("--json", action="store_true", help="Output structured JSON")
+
     p_login_adv = sub.add_parser("login", help="(Advanced) codex-auth login wrapper")
     p_login_adv.add_argument("--device-auth", action="store_true", help="Use device auth flow")
 
@@ -6162,6 +6230,8 @@ def main() -> int:
         return cmd_import_profiles(args.archive, apply=args.apply, overwrite=args.overwrite)
     if args.cmd == "status":
         return cmd_status(as_json=args.json)
+    if args.cmd == "doctor":
+        return cmd_doctor(as_json=args.json)
     if args.cmd == "login":
         cmd = ["login"]
         if args.device_auth:

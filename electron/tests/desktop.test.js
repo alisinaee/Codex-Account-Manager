@@ -41,6 +41,7 @@ test("buildNotificationOptions includes app icon when provided", () => {
 
 test("buildTrayMenuTemplate includes readable color-coded desktop status actions", () => {
   const items = buildTrayMenuTemplate({
+    platform: "linux",
     summary: {
       available: true,
       profileName: "acc6",
@@ -73,6 +74,27 @@ test("buildTrayMenuTemplate includes readable color-coded desktop status actions
   assert.equal(items[0].enabled, true);
   assert.ok(items[1].icon.startsWith("data:image/svg+xml;base64,"));
   assert.ok(items[2].icon.startsWith("data:image/svg+xml;base64,"));
+});
+
+test("buildTrayMenuTemplate avoids data-url menu icons on macOS", () => {
+  const items = buildTrayMenuTemplate({
+    platform: "darwin",
+    summary: {
+      available: true,
+      profileName: "acc6",
+      fiveHourPercent: 48,
+      weeklyPercent: 78,
+    },
+    onOpen: () => {},
+    onRefresh: () => {},
+    onNotify: () => {},
+    onStartService: () => {},
+    onStopService: () => {},
+    onQuit: () => {},
+  });
+
+  assert.equal(items[1].icon, undefined);
+  assert.equal(items[2].icon, undefined);
 });
 
 test("buildMacMenuBarTitle keeps the macOS status bar compact but informative", () => {

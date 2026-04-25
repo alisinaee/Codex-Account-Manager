@@ -1,13 +1,21 @@
 "use strict";
 
 const path = require("node:path");
-const { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, shell } = require("electron");
 
 const { createApiClient } = require("./api-client");
 const { ensureBackendRunning, fetchCurrentUsage, getDefaultBackendState, runServiceCommand } = require("./backend");
 const { APP_ID, APP_NAME, getIconPath } = require("./icons");
 const { buildApplicationMenuTemplate, shouldQuitOnWindowAllClosed } = require("./menu");
 const { sendUsageNotification } = require("./notifications");
+const {
+  formatRuntimeDiagnostics,
+  installPythonCore,
+  loadStoredRuntimeState,
+  normalizeRuntimeStatus,
+  resolveRuntimeStatus,
+  saveStoredRuntimeState,
+} = require("./runtime");
 const { applyTrayState, createTray } = require("./tray");
 const { buildUsageSummary } = require("./usage");
 
@@ -24,6 +32,59 @@ let apiClient = null;
 let desktopState = null;
 let latestUsagePayload = null;
 let refreshTimer = null;
+let runtimeState = normalizeRuntimeStatus({
+  phase: "checking_runtime",
+  python: {},
+  core: {},
+  uiService: getDefaultBackendState(),
+});
+let runtimeProgress = [];
+
+function emitToRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
+function setRuntimeState(next) {
+  runtimeState = normalizeRuntimeStatus(next, {
+    minCoreVersion: process.env.CAM_ELECTRON_MIN_CORE_VERSION || "0.0.12",
+  });
+  if (runtimeState.core.commandPath) {
+    saveStoredRuntimeState({
+      commandPath: runtimeState.core.commandPath,
+      version: runtimeState.core.version,
+      pythonPath: runtimeState.python.path,
+    }, { appLike: app });
+  }
+  emitToRenderer("desktop:runtime-status", runtimeState);
+  return runtimeState;
+}
+
+function pushRuntimeProgress(progress) {
+  runtimeProgress = [...runtimeProgress, { ts: Date.now(), ...progress }];
+  emitToRenderer("desktop:runtime-progress", runtimeProgress[runtimeProgress.length - 1]);
+}
+
+async function collectRuntimeDiagnostics() {
+  let backendLogs = [];
+  let fetchError = "";
+  if (apiClient && runtimeState?.uiService?.running) {
+    try {
+      const payload = await requestWithTokenRefresh("/api/debug/logs?tail=240", {});
+      backendLogs = Array.isArray(payload?.logs) ? payload.logs : [];
+    } catch (error) {
+      fetchError = String(error?.message || error);
+    }
+  }
+  return {
+    runtimeState,
+    runtimeProgress,
+    backendState,
+    backendLogs,
+    fetchError,
+  };
+}
 
 function isInvalidSessionTokenError(error) {
   const message = String(error?.message || "");
@@ -34,7 +95,7 @@ async function refreshBackendClient() {
   if (process.env.CAM_ELECTRON_SKIP_BACKEND === "1") {
     return;
   }
-  backendState = await ensureBackendRunning();
+  backendState = await ensureBackendRunning({ command: runtimeState.core.commandPath || undefined });
   apiClient = createApiClient({ state: backendState });
 }
 
@@ -51,6 +112,10 @@ async function requestWithTokenRefresh(path, options = {}) {
 }
 
 function getLoadUrl() {
+  const useDevServer = process.env.CAM_ELECTRON_USE_DEV_SERVER === "1";
+  if (!useDevServer) {
+    return null;
+  }
   if (process.env.CAM_ELECTRON_RENDERER_URL) {
     return process.env.CAM_ELECTRON_RENDERER_URL;
   }
@@ -90,8 +155,8 @@ function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 820,
-    minWidth: 480,
-    minHeight: 640,
+    minWidth: 380,
+    minHeight: 620,
     title: APP_NAME,
     icon: iconPath,
     show: false,
@@ -439,8 +504,136 @@ function createMockApiClient() {
   };
 }
 
+async function ensureReadyRuntimeBackend() {
+  backendState = await ensureBackendRunning({ command: runtimeState.core.commandPath || undefined });
+  apiClient = createApiClient({ state: backendState });
+  setRuntimeState({
+    ...runtimeState,
+    phase: "ready",
+    message: "",
+    uiService: {
+      ...backendState,
+      running: true,
+      healthy: true,
+    },
+  });
+}
+
+async function ensureTrayRefreshLoop() {
+  if (process.env.CAM_ELECTRON_DISABLE_TRAY === "1") {
+    return;
+  }
+  if (!tray) {
+    createDesktopTray();
+  }
+  await refreshUsage();
+  if (!refreshTimer) {
+    refreshTimer = setInterval(() => {
+      refreshUsage().catch(() => {});
+    }, Number(process.env.CAM_ELECTRON_REFRESH_MS || 30000));
+  }
+}
+
+async function checkRuntime({ activateBackend = true } = {}) {
+  runtimeProgress = [];
+  if (process.env.CAM_ELECTRON_SKIP_BACKEND === "1") {
+    apiClient = createMockApiClient();
+    desktopState = await apiClient.getDesktopState();
+    latestUsagePayload = desktopState.usage;
+    setRuntimeState({
+      phase: "ready",
+      python: { available: true, supported: true, version: process.versions.node, path: process.execPath, command: process.execPath },
+      core: { installed: true, version: "mock", commandPath: "mock-core", minSupportedVersion: "0.0.12", meetsMinimumVersion: true },
+      uiService: { ...getDefaultBackendState(), running: true, healthy: true, token: "mock-token" },
+      errors: [],
+      mockMode: true,
+    });
+    return runtimeState;
+  }
+
+  const discovered = await resolveRuntimeStatus({
+    loadStoredRuntimeState: () => loadStoredRuntimeState({ appLike: app }),
+  });
+  setRuntimeState(discovered);
+
+  if (runtimeState.phase !== "ready" || !activateBackend) {
+    return runtimeState;
+  }
+
+  setRuntimeState({
+    ...runtimeState,
+    phase: "service_starting",
+    message: "Starting the local Python service...",
+  });
+  try {
+    await ensureReadyRuntimeBackend();
+    await ensureTrayRefreshLoop();
+  } catch (error) {
+    apiClient = null;
+    desktopState = null;
+    setRuntimeState({
+      ...runtimeState,
+      phase: "error",
+      reason: "backend_start_failed",
+      message: String(error?.message || error),
+      errors: [...runtimeState.errors, { code: "BACKEND_START_FAILED", message: String(error?.message || error) }],
+    });
+  }
+  return runtimeState;
+}
+
 function registerIpcHandlers() {
+  ipcMain.handle("desktop:get-runtime-status", async () => runtimeState);
+  ipcMain.handle("desktop:copy-runtime-diagnostics", async () => {
+    const payload = await collectRuntimeDiagnostics();
+    const text = formatRuntimeDiagnostics(payload);
+    clipboard.writeText(text);
+    return { copied: true, text };
+  });
+  ipcMain.handle("desktop:retry-runtime-check", async () => checkRuntime({ activateBackend: true }));
+  ipcMain.handle("desktop:install-python-core", async () => {
+    if (!runtimeState.python.available || !runtimeState.python.supported) {
+      throw new Error("Python 3.11+ must be installed before the core can be bootstrapped.");
+    }
+    try {
+      pushRuntimeProgress({ type: "run", status: "starting", label: "Bootstrap Python core" });
+      await installPythonCore(runtimeState, {
+        onProgress: (event) => pushRuntimeProgress(event),
+      });
+      pushRuntimeProgress({ type: "run", status: "done", label: "Bootstrap Python core" });
+      return checkRuntime({ activateBackend: true });
+    } catch (error) {
+      setRuntimeState({
+        ...runtimeState,
+        phase: "error",
+        reason: "core_install_failed",
+        message: String(error?.message || error),
+        errors: [...runtimeState.errors, { code: "CORE_INSTALL_FAILED", message: String(error?.message || error) }],
+      });
+      throw error;
+    }
+  });
+  ipcMain.handle("desktop:start-backend-service", async () => checkRuntime({ activateBackend: true }));
+  ipcMain.handle("desktop:stop-backend-service", async () => {
+    if (runtimeState.core.commandPath) {
+      runServiceCommand("stop", { command: runtimeState.core.commandPath });
+    }
+    apiClient = null;
+    desktopState = null;
+    latestUsagePayload = null;
+    backendState = getDefaultBackendState();
+    setRuntimeState({
+      ...runtimeState,
+      phase: "ready",
+      uiService: { ...getDefaultBackendState(), running: false, healthy: false, token: "" },
+    });
+    return runtimeState;
+  });
+  ipcMain.handle("desktop:open-external", async (_event, url) => shell.openExternal(String(url || "")));
   ipcMain.handle("desktop:get-state", async () => {
+    if (!apiClient) {
+      throw new Error(runtimeState.message || "Python core is not ready.");
+    }
     if (!desktopState) {
       try {
         desktopState = await apiClient.getDesktopState();
@@ -456,15 +649,21 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("desktop:get-backend-state", async () => ({
     ...backendState,
-    running: Boolean(desktopState || backendState),
+    running: Boolean(apiClient && (desktopState || backendState)),
   }));
   ipcMain.handle("desktop:request", async (_event, path, options = {}) => {
+    if (!apiClient) {
+      throw new Error(runtimeState.message || "desktop request API is unavailable");
+    }
     if (typeof apiClient.request === "function") {
       return requestWithTokenRefresh(path, options);
     }
     throw new Error("desktop request API is unavailable");
   });
   ipcMain.handle("desktop:refresh", async () => {
+    if (!apiClient) {
+      throw new Error(runtimeState.message || "Python core is not ready.");
+    }
     try {
       desktopState = await apiClient.getDesktopState();
     } catch (error) {
@@ -479,6 +678,9 @@ function registerIpcHandlers() {
     return desktopState;
   });
   ipcMain.handle("desktop:switch-profile", async (_event, name) => {
+    if (!apiClient) {
+      throw new Error(runtimeState.message || "Python core is not ready.");
+    }
     try {
       desktopState = await apiClient.switchProfile(String(name || ""));
     } catch (error) {
@@ -493,6 +695,9 @@ function registerIpcHandlers() {
     return desktopState;
   });
   ipcMain.handle("desktop:save-config", async (_event, patch) => {
+    if (!apiClient) {
+      throw new Error(runtimeState.message || "Python core is not ready.");
+    }
     try {
       desktopState = await apiClient.saveConfigPatch(patch || {});
     } catch (error) {
@@ -510,37 +715,24 @@ function registerIpcHandlers() {
 }
 
 async function bootstrap() {
-  if (process.env.CAM_ELECTRON_SKIP_BACKEND !== "1") {
-    backendState = await ensureBackendRunning();
-    apiClient = createApiClient({ state: backendState });
-  } else {
-    apiClient = createMockApiClient();
-    desktopState = await apiClient.getDesktopState();
-  }
   registerIpcHandlers();
   installApplicationMenu();
   createMainWindow();
-  if (process.env.CAM_ELECTRON_DISABLE_TRAY !== "1") {
-    try {
-      createDesktopTray();
-      await refreshUsage();
-      refreshTimer = setInterval(() => {
-        refreshUsage().catch(() => {});
-      }, Number(process.env.CAM_ELECTRON_REFRESH_MS || 30000));
-    } catch (_) {
-      tray = null;
-    }
-  }
+  await checkRuntime({ activateBackend: true });
 }
 
 app.whenReady().then(() => {
   bootstrap().catch((error) => {
-    createMainWindow();
-    mainWindow.webContents.once("did-finish-load", () => {
-      mainWindow.webContents.executeJavaScript(
-        `document.body.innerHTML = ${JSON.stringify(`<pre>Failed to start Codex Account Manager desktop shell:\n${error.message}</pre>`)};`,
-      );
+    setRuntimeState({
+      ...runtimeState,
+      phase: "error",
+      reason: "bootstrap_failed",
+      message: String(error?.message || error),
+      errors: [...runtimeState.errors, { code: "BOOTSTRAP_FAILED", message: String(error?.message || error) }],
     });
+    if (!mainWindow) {
+      createMainWindow();
+    }
   });
 });
 

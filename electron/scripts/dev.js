@@ -95,7 +95,7 @@ function getElectronLaunchSpec({
       options: {
         cwd: rootDir,
         stdio: "inherit",
-        env: { ...env, CAM_ELECTRON_RENDERER_URL: rendererUrl },
+        env: { ...env, CAM_ELECTRON_RENDERER_URL: rendererUrl, CAM_ELECTRON_USE_DEV_SERVER: "1" },
       },
       appBundle: paths.appBundle,
     };
@@ -106,7 +106,7 @@ function getElectronLaunchSpec({
     options: {
       cwd: rootDir,
       stdio: "inherit",
-      env: { ...env, CAM_ELECTRON_RENDERER_URL: rendererUrl },
+      env: { ...env, CAM_ELECTRON_RENDERER_URL: rendererUrl, CAM_ELECTRON_USE_DEV_SERVER: "1" },
     },
     appBundle: "",
   };

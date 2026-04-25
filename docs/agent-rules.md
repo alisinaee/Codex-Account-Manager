@@ -22,6 +22,12 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-25T17:26:22+03:30
+- Changed files: `README.md`, `codex_account_manager/cli.py`, `docs/architecture.md`, `docs/cli-reference.md`, `docs/development.md`, `electron/package-lock.json`, `electron/package.json`, `electron/scripts/smoke.js`, +10 more
+- Summary: Added packaged Electron runtime bootstrap with doctor JSON contract, setup screen, in-app Python core installer flow, production packaging scripts, and matching tests/docs.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:49f5dc16f4a1 -->
+
 ### 2026-04-24T14:46:42+03:30
 - Changed files: `electron/assets/codex-account-manager-tray.svg`, `electron/src/icons.js`, `electron/src/tray.js`, `electron/tests/identity.test.js`, `electron/tests/desktop.test.js`
 - Summary: Electron macOS status bar now uses a dedicated small tray template SVG resized to 18x18 instead of the full Dock app icon, preventing oversized black/green menu-bar rendering.
@@ -136,11 +142,5 @@
 - Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
 <!-- fingerprint:38ea10b9051a -->
 
-### 2026-04-23T20:28:00+03:30
-- Changed files: `codex_account_manager/cli.py`, `pyproject.toml`, `README.md`, `tests/test_cli_core.py`
-- Summary: Added the tracked project SVG as the packaged web-panel/browser icon, showed it in the panel header, and reused it in the README project branding.
-- Behavior impact: Recorded the current branding asset usage across README and web UI surfaces.
-<!-- fingerprint:7d4d2bb2db09 -->
-
 ## Last Updated
-- 2026-04-24T14:46:42+03:30
+- 2026-04-25T17:26:22+03:30

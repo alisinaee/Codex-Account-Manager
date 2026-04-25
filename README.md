@@ -166,7 +166,9 @@ What the dev shell adds:
 - Electron-native test notifications that focus the desktop window when clicked
 - Project icon/name in the Electron window, menus, tray, notifications, and packaged app metadata
 
-Current limitation: this is a development shell, not a packaged installer. It requires the source checkout to include the `electron/` directory and `npm` to be available. When launched through the raw Electron development binary, macOS may still show `Electron` for the Dock app bundle even though the app menu/window/tray/notification identity is set to Codex Account Manager. The packaged `.app` metadata under `electron/package.json` is prepared for the real Dock name and icon in a later installer phase. Users should still install and run the main app with `pipx` and `codex-account ui`.
+Standalone packaging now exists under `electron/` via `electron-builder`, and the packaged desktop shell can bootstrap the Python core when `codex-account-manager` is not installed yet. The Python core remains the source of truth for profiles, switching, usage, and the local `/api/*` service.
+
+Current limitation: the packaged desktop app still requires Python `3.11+`, and flows that depend on the external `codex` CLI still require that CLI to be available locally. The first-run bootstrap only installs the Python core; it does not silently install Python itself. When Python is missing, the desktop app shows an in-app setup screen and links to the correct installer.
 
 ## CLI
 
