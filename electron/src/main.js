@@ -90,7 +90,7 @@ function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 820,
-    minWidth: 960,
+    minWidth: 480,
     minHeight: 640,
     title: APP_NAME,
     icon: iconPath,
