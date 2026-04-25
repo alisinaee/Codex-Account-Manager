@@ -124,6 +124,7 @@ function main() {
   const vite = spawn(binPath(root, "vite"), ["--host", "127.0.0.1"], {
     cwd: root,
     stdio: "inherit",
+    shell: process.platform === "win32",
   });
   vite.on("error", (error) => {
     console.error(`Failed to start Vite renderer: ${error.message}`);
@@ -133,6 +134,9 @@ function main() {
   waitForVite()
     .then(() => {
       const electronSpec = getElectronLaunchSpec();
+      if (process.platform === "win32") {
+        electronSpec.options.shell = true;
+      }
       const electron = spawn(electronSpec.command, electronSpec.args, electronSpec.options);
       electron.on("error", (error) => {
         vite.kill();

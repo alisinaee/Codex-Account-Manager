@@ -96,6 +96,12 @@
   font-size: 12px;
 }
 
+.brand .brand-subtitle {
+  font-size: 9px;
+  letter-spacing: .02em;
+  text-transform: none;
+}
+
 .sidebar-icon-toggle {
   width: 36px;
   height: 36px;
@@ -256,10 +262,10 @@
   margin-top: -6px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 0 10px;
+  justify-content: flex-start;
+  gap: 10px;
+  min-height: 38px;
+  padding: 8px 11px;
   border: 1px solid rgba(255, 113, 108, .34);
   border-radius: 14px;
   background: rgba(255, 113, 108, .12);
@@ -274,26 +280,32 @@
 }
 
 .sidebar-exit-btn .nav-mark {
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(255, 113, 108, .18);
   color: inherit;
+  flex: 0 0 30px;
 }
 
 .sidebar-exit-btn svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 
 .sidebar-exit-btn.minimal {
+  width: 44px;
+  min-height: 44px;
   justify-content: center;
   padding: 0;
+  border-radius: 12px;
+  gap: 0;
 }
 
 .sidebar-exit-btn.minimal .nav-mark {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   background: transparent;
 }
 
@@ -977,56 +989,103 @@ table.wide-columns td[data-col="auto"] {
   gap: 10px;
 }
 
-.modal-backdrop {
+.dialog-backdrop {
   position: fixed;
   inset: 0;
   z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(2, 8, 16, .56);
+  backdrop-filter: blur(7px) saturate(120%);
+}
+
+.dialog-panel {
+  width: min(560px, 100%);
+  max-height: min(82vh, 860px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, rgba(255, 255, 255, .1));
+  border-radius: 14px;
+  background:
+    radial-gradient(160% 120% at 0% 0%, color-mix(in srgb, var(--surface-highest) 92%, rgba(255, 255, 255, .06)), transparent 70%),
+    color-mix(in srgb, var(--surface-card) 93%, rgba(0, 0, 0, .08));
+  box-shadow:
+    0 28px 78px rgba(0, 0, 0, .54),
+    inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+.dialog-panel.dialog-sm {
+  width: min(420px, 100%);
+}
+
+.dialog-panel.dialog-md {
+  width: min(560px, 100%);
+}
+
+.dialog-panel.dialog-lg {
+  width: min(760px, 100%);
+}
+
+.dialog-header {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+  background: color-mix(in srgb, var(--surface-highest) 58%, transparent);
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+  color: var(--text);
+}
+
+.dialog-close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, .52);
-  backdrop-filter: blur(6px);
-  padding: 24px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 22px;
+  line-height: 1;
+  transition: background .15s ease, color .15s ease;
 }
 
-.modal-card {
-  width: min(720px, 100%);
-  max-height: min(84vh, 900px);
+.dialog-close:hover {
+  background: rgba(255, 255, 255, .08);
+  color: var(--text);
+}
+
+.dialog-content {
+  min-height: 0;
   overflow: auto;
-  background: color-mix(in srgb, var(--surface-highest) 60%, transparent);
-  backdrop-filter: blur(24px);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, .5);
-}
-
-.modal-card.wide {
-  width: min(980px, 100%);
-}
-
-.modal-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  display: grid;
   gap: 12px;
-  margin-bottom: 12px;
+  padding: 14px 16px;
 }
 
-.modal-head h3 {
+.dialog-content p {
   margin: 0;
 }
 
-.modal-body {
-  display: grid;
-  gap: 14px;
-}
-
-.modal-footer {
+.dialog-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  margin-top: 14px;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-low) 76%, transparent);
 }
 
 .modal-form {
@@ -1152,6 +1211,25 @@ table.wide-columns td[data-col="auto"] {
 }
 
 @media (max-width: 760px) {
+  .dialog-backdrop {
+    padding: 12px;
+  }
+
+  .dialog-panel,
+  .dialog-panel.dialog-sm,
+  .dialog-panel.dialog-md,
+  .dialog-panel.dialog-lg {
+    width: 100%;
+    max-height: 90vh;
+  }
+
+  .dialog-header,
+  .dialog-content,
+  .dialog-actions {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
   .workspace {
     padding: 12px;
   }

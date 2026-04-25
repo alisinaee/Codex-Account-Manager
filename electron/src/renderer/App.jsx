@@ -29,6 +29,7 @@ import {
   currentProfileName,
   usagePercentNumber,
 } from "./view-model.mjs";
+import Dialog from "./components/Dialog.jsx";
 
 function NavIcon({ id }) {
   switch (id) {
@@ -254,21 +255,6 @@ function fileToBase64(file) {
   });
 }
 
-function ModalShell({ title, children, footer, onClose, wide = false }) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose?.(); }}>
-      <div className={`modal-card ${wide ? "wide" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-head">
-          <h3>{title}</h3>
-          <button className="btn" onClick={onClose}>Close</button>
-        </div>
-        <div className="modal-body">{children}</div>
-        {footer && <div className="modal-footer">{footer}</div>}
-      </div>
-    </div>
-  );
-}
-
 function UsageCell({ row, usageKey }) {
   const value = usageValue(row, usageKey);
   const tone = usageTone(value);
@@ -347,8 +333,7 @@ function Sidebar({ state, activeView, mode, onModeChange, onNavigate, updateAvai
           <img src={iconUrl} alt="" />
           {mode === "fixed" && (
             <div>
-              <strong>Codex Account</strong>
-              <span>Desktop</span>
+              <strong>CAM</strong>
             </div>
           )}
         </div>
@@ -1328,7 +1313,7 @@ function App() {
       </div>
 
       {modal?.type === "columns" && (
-        <ModalShell title="Table Columns" onClose={() => setModal(null)} footer={<><button className="btn" onClick={() => { setColumnPrefs(defaultColumns); saveStoredColumns(defaultColumns); setModal(null); }}>Reset Defaults</button><button className="btn btn-primary" onClick={() => setModal(null)}>Done</button></>}>
+        <Dialog title="Table Columns" size="md" onClose={() => setModal(null)} footer={<><button className="btn" onClick={() => { setColumnPrefs(defaultColumns); saveStoredColumns(defaultColumns); setModal(null); }}>Reset Defaults</button><button className="btn btn-primary" onClick={() => setModal(null)}>Done</button></>}>
           <div className="columns-grid">
             {columnDefs.filter((col) => !col.required).map((col) => (
               <label key={col.key} className="modal-check">
@@ -1346,21 +1331,21 @@ function App() {
               </label>
             ))}
           </div>
-        </ModalShell>
+        </Dialog>
       )}
 
       {modal?.type === "row-actions" && (
-        <ModalShell title="Row Actions" onClose={() => setModal(null)} footer={<button className="btn" onClick={() => setModal(null)}>Done</button>}>
+        <Dialog title="Row Actions" size="sm" onClose={() => setModal(null)} footer={<button className="btn" onClick={() => setModal(null)}>Done</button>}>
           <p>Profile: {modal.name}</p>
           <div className="settings-inline-actions">
             <button className="btn" onClick={() => { setModal(null); handleRename(modal.name).catch((e) => setError(e?.message || String(e))); }}>Rename</button>
             <button className="btn btn-danger" onClick={() => { setModal(null); handleRemove(modal.name).catch((e) => setError(e?.message || String(e))); }}>Remove</button>
           </div>
-        </ModalShell>
+        </Dialog>
       )}
 
       {modal?.type === "add-account" && (
-        <ModalShell title="Add Account" onClose={() => setModal(null)} footer={<button className="btn" onClick={() => setModal(null)}>Close</button>}>
+        <Dialog title="Add Account" size="md" onClose={() => setModal(null)} footer={<button className="btn" onClick={() => setModal(null)}>Close</button>}>
           <div className="modal-form">
             <label>Profile name</label>
             <input value={modal.name} onChange={(event) => setModal((current) => ({ ...current, name: event.target.value }))} placeholder="work" />
@@ -1380,11 +1365,11 @@ function App() {
               </div>
             )}
           </div>
-        </ModalShell>
+        </Dialog>
       )}
 
       {modal?.type === "export" && (
-        <ModalShell title="Export Profiles" onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => handleExportProfiles(modal.selected || [], modal.filename || "profiles").catch((e) => setError(e?.message || String(e)))}>Export Selected</button>}>
+        <Dialog title="Export Profiles" size="lg" onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => handleExportProfiles(modal.selected || [], modal.filename || "profiles").catch((e) => setError(e?.message || String(e)))}>Export Selected</button>}>
           <div className="modal-form">
             <label>Archive name</label>
             <input value={modal.filename} onChange={(event) => setModal((current) => ({ ...current, filename: event.target.value }))} />
@@ -1406,18 +1391,18 @@ function App() {
               ))}
             </div>
           </div>
-        </ModalShell>
+        </Dialog>
       )}
 
       {modal?.type === "import" && (
-        <ModalShell title="Import Profiles" onClose={() => setModal(null)} footer={<><input ref={fileInputRef} type="file" accept=".camzip,application/zip" style={{ display: "none" }} onChange={(event) => { const file = event.target.files?.[0]; if (file) importAnalyze(file).catch((err) => setError(err?.message || String(err))); event.target.value = ""; }} /><button className="btn" onClick={() => fileInputRef.current?.click()}>Choose Archive</button></>}>
+        <Dialog title="Import Profiles" size="sm" onClose={() => setModal(null)} footer={<><input ref={fileInputRef} type="file" accept=".camzip,application/zip" style={{ display: "none" }} onChange={(event) => { const file = event.target.files?.[0]; if (file) importAnalyze(file).catch((err) => setError(err?.message || String(err))); event.target.value = ""; }} /><button className="btn" onClick={() => fileInputRef.current?.click()}>Choose Archive</button></>}>
           <p>Imported data may grant account access. Keep exported files private.</p>
           <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}>Analyze Import</button>
-        </ModalShell>
+        </Dialog>
       )}
 
       {modal?.type === "import-review" && (
-        <ModalShell title="Import Review" wide onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => applyImport(modal.analysis, modal.selections || []).catch((e) => setError(e?.message || String(e)))}>Apply Import</button>}>
+        <Dialog title="Import Review" size="lg" onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => applyImport(modal.analysis, modal.selections || []).catch((e) => setError(e?.message || String(e)))}>Apply Import</button>}>
           <p>Archive: {modal.file?.name || "uploaded file"}</p>
           <div className="columns-grid">
             {(modal.analysis?.profiles || []).map((row) => (
@@ -1436,11 +1421,11 @@ function App() {
               </label>
             ))}
           </div>
-        </ModalShell>
+        </Dialog>
       )}
 
       {modal?.type === "chain-edit" && (
-        <ModalShell title="Edit Switch Chain" wide onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => { request("/api/auto-switch/chain", { method: "POST", body: JSON.stringify({ chain: modal.chain || [] }) }).then(() => loadAll()).catch((e) => setError(e?.message || String(e))); setModal(null); }}>Save</button>}>
+        <Dialog title="Edit Switch Chain" size="lg" onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => { request("/api/auto-switch/chain", { method: "POST", body: JSON.stringify({ chain: modal.chain || [] }) }).then(() => loadAll()).catch((e) => setError(e?.message || String(e))); setModal(null); }}>Save</button>}>
           <p>Drag order is simplified to up/down controls in the desktop shell.</p>
           <div className="chain-list">
             {(modal.chain || []).map((name, index) => (
@@ -1461,7 +1446,7 @@ function App() {
               </div>
             ))}
           </div>
-        </ModalShell>
+        </Dialog>
       )}
     </main>
   );
