@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import iconUrl from "../../assets/codex-account-manager.svg";
-import "../../../codex_account_manager/web/styles.css";
 import "./styles.css";
 import {
   AboutIcon,
@@ -11,24 +10,34 @@ import {
   DoorClosedIcon,
   GuideIcon,
   NotificationsIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
   ProfilesIcon,
   SettingsIcon,
-  SidebarToggleIcon,
   UpdateIcon,
 } from "./icon-pack.jsx";
 import {
   buildProfileRowClassName,
-  buildSwitchButtonClassName,
   createSwitchController,
-  usageTone,
 } from "./switch-state.mjs";
 import { appendSessionToken, buildAuthenticatedDownloadUrl } from "./request-paths.mjs";
 import {
   buildProfileRows,
   buildSidebarCurrentProfile,
-  currentProfileName,
   usagePercentNumber,
 } from "./view-model.mjs";
+import {
+  arcDasharray,
+  clampPercent,
+  formatFullDateFromSeconds,
+  formatFullDateFromValue,
+  formatShortDateFromSeconds,
+  formatShortDateFromValue,
+  remainToneFromResetEpochSeconds,
+  truncateAccountId,
+  truncateNote,
+  usageColor,
+} from "./table-layout.mjs";
 import {
   applyProfileSelection,
   deepMerge,
@@ -37,7 +46,16 @@ import {
   getCurrentRefreshIntervalMs,
   waitForServiceRestart,
 } from "./parity.mjs";
+import Badge from "./components/Badge.jsx";
+import Button from "./components/Button.jsx";
+import ConfirmAction from "./components/ConfirmAction.jsx";
+import DataTable from "./components/DataTable.jsx";
 import Dialog from "./components/Dialog.jsx";
+import SectionCard from "./components/SectionCard.jsx";
+import StatusDot from "./components/StatusDot.jsx";
+import StepperInput from "./components/StepperInput.jsx";
+import { ToastProvider, useToast } from "./components/ToastProvider.jsx";
+import ToggleSwitch from "./components/ToggleSwitch.jsx";
 
 function NavIcon({ id }) {
   switch (id) {
@@ -79,18 +97,18 @@ const views = [
 ];
 
 const columnDefs = [
-  { key: "cur", label: "STS", required: false },
+  { key: "cur", label: "Status", required: false },
   { key: "profile", label: "Profile", required: false },
   { key: "email", label: "Email", required: false },
-  { key: "h5", label: "5H Usage", required: false },
-  { key: "h5remain", label: "5H Remain", required: true },
-  { key: "h5reset", label: "5H Reset At", required: false },
+  { key: "h5", label: "5h usage", required: false },
+  { key: "h5remain", label: "5h remain", required: true },
+  { key: "h5reset", label: "5h reset at", required: false },
   { key: "weekly", label: "Weekly", required: false },
-  { key: "weeklyremain", label: "W Remain", required: true },
-  { key: "weeklyreset", label: "Weekly Reset At", required: false },
+  { key: "weeklyremain", label: "W remain", required: true },
+  { key: "weeklyreset", label: "Weekly reset at", required: false },
   { key: "plan", label: "Plan", required: false },
   { key: "paid", label: "Paid", required: false },
-  { key: "id", label: "ID", required: false },
+  { key: "id", label: "Id", required: false },
   { key: "added", label: "Added", required: false },
   { key: "note", label: "Note", required: false },
   { key: "auto", label: "Auto", required: false },
@@ -103,16 +121,16 @@ const defaultColumns = {
   email: true,
   h5: true,
   h5remain: true,
-  h5reset: false,
+  h5reset: true,
   weekly: true,
   weeklyremain: true,
-  weeklyreset: false,
-  plan: false,
-  paid: false,
-  id: false,
-  added: false,
-  note: false,
-  auto: false,
+  weeklyreset: true,
+  plan: true,
+  paid: true,
+  id: true,
+  added: true,
+  note: true,
+  auto: true,
   actions: true,
 };
 
@@ -142,12 +160,20 @@ function isInvalidSessionTokenMessage(error) {
 }
 
 function usagePercent(row, key) {
-  const value = usagePercentNumber(row, key);
+  const value = usageValue(row, key);
   return value === null ? "-" : `${value}%`;
 }
 
 function usageValue(row, key) {
-  return usagePercentNumber(row, key);
+  return clampPercent(usagePercentNumber(row, key));
+}
+
+function usageTone(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "";
+  if (numeric >= 90) return "danger";
+  if (numeric >= 70) return "warning";
+  return "success";
 }
 
 function sortRows(rows, sort) {
@@ -197,23 +223,19 @@ function sortRows(rows, sort) {
 }
 
 function fmtReset(ts) {
-  if (!ts) return "unknown";
-  try {
-    const date = new Date(Number(ts) * 1000);
-    return Number.isFinite(date.getTime()) ? date.toLocaleString() : "unknown";
-  } catch (_) {
-    return "unknown";
-  }
+  return formatShortDateFromSeconds(ts);
+}
+
+function fmtResetFull(ts) {
+  return formatFullDateFromSeconds(ts);
 }
 
 function fmtSavedAt(ts) {
-  if (!ts) return "-";
-  try {
-    const date = new Date(ts);
-    return Number.isFinite(date.getTime()) ? date.toLocaleString() : ts;
-  } catch (_) {
-    return ts;
-  }
+  return formatShortDateFromValue(ts);
+}
+
+function fmtSavedAtFull(ts) {
+  return formatFullDateFromValue(ts);
 }
 
 function fmtRemain(ts, withSeconds = false) {
@@ -245,9 +267,77 @@ function fmtPaid(value) {
   return "-";
 }
 
-function updateNumber(value, delta, min = 0, max = Number.MAX_SAFE_INTEGER, fallback = min) {
-  const base = Number.isFinite(Number(value)) ? Number(value) : fallback;
-  return Math.max(min, Math.min(max, base + delta));
+function remainToneClass(ts) {
+  const tone = remainToneFromResetEpochSeconds(ts);
+  if (tone === "danger") return "remain-danger";
+  if (tone === "warning") return "remain-warning";
+  return "remain-normal";
+}
+
+const tableColumnLayout = {
+  cur: { colClassName: "col-status", width: "24px" },
+  profile: { colClassName: "col-profile", width: "7%" },
+  email: { colClassName: "col-email", width: "12%" },
+  h5: { colClassName: "col-5h", width: "7%" },
+  h5remain: { colClassName: "col-5h-rem", width: "6%" },
+  h5reset: { colClassName: "col-5h-reset", width: "7%" },
+  weekly: { colClassName: "col-weekly", width: "7%" },
+  weeklyremain: { colClassName: "col-w-rem", width: "6%" },
+  weeklyreset: { colClassName: "col-w-reset", width: "7%" },
+  plan: { colClassName: "col-plan", width: "4%" },
+  paid: { colClassName: "col-paid", width: "4%" },
+  id: { colClassName: "col-id", width: "6%" },
+  added: { colClassName: "col-added", width: "5%" },
+  note: { colClassName: "col-note", width: "4%" },
+  auto: { colClassName: "col-auto", width: "40px" },
+  actions: { colClassName: "col-actions", width: "148px" },
+};
+
+function planBadgeVariant(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "neutral";
+  if (normalized.includes("team")) return "warning";
+  if (normalized.includes("plus") || normalized.includes("pro")) return "success";
+  return "neutral";
+}
+
+function isColumnVisibleForViewport(key, viewportSizeClass) {
+  if (viewportSizeClass === "size-compact") {
+    return !["h5remain", "weeklyremain", "h5reset", "weeklyreset", "plan", "paid", "id", "added", "note", "auto"].includes(key);
+  }
+  if (viewportSizeClass === "size-normal") {
+    return !["id", "added", "note", "h5reset", "weeklyreset"].includes(key);
+  }
+  if (viewportSizeClass === "size-wide") {
+    return !["id", "note"].includes(key);
+  }
+  return true;
+}
+
+function tableUsageColor(value) {
+  const percent = clampPercent(value);
+  if (percent === null) return "var(--text-secondary)";
+  if (percent <= 10) return "var(--color-red)";
+  if (percent <= 30) return "var(--color-amber)";
+  return "var(--color-green)";
+}
+
+const WIDTH_CLASS_NAMES = ["size-compact", "size-normal", "size-wide", "size-ultrawide"];
+const HEIGHT_CLASS_NAMES = ["height-short", "height-normal", "height-tall"];
+
+function classifyWidth(width) {
+  const numeric = Number(width);
+  if (numeric < 1000) return "size-compact";
+  if (numeric < 1300) return "size-normal";
+  if (numeric < 1700) return "size-wide";
+  return "size-ultrawide";
+}
+
+function classifyHeight(height) {
+  const numeric = Number(height);
+  if (numeric < 640) return "height-short";
+  if (numeric <= 900) return "height-normal";
+  return "height-tall";
 }
 
 function fileToBase64(file) {
@@ -284,30 +374,66 @@ function joinBaseUrl(baseUrl, path) {
   return `${String(baseUrl || "").replace(/\/+$/, "")}${String(path || "")}`;
 }
 
+function LabelValueRow({ label, value }) {
+  return (
+    <div className="kv-row">
+      <span className="kv-label">{label}</span>
+      <div className="kv-value">{value}</div>
+    </div>
+  );
+}
+
+function formatReleaseDate(value) {
+  if (!value) return "";
+  try {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return String(value);
+    return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function formatLogLevel(level) {
+  const normalized = String(level || "info").toLowerCase();
+  if (normalized === "warn" || normalized === "warning") return "Warn";
+  if (normalized === "error") return "Error";
+  return "Info";
+}
+
 function UsageCell({ row, usageKey }) {
   const value = usageValue(row, usageKey);
-  const tone = usageTone(value);
-  const width = value === null ? 0 : Math.max(0, Math.min(100, value));
+  const color = tableUsageColor(value);
+  const label = value === null ? "-" : `${value}%`;
 
   return (
-    <div className={`usage-cell ${value === null ? "usage-cell-loading" : ""}`}>
-      <span className={`usage-pct ${tone ? `usage-${tone}` : "loading-text"}`}>{value === null ? "-" : `${value}%`}</span>
-      <span className={`usage-meter ${value === null ? "loading" : ""}`}>
-        <span className={`usage-fill ${tone}`} style={{ width: `${width}%` }} />
-      </span>
+    <div className={`usage-cell ${value === null ? "usage-cell-loading" : ""}`} title={value === null ? "Usage unavailable" : `${value}% remaining`}>
+      <div className="usage-top">
+        <span className={`usage-pct ${value === null ? "loading-text" : ""}`} style={value === null ? undefined : { color }}>
+          {label}
+        </span>
+      </div>
+      <div className="usage-bar-track" aria-hidden="true">
+        <div
+          className="usage-bar-fill"
+          style={value === null ? { width: "0%" } : { width: `${value}%`, background: color }}
+        />
+      </div>
     </div>
   );
 }
 
 function UsageStrip({ label, value, compact = false }) {
-  const tone = usageTone(value);
-  const width = value === null ? 0 : Math.max(0, Math.min(100, value));
+  const labelValue = value === null ? "-" : `${value}%`;
+  const color = usageColor(value);
 
   if (compact) {
     return (
       <div className="sidebar-usage-compact">
-        <span className="sidebar-usage-label">{label}</span>
-        <span className={tone ? `usage-${tone}` : "loading-text"}>{value === null ? "-" : `${value}%`}</span>
+        <span className="sidebar-usage-label" title={label === "5h" ? "5h means the five-hour usage window." : undefined}>{label}</span>
+        <span className={value === null ? "loading-text" : "sidebar-usage-pct"} style={value === null ? undefined : { color }}>
+          {labelValue}
+        </span>
       </div>
     );
   }
@@ -315,13 +441,57 @@ function UsageStrip({ label, value, compact = false }) {
   return (
     <div className="sidebar-usage-row">
       <div className="sidebar-usage-head">
-        <span className="sidebar-usage-label">{label}</span>
-        <span className={tone ? `usage-${tone}` : "loading-text"}>{value === null ? "-" : `${value}%`}</span>
+        <span className="sidebar-usage-label" title={label === "5h" ? "5h means the five-hour usage window." : undefined}>{label}</span>
+        <span className={value === null ? "loading-text" : "sidebar-usage-pct"} style={value === null ? undefined : { color }}>
+          {labelValue}
+        </span>
       </div>
-      <div className={`usage-meter sidebar-usage-meter ${value === null ? "loading" : ""}`}>
-        <span className={`usage-fill ${tone}`} style={{ width: `${width}%` }} />
+      <div className="sidebar-usage-track" aria-hidden="true">
+        <div
+          className="sidebar-usage-fill"
+          style={value === null ? { width: "0%" } : { width: `${value}%`, background: color }}
+        />
       </div>
     </div>
+  );
+}
+
+function SidebarUsageArc({ metric, value }) {
+  const label = value === null ? "-" : `${value}%`;
+  const color = usageColor(value);
+  const arcLabel = metric.toLowerCase() === "weekly" ? "W" : "5h";
+
+  return (
+    <svg
+      className={`sidebar-usage-arc arc-${metric.toLowerCase()}`}
+      viewBox="0 0 36 36"
+      role="img"
+      aria-label={`${metric}: ${label} used`}
+      title={`${metric}: ${label} used`}
+    >
+      <circle cx="18" cy="18" r="15" fill="none" stroke="var(--border-default)" strokeWidth="3" />
+      <g transform="rotate(-90 18 18)">
+        <circle
+          cx="18"
+          cy="18"
+          r="15"
+          fill="none"
+          stroke={value === null ? "var(--text-disabled)" : color}
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={arcDasharray(value)}
+        />
+      </g>
+      <text
+        x="18"
+        y="19"
+        textAnchor="middle"
+        dominantBaseline="middle"
+        className={value === null ? "sidebar-usage-arc-label loading-text" : "sidebar-usage-arc-label"}
+      >
+        {arcLabel}
+      </text>
+    </svg>
   );
 }
 
@@ -329,28 +499,35 @@ function SidebarCurrentProfile({ state, mode }) {
   const summary = buildSidebarCurrentProfile(state);
 
   return (
-    <section className={`sidebar-current ${mode === "minimal" ? "minimal" : ""}`} data-testid="sidebar-current-profile">
+    <section className={`sidebar-current ${mode === "minimal" ? "minimal" : ""}`} data-testid="sidebar-current-profile" onClick={(event) => event.stopPropagation()}>
       {mode === "fixed" ? (
         <>
           <strong className="sidebar-current-name" title={summary.name || "No active profile"}>{summary.name || "No active profile"}</strong>
           <span className="sidebar-current-email" title={summary.email}>{summary.email}</span>
-          <UsageStrip label="5H" value={summary.usage5h} />
+          <UsageStrip label="5h" value={summary.usage5h} />
           <UsageStrip label="Weekly" value={summary.usageWeekly} />
         </>
       ) : (
-        <>
-          <strong className="sidebar-current-name" title={summary.name || "No active profile"}>{summary.name || "No active profile"}</strong>
-          <UsageStrip label="5H" value={summary.usage5h} compact />
-          <UsageStrip label="W" value={summary.usageWeekly} compact />
-        </>
+        <div className="sidebar-account-mini">
+          <SidebarUsageArc metric="5h" value={summary.usage5h} />
+          <SidebarUsageArc metric="Weekly" value={summary.usageWeekly} />
+        </div>
       )}
     </section>
   );
 }
 
-function Sidebar({ state, activeView, mode, onModeChange, onNavigate, updateAvailable, onExit }) {
+function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate, updateAvailable, onExit }) {
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+
+  useEffect(() => {
+    if (!showExitConfirm) return undefined;
+    const timer = window.setTimeout(() => setShowExitConfirm(false), 4000);
+    return () => window.clearTimeout(timer);
+  }, [showExitConfirm]);
+
   function expandFromMinimal() {
-    if (mode === "minimal") {
+    if (mode === "minimal" && canToggle) {
       onModeChange("fixed");
     }
   }
@@ -362,27 +539,33 @@ function Sidebar({ state, activeView, mode, onModeChange, onNavigate, updateAvai
           <img src={iconUrl} alt="" />
           {mode === "fixed" && (
             <div>
-              <strong>CAM</strong>
+              <strong>Codex Account</strong>
             </div>
           )}
         </div>
-        <button
+        <Button
+          variant="icon"
           className="sidebar-icon-toggle"
           onClick={(event) => {
             event.stopPropagation();
-            onModeChange(mode === "fixed" ? "minimal" : "fixed");
+            if (canToggle) {
+              onModeChange(mode === "fixed" ? "minimal" : "fixed");
+            }
           }}
+          disabled={!canToggle}
+          disabledReason={!canToggle ? "Sidebar auto-collapses on smaller windows." : ""}
           title={mode === "fixed" ? "Collapse sidebar" : "Expand sidebar"}
           aria-label={mode === "fixed" ? "Collapse sidebar" : "Expand sidebar"}
         >
-          <SidebarToggleIcon />
-        </button>
+          {mode === "fixed" ? <PanelLeftCloseIcon /> : <PanelLeftOpenIcon />}
+        </Button>
       </div>
 
       <nav aria-label="Desktop sections" onClick={(event) => event.stopPropagation()}>
         {views.map((view) => (
-          <button
+          <Button
             key={view.id}
+            variant="ghost"
             className={activeView === view.id ? "active" : ""}
             onClick={() => onNavigate(view.id)}
             title={view.label}
@@ -391,32 +574,45 @@ function Sidebar({ state, activeView, mode, onModeChange, onNavigate, updateAvai
             <span className="nav-mark"><NavIcon id={view.icon} /></span>
             {mode === "fixed" && <span>{view.label}</span>}
             {view.id === "update" && updateAvailable && <span className="nav-dot" aria-hidden="true" />}
-          </button>
+          </Button>
         ))}
       </nav>
 
-      <div
-        className={`sidebar-expand-hitarea ${mode === "minimal" ? "active" : ""}`}
-        data-testid="sidebar-expand-hitarea"
-        aria-hidden="true"
-      />
+      <SidebarCurrentProfile state={state} mode={mode} />
 
-      <div onClick={(event) => event.stopPropagation()}>
-        <SidebarCurrentProfile state={state} mode={mode} />
+      <div className={`sidebar-exit-section ${mode === "minimal" ? "minimal" : ""}`}>
+        <Button
+          variant="ghost"
+          className={`sidebar-exit-btn ${mode === "minimal" ? "minimal" : ""} ${showExitConfirm ? "btn-disabled" : ""}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (mode === "minimal") {
+              onExit?.();
+              return;
+            }
+            setShowExitConfirm(true);
+          }}
+          title="Exit application"
+          aria-label="Exit application"
+        >
+          <span className="nav-mark"><NavIcon id="exit" /></span>
+          {mode === "fixed" && <span>Exit</span>}
+        </Button>
+        {mode === "fixed" && showExitConfirm ? (
+          <div className="sidebar-exit-confirm" onClick={(event) => event.stopPropagation()}>
+            <Button variant="ghost" onClick={() => setShowExitConfirm(false)}>Cancel</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setShowExitConfirm(false);
+                onExit?.();
+              }}
+            >
+              Confirm exit ✓
+            </Button>
+          </div>
+        ) : null}
       </div>
-
-      <button
-        className={`sidebar-exit-btn ${mode === "minimal" ? "minimal" : ""}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onExit?.();
-        }}
-        title="Exit"
-        aria-label="Exit"
-      >
-        <span className="nav-mark"><NavIcon id="exit" /></span>
-        {mode === "fixed" && <span>Exit</span>}
-      </button>
     </aside>
   );
 }
@@ -426,71 +622,188 @@ function TopBar({ activeTitle, updateStatus, loading, onRefresh, onRestart }) {
     <header className="topbar desktop-topbar">
       <div className="topbar-meta">
         <span className="topbar-section-title">{activeTitle}</span>
-        {updateStatus?.update_available && <span className="badge badge-warn">Update {updateStatus.latest_version || "available"}</span>}
+        {updateStatus?.update_available && <Badge variant="warning">Update {updateStatus.latest_version || "available"}</Badge>}
       </div>
       <div className="top-actions">
-        <button className="btn btn-warning topbar-compact-btn" onClick={onRestart}>Restart</button>
-        <button className={loading ? "btn btn-primary btn-progress topbar-compact-btn" : "btn btn-primary topbar-compact-btn"} onClick={onRefresh} disabled={loading}>{loading ? "Refreshing" : "Refresh"}</button>
+        <ConfirmAction
+          className="topbar-compact-btn"
+          label="Restart"
+          confirmLabel="Confirm restart ✓"
+          onConfirm={onRestart}
+          tone="danger"
+        />
+        <Button variant="primary" className="topbar-compact-btn" loading={loading} onClick={onRefresh} disabled={loading}>
+          {loading ? "Refreshing" : "Refresh"}
+        </Button>
       </div>
     </header>
   );
 }
 
-function AccountsTable({ profiles, switching, activatedProfile, visibleColumns, sort, onSort, onSwitch, onOpenRowActions, onToggleEligibility, wideMode }) {
-  const column = (key, className, children) => (visibleColumns[key] ? <td data-col={key} className={className}>{children}</td> : null);
+function AccountsTable({
+  profiles,
+  switching,
+  activatedProfile,
+  visibleColumns,
+  sort,
+  onSort,
+  onSwitch,
+  onOpenRowActions,
+  onToggleEligibility,
+  wideMode,
+  compactMode,
+  viewportSizeClass,
+}) {
+  const columnTitleByKey = {
+    cur: "Status. Active = green dot, Inactive = gray dot.",
+    h5: "5h means the five-hour usage window.",
+    h5remain: "Remaining time until 5h usage resets.",
+    h5reset: "Absolute time when 5h usage resets.",
+    weeklyremain: "W means weekly window. Remaining time until weekly reset.",
+    weeklyreset: "Absolute time when weekly usage resets.",
+  };
+  const columns = columnDefs
+    .filter((column) => visibleColumns[column.key] && isColumnVisibleForViewport(column.key, viewportSizeClass))
+    .map((column) => ({
+      key: column.key,
+      label: column.label,
+      title: columnTitleByKey[column.key],
+      colClassName: tableColumnLayout[column.key]?.colClassName || "",
+      width: tableColumnLayout[column.key]?.width,
+      className: ["email", "id", "added", "note", "h5remain", "h5reset", "weeklyremain", "weeklyreset"].includes(column.key)
+        ? `${column.key === "email" ? "email-cell" : ""} ${column.key === "id" ? "id-cell" : ""} ${column.key === "added" ? "added-cell" : ""} ${column.key === "note" ? "note-cell" : ""} ${column.key === "h5remain" || column.key === "h5reset" || column.key === "weeklyremain" || column.key === "weeklyreset" ? "reset-cell" : ""}`.trim()
+        : "",
+      sortable: true,
+      render: (profile) => {
+        const quotaBlocked = (usageValue(profile, "usage_5h") ?? 1) <= 0 || (usageValue(profile, "usage_weekly") ?? 1) <= 0;
+        const disableSwitch = profile.is_current || Boolean(switching);
+        const noteText = String(profile.note || (profile.same_principal ? "same-principal" : "")).trim();
+        switch (column.key) {
+          case "cur":
+            return <StatusDot active={profile.is_current} />;
+          case "profile":
+            return <strong className="profile-name">{profile.name}</strong>;
+          case "email":
+            return <span className="muted" title={profile.email_display}>{profile.email_display}</span>;
+          case "h5":
+            return <UsageCell row={profile} usageKey="usage_5h" />;
+          case "h5remain":
+            return (
+              <span className="remain-value" title={fmtResetFull(profile.usage_5h?.resets_at)}>
+                {fmtRemain(profile.usage_5h?.resets_at, true)}
+              </span>
+            );
+          case "h5reset":
+            return <span className="muted" title={fmtResetFull(profile.usage_5h?.resets_at)}>{fmtReset(profile.usage_5h?.resets_at)}</span>;
+          case "weekly":
+            return <UsageCell row={profile} usageKey="usage_weekly" />;
+          case "weeklyremain":
+            return (
+              <span className="remain-value" title={fmtResetFull(profile.usage_weekly?.resets_at)}>
+                {fmtRemain(profile.usage_weekly?.resets_at, true)}
+              </span>
+            );
+          case "weeklyreset":
+            return <span className="muted" title={fmtResetFull(profile.usage_weekly?.resets_at)}>{fmtReset(profile.usage_weekly?.resets_at)}</span>;
+          case "plan":
+            return (
+              <Badge variant={planBadgeVariant(profile.plan_type)} className="plan-badge">
+                {String(profile.plan_type || "free")}
+              </Badge>
+            );
+          case "paid":
+            return (
+              <Badge variant={profile.is_paid ? "success" : "neutral"} className="paid-badge">
+                {fmtPaid(profile.is_paid)}
+              </Badge>
+            );
+          case "id":
+            return <span className="muted id-value" title={profile.account_id || "-"}>{truncateAccountId(profile.account_id)}</span>;
+          case "added":
+            return <span className="muted" title={fmtSavedAtFull(profile.saved_at)}>{fmtSavedAt(profile.saved_at)}</span>;
+          case "note":
+            return <span className="muted" title={noteText || "-"}>{truncateNote(noteText)}</span>;
+          case "auto":
+            return (
+              <span className="toggle">
+                <ToggleSwitch
+                  checked={!!profile.auto_switch_eligible}
+                  onChange={(nextValue) => onToggleEligibility(profile.name, nextValue)}
+                  ariaLabel={`Auto switch eligibility for ${profile.name}`}
+                />
+              </span>
+            );
+          case "actions":
+            return (
+              <div className={`actions-cell ${compactMode ? "compact" : ""}`} role="group" aria-label={`Actions for ${profile.name}`}>
+                {compactMode ? (
+                  <>
+                    <Button
+                      variant={quotaBlocked ? "danger" : "primary"}
+                      className={`actions-menu-btn actions-switch-btn ${disableSwitch ? "btn-disabled" : ""}`}
+                      loading={switching === profile.name}
+                      disabled={disableSwitch}
+                      onClick={() => onSwitch(profile.name)}
+                      aria-label={`Switch to ${profile.name}`}
+                      title={`Switch to ${profile.name}`}
+                    >
+                      ⇄
+                    </Button>
+                    <Button
+                      className="actions-menu-btn"
+                      data-row-actions={profile.name}
+                      aria-label={`row actions ${profile.name}`}
+                      title="Row actions"
+                      onClick={() => onOpenRowActions(profile)}
+                    >
+                      ⋯
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      variant={quotaBlocked ? "danger" : "primary"}
+                      className={disableSwitch ? "btn-disabled" : ""}
+                      loading={switching === profile.name}
+                      disabled={disableSwitch}
+                      onClick={() => onSwitch(profile.name)}
+                    >
+                      {switching === profile.name ? "Switching" : "Switch"}
+                    </Button>
+                    <Button
+                      className="actions-menu-btn"
+                      data-row-actions={profile.name}
+                      aria-label={`row actions ${profile.name}`}
+                      title="Row actions"
+                      onClick={() => onOpenRowActions(profile)}
+                    >
+                      ⋯
+                    </Button>
+                  </>
+                )}
+              </div>
+            );
+          default:
+            return "-";
+        }
+      },
+    }));
 
   return (
-    <table className={wideMode ? "wide-columns" : ""}>
-      <thead>
-        <tr>
-          {columnDefs.map((col) => (visibleColumns[col.key] ? (
-            <th key={col.key} data-col={col.key} onClick={() => onSort(col.key)} className={`sortable ${sort.key === col.key ? "sorted" : ""}`}>
-              {col.label}
-              <span className="sort-indicator">{sort.key === col.key ? (sort.dir === "asc" ? "↑" : "↓") : ""}</span>
-            </th>
-          ) : null))}
-        </tr>
-      </thead>
-      <tbody>
-        {profiles.map((profile) => {
-          const quotaBlocked = (usageValue(profile, "usage_5h") ?? 1) <= 0 || (usageValue(profile, "usage_weekly") ?? 1) <= 0;
-          const disableSwitch = profile.is_current || Boolean(switching);
-          const rowClass = buildProfileRowClassName({
-            isCurrent: profile.is_current,
-            isPending: switching === profile.name,
-            isActivated: activatedProfile === profile.name,
-          });
-
-          return (
-            <tr key={profile.name} className={rowClass}>
-              {column("cur", null, <span className={profile.is_current ? "status-dot active" : "status-dot"} aria-hidden="true" />)}
-              {column("profile", null, <strong className="profile-name">{profile.name}</strong>)}
-              {column("email", "email-cell", <span className="muted" title={profile.email_display}>{profile.email_display}</span>)}
-              {column("h5", null, <UsageCell row={profile} usageKey="usage_5h" />)}
-              {column("h5remain", "reset-cell", <span className="muted">{fmtRemain(profile.usage_5h?.resets_at, true)}</span>)}
-              {column("h5reset", "reset-cell", <span className="muted">{fmtReset(profile.usage_5h?.resets_at)}</span>)}
-              {column("weekly", null, <UsageCell row={profile} usageKey="usage_weekly" />)}
-              {column("weeklyremain", "reset-cell", <span className="muted">{fmtRemain(profile.usage_weekly?.resets_at)}</span>)}
-              {column("weeklyreset", "reset-cell", <span className="muted">{fmtReset(profile.usage_weekly?.resets_at)}</span>)}
-              {column("plan", null, <span className="muted">{profile.plan_type || "-"}</span>)}
-              {column("paid", null, <span className="muted">{fmtPaid(profile.is_paid)}</span>)}
-              {column("id", "id-cell", <span className="muted" title={profile.account_id || "-"}>{profile.account_id || "-"}</span>)}
-              {column("added", "added-cell", <span className="muted">{fmtSavedAt(profile.saved_at)}</span>)}
-              {column("note", "note-cell", profile.same_principal ? <span className="badge">same-principal</span> : null)}
-              {column("auto", null, <label className="toggle"><input type="checkbox" checked={!!profile.auto_switch_eligible} onChange={(event) => onToggleEligibility(profile.name, event.target.checked)} /></label>)}
-              {column("actions", null, (
-                <div className="actions-cell">
-                  <button className={`${quotaBlocked ? "btn btn-primary-danger" : buildSwitchButtonClassName(switching === profile.name)} ${disableSwitch ? "btn-disabled" : ""}`} disabled={disableSwitch} onClick={() => onSwitch(profile.name)}>
-                    {switching === profile.name ? "Switching" : "Switch"}
-                  </button>
-                  <button className="btn actions-menu-btn" data-row-actions={profile.name} aria-label={`row actions ${profile.name}`} title="Row actions" onClick={() => onOpenRowActions(profile.name)}>⋯</button>
-                </div>
-              ))}
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <DataTable
+      className={`profiles-data-table ${wideMode ? "wide-columns" : ""} ${compactMode ? "compact-columns" : ""}`.trim()}
+      columns={columns}
+      sort={sort}
+      onSort={onSort}
+      rows={profiles}
+      rowKey={(profile) => profile.name}
+      rowClassName={(profile) => buildProfileRowClassName({
+        isCurrent: profile.is_current,
+        isPending: switching === profile.name,
+        isActivated: activatedProfile === profile.name,
+      })}
+      emptyState="No profiles available."
+    />
   );
 }
 
@@ -509,22 +822,28 @@ function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions })
           <div key={profile.name} className="mobile-row">
             <div className="mobile-head">
               <div className="mobile-left">
-                <span className={profile.is_current ? "status-dot active" : "status-dot"} aria-hidden="true" />
+                <StatusDot active={profile.is_current} />
                 <span className="mobile-profile">{profile.name || "-"}</span>
               </div>
               <div className="mobile-actions">
-                <button className={`${quotaBlocked ? "btn btn-primary-danger" : "btn btn-primary"} ${switchDisabled ? "btn-disabled" : ""} ${switching === profile.name ? "btn-progress" : ""}`} disabled={switchDisabled} onClick={() => onSwitch(profile.name)}>
+                <Button
+                  variant={quotaBlocked ? "danger" : "primary"}
+                  className={switchDisabled ? "btn-disabled" : ""}
+                  loading={switching === profile.name}
+                  disabled={switchDisabled}
+                  onClick={() => onSwitch(profile.name)}
+                >
                   {switching === profile.name ? "Switching" : "Switch"}
-                </button>
-                <button className="btn actions-menu-btn" data-mobile-row-actions={profile.name} onClick={() => onOpenRowActions(profile.name)}>⋯</button>
+                </Button>
+                <Button className="actions-menu-btn" data-mobile-row-actions={profile.name} onClick={() => onOpenRowActions(profile)}>⋯</Button>
               </div>
             </div>
             <div className="mobile-email">{profile.email_display}</div>
             <div className="mobile-stats">
-              <div className="mobile-stat"><span className="label">5H</span><span className={h5Tone ? `usage-${h5Tone}` : "loading-text"}>{usagePercent(profile, "usage_5h")}</span></div>
+              <div className="mobile-stat"><span className="label" title="5h means the five-hour usage window.">5h</span><span className={h5Tone ? `usage-${h5Tone}` : "loading-text"}>{usagePercent(profile, "usage_5h")}</span></div>
               <div className="mobile-stat"><span className="label">Weekly</span><span className={weeklyTone ? `usage-${weeklyTone}` : "loading-text"}>{usagePercent(profile, "usage_weekly")}</span></div>
-              <div className="mobile-stat"><span className="label">5H Remain</span><span>{fmtRemain(profile.usage_5h?.resets_at, true)}</span></div>
-              <div className="mobile-stat"><span className="label">W Remain</span><span>{fmtRemain(profile.usage_weekly?.resets_at)}</span></div>
+              <div className="mobile-stat"><span className="label" title="Remaining time until 5h usage resets.">5h remain</span><span>{fmtRemain(profile.usage_5h?.resets_at)}</span></div>
+              <div className="mobile-stat"><span className="label" title="W means weekly window. Remaining time until weekly reset.">W remain</span><span>{fmtRemain(profile.usage_weekly?.resets_at)}</span></div>
             </div>
           </div>
         );
@@ -533,10 +852,29 @@ function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions })
   );
 }
 
-function ProfilesView({ state, switching, activatedProfile, onSwitch, onAddAccount, onImportProfiles, onExportProfiles, onRemoveAll, onOpenColumns, onOpenRowActions, onToggleEligibility, visibleColumns, sort, onSort }) {
+function ProfilesView({
+  state,
+  switching,
+  activatedProfile,
+  onSwitch,
+  onAddAccount,
+  onImportProfiles,
+  onExportProfiles,
+  onRemoveAll,
+  onOpenColumns,
+  onOpenRowActions,
+  onToggleEligibility,
+  visibleColumns,
+  sort,
+  onSort,
+  compactMode,
+  viewportSizeClass,
+}) {
   const profiles = sortRows(buildProfileRows(state), sort);
   const visibleColumnCount = Object.values(visibleColumns || {}).filter(Boolean).length;
   const wideMode = visibleColumnCount > 8;
+  const activeColumnCount = columnDefs.filter((column) => visibleColumns?.[column.key]).length;
+  const totalColumnCount = columnDefs.length;
 
   return (
     <section className="view profiles-view" data-testid="profiles-view">
@@ -544,11 +882,23 @@ function ProfilesView({ state, switching, activatedProfile, onSwitch, onAddAccou
         <div className="accounts-toolbar">
           <div className="spacer" />
           <div className="accounts-actions">
-            <button className="btn btn-primary" onClick={onAddAccount}>Add Account</button>
-            <button className="btn" onClick={onImportProfiles}>Import</button>
-            <button className="btn" onClick={onExportProfiles}>Export</button>
-            <button className="btn btn-primary-danger" onClick={onRemoveAll}>Remove All</button>
-            <button className="btn" onClick={onOpenColumns}>Columns</button>
+            <Button variant="primary" onClick={onAddAccount}>Add Account</Button>
+            <Button onClick={onImportProfiles}>Import</Button>
+            <Button className="profiles-export-btn" onClick={onExportProfiles}>
+              <span className="btn-label">Export</span>
+            </Button>
+            <ConfirmAction
+              label="Remove all"
+              confirmLabel="Confirm remove all ✓"
+              tone="danger"
+              onConfirm={onRemoveAll}
+            />
+            <Button className="columns-btn" onClick={onOpenColumns}>
+              <span className="btn-label">Columns</span>
+              <span className="columns-hidden-badge columns-count-badge" aria-label={`${activeColumnCount} of ${totalColumnCount} columns active`}>
+                {activeColumnCount}/{totalColumnCount}
+              </span>
+            </Button>
           </div>
         </div>
         <div className={`table-wrap profiles-table-wrap ${wideMode ? "wide-columns" : ""}`}>
@@ -558,6 +908,8 @@ function ProfilesView({ state, switching, activatedProfile, onSwitch, onAddAccou
             activatedProfile={activatedProfile}
             visibleColumns={visibleColumns}
             wideMode={wideMode}
+            compactMode={compactMode}
+            viewportSizeClass={viewportSizeClass}
             sort={sort}
             onSort={onSort}
             onSwitch={onSwitch}
@@ -576,33 +928,33 @@ function ProfilesView({ state, switching, activatedProfile, onSwitch, onAddAccou
   );
 }
 
-function InlineStepper({ value, min, max, step = 1, unit, onChange }) {
-  return (
-    <div className="stepper compact">
-      <button type="button" onClick={() => onChange(updateNumber(value, -step, min, max, min))}>-</button>
-      <input type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value || min))} />
-      <button type="button" onClick={() => onChange(updateNumber(value, step, min, max, min))}>+</button>
-    </div>
-  );
-}
-
 function AutoRefreshView({ state, onSavePatch }) {
   const ui = state?.config?.ui || {};
 
   return (
     <section className="view auto-refresh-view" data-testid="auto-refresh-view">
-      <section className="control-card settings-card auto-refresh-panel">
-        <div className="group-title">Refresh Rules</div>
+      <SectionCard className="control-card settings-card auto-refresh-panel">
+        <div className="group-title">Refresh rules</div>
         <div className="auto-refresh-sections">
           <section className="auto-refresh-section">
+            <div className="auto-refresh-title-row">
+              <h3>Current account refresh</h3>
+              <span>Unit: seconds</span>
+            </div>
             <div className="auto-refresh-row">
               <span className="setting-label">Enabled</span>
-              <label className="toggle auto-refresh-toggle"><input type="checkbox" checked={!!ui.current_auto_refresh_enabled} onChange={(event) => onSavePatch({ ui: { current_auto_refresh_enabled: event.target.checked } })} /></label>
+              <span className="toggle auto-refresh-toggle">
+                <ToggleSwitch
+                  checked={!!ui.current_auto_refresh_enabled}
+                  onChange={(nextValue) => onSavePatch({ ui: { current_auto_refresh_enabled: nextValue } })}
+                  ariaLabel="Enable current account refresh"
+                />
+              </span>
             </div>
             <div className="auto-refresh-control-surface">
               <div className="auto-refresh-inline-controls">
-                <span className="setting-label auto-refresh-inline-label">Delay (sec)</span>
-                <InlineStepper
+                <span className="setting-label auto-refresh-inline-label">Delay (seconds)</span>
+                <StepperInput
                   value={ui.current_refresh_interval_sec ?? 5}
                   min={1}
                   max={3600}
@@ -613,14 +965,24 @@ function AutoRefreshView({ state, onSavePatch }) {
             </div>
           </section>
           <section className="auto-refresh-section">
+            <div className="auto-refresh-title-row">
+              <h3>All accounts refresh</h3>
+              <span>Unit: minutes</span>
+            </div>
             <div className="auto-refresh-row">
               <span className="setting-label">Enabled</span>
-              <label className="toggle auto-refresh-toggle"><input type="checkbox" checked={!!ui.all_auto_refresh_enabled} onChange={(event) => onSavePatch({ ui: { all_auto_refresh_enabled: event.target.checked } })} /></label>
+              <span className="toggle auto-refresh-toggle">
+                <ToggleSwitch
+                  checked={!!ui.all_auto_refresh_enabled}
+                  onChange={(nextValue) => onSavePatch({ ui: { all_auto_refresh_enabled: nextValue } })}
+                  ariaLabel="Enable all accounts refresh"
+                />
+              </span>
             </div>
             <div className="auto-refresh-control-surface">
               <div className="auto-refresh-inline-controls">
-                <span className="setting-label auto-refresh-inline-label">Delay (min)</span>
-                <InlineStepper
+                <span className="setting-label auto-refresh-inline-label">Delay (minutes)</span>
+                <StepperInput
                   value={ui.all_refresh_interval_min ?? 5}
                   min={1}
                   max={60}
@@ -631,7 +993,7 @@ function AutoRefreshView({ state, onSavePatch }) {
             </div>
           </section>
         </div>
-      </section>
+      </SectionCard>
     </section>
   );
 }
@@ -653,24 +1015,31 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
   const countdownText = useCountdownText(autoState.pending_switch_due_at_text, autoState.pending_switch_due_at);
   const chainOrder = Array.isArray(state?.list?.profiles) ? state.list.profiles.map((row) => row.name) : [];
   const chainRows = sortRows(buildProfileRows(state), { key: "profile", dir: "asc" }).filter((row) => chainOrder.includes(row.name));
+  const pendingSwitch = Boolean(autoState.pending_switch_due_at);
 
   return (
-    <section className="view" data-testid="autoswitch-view">
-      <section className={`card auto-switch-card ${autoState.pending_switch_due_at ? "armed" : ""}`} style={{ padding: 12 }}>
+    <section className="view autoswitch-view" data-testid="autoswitch-view">
+      <SectionCard className={`card auto-switch-card ${pendingSwitch ? "armed" : ""}`}>
         <div className="auto-switch-head">
-          <div className="k" style={{ marginBottom: 0 }}>Auto-Switch Rules</div>
-          <div className={`auto-switch-countdown ${autoState.pending_switch_due_at ? "active" : ""}`}>{countdownText}</div>
+          <div className="k">Auto-switch rules</div>
+          <div className={`auto-switch-countdown ${pendingSwitch ? "active pending" : "active idle"}`}>{countdownText}</div>
         </div>
         <div className="rules-grid">
           <div className="rules-col settings-card">
             <div className="rules-title">Execution</div>
             <div className="setting-row">
               <span className="setting-label">Enabled</span>
-              <label className="toggle"><input type="checkbox" checked={!!autoConfig.enabled} onChange={(event) => onSavePatch({ auto_switch: { enabled: event.target.checked } })} /></label>
+              <span className="toggle">
+                <ToggleSwitch
+                  checked={!!autoConfig.enabled}
+                  onChange={(nextValue) => onSavePatch({ auto_switch: { enabled: nextValue } })}
+                  ariaLabel="Enable auto switch"
+                />
+              </span>
             </div>
             <div className="setting-row metric inset-row">
-              <span className="setting-label">Delay (sec)</span>
-              <InlineStepper
+              <span className="setting-label">Delay (seconds)</span>
+              <StepperInput
                 value={autoConfig.delay_sec ?? 60}
                 min={0}
                 max={3600}
@@ -684,20 +1053,39 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
               </div>
               <div>
                 <div className="k">Pending switch</div>
-                <div className="v">{countdownText}</div>
+                <div className={`v ${pendingSwitch ? "pending" : ""}`}>{countdownText}</div>
               </div>
             </div>
-            <div className="exec-actions">
-              <button className="btn btn-primary" onClick={onRunSwitch}>Run Switch</button>
-              <button className="btn" onClick={onRapidTest}>Rapid Test</button>
-              <button className="btn btn-danger" onClick={onStopTests}>Stop Tests</button>
-              <button className="btn" onClick={onTestAutoSwitch}>Test Auto Switch</button>
+            <div className="exec-actions exec-actions-split">
+              <div className="exec-actions-primary">
+                <ConfirmAction
+                  label="Run switch"
+                  confirmLabel="Confirm run switch ✓"
+                  tone="primary"
+                  onConfirm={onRunSwitch}
+                />
+              </div>
+              <div className="exec-actions-divider" aria-hidden="true" />
+              <div className="exec-actions-secondary">
+                <Button onClick={onRapidTest}>Rapid test</Button>
+                <Button variant="dangerOutline" onClick={onStopTests}>Stop tests</Button>
+                <Button onClick={onTestAutoSwitch}>Test auto switch</Button>
+              </div>
             </div>
           </div>
           <div className="rules-col settings-card">
             <div className="rules-title">Selection Policy</div>
             <div className="setting-field">
-              <span className="setting-label">Ranking</span>
+              <div className="selection-head">
+                <span className="setting-label">Ranking</span>
+                <Button
+                  variant="ghost"
+                  onClick={onAutoArrange}
+                  title="Automatically reorder the switch chain based on current ranking policy."
+                >
+                  Auto Arrange
+                </Button>
+              </div>
               <select value={autoConfig.ranking_mode || "balanced"} onChange={(event) => onSavePatch({ auto_switch: { ranking_mode: event.target.value } })}>
                 <option value="balanced">balanced</option>
                 <option value="max_5h">max_5h</option>
@@ -707,8 +1095,8 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
             </div>
             <div className="metric-pair-grid">
               <div className="setting-row metric inset-row">
-                <span className="setting-label">5H switch %</span>
-                <InlineStepper
+                <span className="setting-label">5h switch (%)</span>
+                <StepperInput
                   value={autoConfig.thresholds?.h5_switch_pct ?? 20}
                   min={0}
                   max={100}
@@ -716,8 +1104,8 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
                 />
               </div>
               <div className="setting-row metric inset-row">
-                <span className="setting-label">Weekly switch %</span>
-                <InlineStepper
+                <span className="setting-label">Weekly switch (%)</span>
+                <StepperInput
                   value={autoConfig.thresholds?.weekly_switch_pct ?? 20}
                   min={0}
                   max={100}
@@ -725,27 +1113,35 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
                 />
               </div>
             </div>
-            <div className="field-row rules-actions">
-              <button className="btn btn-primary" onClick={onAutoArrange}>Auto Arrange</button>
-            </div>
           </div>
         </div>
         <div className="chain-panel">
           <div className="chain-head">
             <div className="chain-title">Switch Chain Preview</div>
-            <button className="btn" onClick={onOpenChainEdit}>Edit</button>
+            <Button onClick={onOpenChainEdit}>Edit</Button>
           </div>
-          <div className="chain-track">
-            {chainRows.length ? chainRows.map((row) => (
-              <span key={row.name} className="chain-node">
-                <span className="chain-name">{row.name}</span>
-                <span className={`chain-metric usage-${usageTone(usageValue(row, "usage_5h"))}`}>5H {usagePercent(row, "usage_5h")}</span>
-                <span className={`chain-metric usage-${usageTone(usageValue(row, "usage_weekly"))}`}>W {usagePercent(row, "usage_weekly")}</span>
-              </span>
-            )) : <span className="muted">No profiles available.</span>}
+          <div className="chain-track-wrap">
+            <div className="chain-track">
+              {chainRows.length ? chainRows.map((row) => (
+                <span key={row.name} className="chain-node">
+                  <span className="chain-name">{row.name}</span>
+                  <span className={`chain-metric progress-tone-${usageTone(usageValue(row, "usage_5h"))}`} title="5-hour usage">
+                    5H {usagePercent(row, "usage_5h")}
+                  </span>
+                  <span className={`chain-metric progress-tone-${usageTone(usageValue(row, "usage_weekly"))}`} title="Weekly usage">
+                    W {usagePercent(row, "usage_weekly")}
+                  </span>
+                </span>
+              )) : <span className="muted">No profiles available.</span>}
+            </div>
+          </div>
+          <div className="chain-key">
+            <span title="5H means five-hour usage window">5H = 5-hour usage</span>
+            {" · "}
+            <span title="W means weekly usage window">W = weekly usage</span>
           </div>
         </div>
-      </section>
+      </SectionCard>
     </section>
   );
 }
@@ -754,18 +1150,24 @@ function NotificationsView({ state, onNotify, onSavePatch }) {
   const notifications = state?.config?.notifications || {};
 
   return (
-    <section className="view" data-testid="notifications-view">
+    <section className="view notifications-view" data-testid="notifications-view">
       <div className="controls-grid">
-        <section className="control-card notify-card settings-card">
-          <div className="group-title">Notification</div>
+        <SectionCard className="control-card control-card-full notify-card settings-card">
+          <div className="group-title">Notifications</div>
           <div className="setting-row inset-row">
             <span className="setting-label">Enable notifications</span>
-            <label className="toggle"><input type="checkbox" checked={!!notifications.enabled} onChange={(event) => onSavePatch({ notifications: { enabled: event.target.checked } })} /></label>
+            <span className="toggle">
+              <ToggleSwitch
+                checked={!!notifications.enabled}
+                onChange={(nextValue) => onSavePatch({ notifications: { enabled: nextValue } })}
+                ariaLabel="Enable notifications"
+              />
+            </span>
           </div>
           <div className="metric-pair-grid">
             <div className="setting-row metric inset-row">
-              <span className="setting-label">5H notify %</span>
-              <InlineStepper
+              <span className="setting-label">Notify when 5h usage exceeds (%)</span>
+              <StepperInput
                 value={notifications.thresholds?.h5_warn_pct ?? 20}
                 min={0}
                 max={100}
@@ -773,8 +1175,8 @@ function NotificationsView({ state, onNotify, onSavePatch }) {
               />
             </div>
             <div className="setting-row metric inset-row">
-              <span className="setting-label">Weekly notify %</span>
-              <InlineStepper
+              <span className="setting-label">Notify when weekly usage exceeds (%)</span>
+              <StepperInput
                 value={notifications.thresholds?.weekly_warn_pct ?? 20}
                 min={0}
                 max={100}
@@ -783,9 +1185,9 @@ function NotificationsView({ state, onNotify, onSavePatch }) {
             </div>
           </div>
           <div className="alarm-actions">
-            <button className="btn btn-warning btn-block" type="button" onClick={onNotify}>Test Notification</button>
+            <Button className="btn-block" type="button" onClick={onNotify}>Test notification</Button>
           </div>
-        </section>
+        </SectionCard>
       </div>
     </section>
   );
@@ -794,39 +1196,71 @@ function NotificationsView({ state, onNotify, onSavePatch }) {
 function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebug, onSavePatch }) {
   const ui = state?.config?.ui || {};
   const isWindows = window.codexAccountDesktop?.platform === "win32";
+  const logsEnabled = !!ui.debug_mode;
+  const themeMode = ui.theme || "auto";
+  const platformName = window.codexAccountDesktop?.platform || navigator.platform || "unknown";
 
   return (
-    <section className="view" data-testid="settings-view">
-      <div className="controls-grid">
-        <section className="control-card settings-card">
-          <div className="group-title">Appearance</div>
-          <div className="setting-row inset-row">
-            <span className="setting-label">Theme mode</span>
-            <strong>{ui.theme || "auto"}</strong>
-          </div>
-          <div className="settings-inline-actions">
-            <button className="btn" onClick={onToggleTheme}>Cycle Theme</button>
-            <button className="btn" onClick={onToggleDebug}>Toggle Logs</button>
-          </div>
-        </section>
-        <section className="control-card settings-card">
-          <div className="group-title">Maintenance</div>
-          <p className="muted">Keep the desktop shell aligned with the web panel while still exposing app-level controls here.</p>
-          <div className="settings-inline-actions">
-            <button className="btn btn-warning" onClick={onRestart}>Restart</button>
-            <button className="btn btn-primary-danger" onClick={onKillAll}>Kill All</button>
-          </div>
-        </section>
-        {isWindows ? (
-          <section className="control-card settings-card">
-            <div className="group-title">Windows Integration</div>
+    <section className="view settings-view" data-testid="settings-view">
+      <div className="settings-layout">
+        <div className="controls-grid">
+          <SectionCard className="control-card settings-card">
+            <div className="group-title">Appearance</div>
             <div className="setting-row inset-row">
-              <span className="setting-label">Show current 5H usage on taskbar</span>
-              <label className="toggle"><input type="checkbox" checked={!!ui.windows_taskbar_usage_enabled} onChange={(event) => onSavePatch({ ui: { windows_taskbar_usage_enabled: event.target.checked } })} /></label>
+              <span className="setting-label">Theme mode</span>
+              <strong>{themeMode}</strong>
             </div>
-            <p className="muted">Adds a compact current 5H usage badge to the Windows taskbar button.</p>
-          </section>
-        ) : null}
+            <div className="settings-inline-actions">
+              <Button className={themeMode !== "auto" ? "btn-active" : ""} onClick={onToggleTheme}>Cycle theme</Button>
+              <Button className={logsEnabled ? "btn-active" : ""} onClick={onToggleDebug}>
+                {logsEnabled ? "Logs on" : "Logs off"}
+              </Button>
+            </div>
+          </SectionCard>
+          <SectionCard className="control-card settings-card">
+            <div className="group-title">Maintenance</div>
+            <p className="muted">Restart reconnects the desktop panel to the local service without changing account data.</p>
+            <p className="muted">Kill All stops managed Codex Account Manager background processes. Use it only when restart cannot recover the app.</p>
+            <div className="settings-inline-actions">
+              <ConfirmAction
+                label="Restart"
+                confirmLabel="Confirm restart ✓"
+                tone="primary"
+                onConfirm={onRestart}
+              />
+              <ConfirmAction
+                label="Kill all"
+                confirmLabel="Confirm kill all ✓"
+                tone="danger"
+                onConfirm={onKillAll}
+              />
+            </div>
+          </SectionCard>
+          {isWindows ? (
+            <SectionCard className="control-card settings-card">
+              <div className="group-title">Windows Integration</div>
+              <div className="setting-row inset-row">
+                <span className="setting-label" title="5H means the five-hour usage window.">Show current 5H usage on taskbar</span>
+                <span className="toggle">
+                  <ToggleSwitch
+                    checked={!!ui.windows_taskbar_usage_enabled}
+                    onChange={(nextValue) => onSavePatch({ ui: { windows_taskbar_usage_enabled: nextValue } })}
+                    ariaLabel="Show current 5H usage on taskbar"
+                  />
+                </span>
+              </div>
+              <p className="muted">Adds a compact current 5H usage badge to the Windows taskbar button.</p>
+            </SectionCard>
+          ) : null}
+        </div>
+        <SectionCard className="control-card settings-card settings-system-card">
+          <div className="group-title">System info</div>
+          <div className="settings-system-grid">
+            <LabelValueRow label="Platform" value={platformName} />
+            <LabelValueRow label="Current refresh" value={ui.current_auto_refresh_enabled ? `${ui.current_refresh_interval_sec || 5}s` : "disabled"} />
+            <LabelValueRow label="All refresh" value={ui.all_auto_refresh_enabled ? `${ui.all_refresh_interval_min || 5}m` : "disabled"} />
+          </div>
+        </SectionCard>
       </div>
     </section>
   );
@@ -834,72 +1268,243 @@ function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebu
 
 function GuideView({ releaseNotes, onRefreshReleaseNotes }) {
   const notes = Array.isArray(releaseNotes?.releases) ? releaseNotes.releases : [];
+  const latestTag = notes[0]?.tag || "No release notes loaded";
+  const shortcuts = views.slice(0, 9);
 
   return (
-    <section className="view">
-      <div className="settings-panel">
-        <div><label>Quick Start</label><strong>Use Add Account, Switch, Import, Export, and Auto Switch from the desktop shell.</strong></div>
-        <div><label>Desktop parity</label><strong>Electron mirrors the web panel behavior, dialogs, and table controls.</strong></div>
-        <div><label>Release notes</label><strong>{notes[0]?.tag || "No release notes loaded"}</strong></div>
-        <div className="settings-inline-actions">
-          <button className="btn" onClick={onRefreshReleaseNotes}>Refresh</button>
+    <section className="view guide-view">
+      <div className="guide-layout">
+        <div className="guide-quick">
+          <SectionCard className="settings-card guide-quick-card">
+            <div className="group-title">Quick start</div>
+            <p className="muted">Use Add Account, Switch, Import, Export, and Auto Switch from the desktop shell.</p>
+            <LabelValueRow label="Desktop parity" value="Electron mirrors the web panel behavior, dialogs, and table controls." />
+            <LabelValueRow label="Latest release" value={latestTag} />
+            <div className="settings-inline-actions">
+              <Button onClick={onRefreshReleaseNotes}>Reload release notes</Button>
+            </div>
+          </SectionCard>
+
+          <SectionCard className="settings-card guide-shortcuts-card">
+            <div className="group-title">Key shortcuts</div>
+            <div className="guide-shortcuts-table">
+              {shortcuts.map((view) => (
+                <div key={view.id} className="guide-shortcuts-row">
+                  <span className="muted">{view.label}</span>
+                  <code>{view.key}</code>
+                </div>
+              ))}
+            </div>
+          </SectionCard>
         </div>
-        <div className="guide-notes">
-          {notes.slice(0, 3).map((note) => (
-            <article key={note.tag} className="metric-card">
-              <span>{note.tag}</span>
-              <strong>{note.title || note.tag}</strong>
-              <small>{Array.isArray(note.highlights) ? note.highlights.join(" • ") : String(note.body || "").slice(0, 140)}</small>
-            </article>
-          ))}
-        </div>
+
+        <SectionCard className="settings-card guide-changelog-card">
+          <div className="group-title">Changelog</div>
+          <div className="release-sections">
+            {notes.length === 0 ? (
+              <div className="muted">No release notes available.</div>
+            ) : notes.slice(0, 10).map((note, index) => {
+              const highlights = Array.isArray(note.highlights) && note.highlights.length
+                ? note.highlights
+                : String(note.body || "")
+                  .split(/\n+/)
+                  .map((item) => item.replace(/^\s*[-*]\s*/, "").trim())
+                  .filter(Boolean)
+                  .slice(0, 5);
+              return (
+                <details key={note.tag || note.title} className="release-section" open={index < 2}>
+                  <summary className="release-section-head">
+                    <span className="release-version-badge">{note.tag || "Release"}</span>
+                    {note.published_at ? <span className="release-date">{formatReleaseDate(note.published_at)}</span> : null}
+                  </summary>
+                  <h3>{note.title || note.tag || "Release notes"}</h3>
+                  {highlights.length ? (
+                    <ul>
+                      {highlights.map((item) => <li key={`${note.tag}-${item}`}>{item}</li>)}
+                    </ul>
+                  ) : (
+                    <p className="muted">{String(note.body || "No highlights available.")}</p>
+                  )}
+                </details>
+              );
+            })}
+          </div>
+        </SectionCard>
       </div>
     </section>
   );
 }
 
-function UpdateView({ updateStatus, onCheck, onRunUpdate }) {
+function UpdateView({ updateStatus, checking, onCheck, onRunUpdate }) {
+  const updateAvailable = !!updateStatus?.update_available;
+
   return (
-    <section className="view">
-      <div className="settings-panel">
-        <div><label>Current version</label><strong>{updateStatus?.current_version || "-"}</strong></div>
-        <div><label>Latest version</label><strong>{updateStatus?.latest_version || "-"}</strong></div>
-        <div><label>Status</label><strong>{updateStatus?.status_text || updateStatus?.status || "unknown"}</strong></div>
-        <div className="settings-inline-actions">
-          <button className="btn" onClick={onCheck}>Check for Updates</button>
-          <button className="btn btn-primary" onClick={onRunUpdate} disabled={!updateStatus?.update_available}>Update Now</button>
-        </div>
+    <section className="view update-view">
+      <div className="sparse-page-layout">
+        <SectionCard className="settings-card update-panel">
+          <div className="group-title">Update status</div>
+          <LabelValueRow label="Current version" value={updateStatus?.current_version || "-"} />
+          <LabelValueRow label="Latest version" value={updateStatus?.latest_version || "-"} />
+          <LabelValueRow label="Status" value={updateStatus?.status_text || updateStatus?.status || "Unknown"} />
+          {checking ? <div className="update-inline-loading" role="status" aria-live="polite">Checking for updates…</div> : null}
+          <div className="settings-inline-actions">
+            <Button loading={checking} onClick={onCheck} disabled={checking}>Check for updates</Button>
+            <Button variant={updateAvailable ? "primary" : "secondary"} onClick={onRunUpdate} disabled={!updateAvailable || checking}>Update now</Button>
+          </div>
+        </SectionCard>
+        <SectionCard className="settings-card sparse-secondary-card">
+          <div className="group-title">Release stream</div>
+          <p className="muted">Desktop updates include renderer fixes, runtime bootstrap improvements, and parity updates with the web panel.</p>
+          <div className="tech-pill-row">
+            <span className="chip chip-neutral">Electron</span>
+            <span className="chip chip-neutral">Python Core</span>
+            <span className="chip chip-neutral">Local API</span>
+          </div>
+        </SectionCard>
+        <SectionCard className="settings-card sparse-bottom-fill">
+          <div className="group-title">Recent update guidance</div>
+          <p className="muted">When an update is available, run it from this page and keep this window open until status changes to ready.</p>
+        </SectionCard>
       </div>
     </section>
   );
 }
 
 function DebugView({ debugLogs, onExport }) {
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const [showJump, setShowJump] = useState(false);
+  const panelRef = useRef(null);
+
+  const filteredLogs = useMemo(() => {
+    const source = Array.isArray(debugLogs) ? debugLogs : [];
+    const normalizedQuery = query.trim().toLowerCase();
+    return source.filter((row) => {
+      const level = String(row?.level || "info").toLowerCase();
+      const normalizedLevel = level === "warning" ? "warn" : level;
+      if (levelFilter !== "all" && normalizedLevel !== levelFilter) return false;
+      if (!normalizedQuery) return true;
+      const haystack = `${row?.ts || ""} ${row?.message || ""}`.toLowerCase();
+      return haystack.includes(normalizedQuery);
+    }).slice(-240);
+  }, [debugLogs, levelFilter, query]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    if (!showJump) {
+      panel.scrollTop = panel.scrollHeight;
+    }
+  }, [filteredLogs, showJump]);
+
+  function onPanelScroll(event) {
+    const panel = event.currentTarget;
+    const nearBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
+    setShowJump(!nearBottom);
+  }
+
+  function jumpToLatest() {
+    const panel = panelRef.current;
+    if (!panel) return;
+    panel.scrollTop = panel.scrollHeight;
+    setShowJump(false);
+  }
+
   return (
-    <section className="view">
-      <div className="settings-inline-actions">
-        <button className="btn" onClick={onExport}>Export Debug Logs</button>
+    <section className="view debug-view">
+      <div className="settings-inline-actions debug-actions">
+        <Button onClick={onExport}>Export debug logs</Button>
       </div>
-      <div className="debug-log-panel">
-        {debugLogs?.length ? debugLogs.slice(-120).map((row, index) => (
-          <div key={`${row.ts || index}-${index}`} className={`debug-line log-${String(row.level || "info")}`}>
+      <div className="debug-toolbar">
+        <div className="debug-filter-chips" role="tablist" aria-label="Log level filter">
+          {[
+            { key: "all", label: "All" },
+            { key: "info", label: "Info" },
+            { key: "warn", label: "Warn" },
+            { key: "error", label: "Error" },
+          ].map((item) => (
+            <Button
+              key={item.key}
+              type="button"
+              className={`debug-chip ${levelFilter === item.key ? "active" : ""}`}
+              onClick={() => setLevelFilter(item.key)}
+            >
+              {item.label}
+            </Button>
+          ))}
+        </div>
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search logs"
+          aria-label="Search logs"
+        />
+      </div>
+      <div ref={panelRef} className="debug-log-panel" onScroll={onPanelScroll}>
+        {filteredLogs.length ? filteredLogs.map((row, index) => (
+          <div key={`${row.ts || index}-${index}`} className={`debug-line log-${String(row.level || "info").toLowerCase()}`}>
             <span>{row.ts || "-"}</span>
-            <strong>{String(row.level || "info").toUpperCase()}</strong>
+            <strong>{formatLogLevel(row.level)}</strong>
             <span>{row.message || ""}</span>
           </div>
         )) : <div className="muted">No logs yet.</div>}
+        {showJump ? (
+          <Button type="button" className="debug-jump-latest" onClick={jumpToLatest}>
+            Jump to latest
+          </Button>
+        ) : null}
       </div>
     </section>
   );
 }
 
-function AboutView({ backendState }) {
+function AboutView({ backendState, version, onOpenExternal }) {
+  const backendUrl = String(backendState?.baseUrl || "http://127.0.0.1:4673/").trim();
+
   return (
-    <section className="view">
-      <div className="settings-panel">
-        <div><label>Desktop shell</label><strong>Electron renderer with Python backend</strong></div>
-        <div><label>Stable web panel</label><strong>Still available through codex-account ui</strong></div>
-        <div><label>Backend</label><strong>{backendState?.baseUrl || "127.0.0.1:4673"}</strong></div>
+    <section className="view about-view">
+      <div className="sparse-page-layout">
+        <SectionCard className="settings-card about-panel">
+          <header className="about-identity">
+            <img src={iconUrl} alt="" />
+            <div>
+              <h2>Codex Account Manager</h2>
+              <p>Desktop account switching and usage monitoring for Codex profiles.</p>
+              <span>Version {version || "unknown"}</span>
+            </div>
+          </header>
+        </SectionCard>
+
+        <SectionCard className="settings-card about-panel">
+          <LabelValueRow label="Desktop shell" value="Electron renderer with Python backend" />
+          <LabelValueRow label="Stable web panel" value="Still available through codex-account ui" />
+          <LabelValueRow
+            label="Backend"
+            value={(
+              <a
+                className="about-backend-link"
+                href={backendUrl}
+                onClick={(event) => {
+                  event.preventDefault();
+                  onOpenExternal(backendUrl);
+                }}
+              >
+                {backendUrl}
+              </a>
+            )}
+          />
+        </SectionCard>
+
+        <SectionCard className="settings-card sparse-bottom-fill">
+          <div className="group-title">Built with</div>
+          <div className="tech-pill-row">
+            <span className="chip chip-neutral">Electron</span>
+            <span className="chip chip-neutral">React</span>
+            <span className="chip chip-neutral">Python API</span>
+            <span className="chip chip-neutral">Playwright Tests</span>
+          </div>
+        </SectionCard>
       </div>
     </section>
   );
@@ -1035,6 +1640,7 @@ function RuntimeSetupView({
       Math.round(((completedSteps + (busy ? 0.5 : 0)) / stepRows.length) * 100),
     );
   const progressTone = phase === "error" ? "danger" : (busy ? "active" : "default");
+  const progressWidthClass = `progress-width-${Math.max(0, Math.min(100, progressPercent))}`;
   const progressLabel = progressPercent === 100
     ? "Setup complete"
     : busy
@@ -1137,31 +1743,32 @@ function RuntimeSetupView({
                     data-testid="runtime-progress-bar"
                     aria-hidden="true"
                   >
-                    <span style={{ width: `${progressPercent}%` }} />
+                    <span className={progressWidthClass} />
                   </div>
                 </section>
 
                 <div className="runtime-action-row">
-                  <button
-                    className={busy ? "btn btn-primary btn-progress" : "btn btn-primary"}
+                  <Button
+                    variant="primary"
+                    loading={busy}
                     onClick={primaryAction.onClick}
                     disabled={primaryAction.disabled}
                   >
                     {primaryAction.label}
-                  </button>
-                  {showRetry ? <button className="btn" onClick={onRetry} disabled={busy}>Retry</button> : null}
+                  </Button>
+                  {showRetry ? <Button onClick={onRetry} disabled={busy}>Retry</Button> : null}
                 </div>
 
                 <div className="runtime-utility-row">
-                  <button
+                  <Button
                     type="button"
-                    className="runtime-text-button"
+                    className="runtime-text-button btn-ghost"
                     onClick={() => setDetailsOpen((value) => !value)}
                     aria-expanded={detailsOpen}
                     data-testid="runtime-details-toggle"
                   >
                     {detailsOpen ? "Hide details" : "Show details"}
-                  </button>
+                  </Button>
                   {copyState ? <span className="runtime-copy-state" role="status" aria-live="polite">{copyState}</span> : null}
                 </div>
               </div>
@@ -1171,7 +1778,7 @@ function RuntimeSetupView({
               <section className="runtime-details" data-testid="runtime-details">
                 <div className="runtime-details-head">
                   <strong>Diagnostics</strong>
-                  <button type="button" className="runtime-mini-button" onClick={handleCopyDiagnostics}>Copy logs</button>
+                  <Button type="button" className="runtime-mini-button btn-ghost" onClick={handleCopyDiagnostics}>Copy logs</Button>
                 </div>
                 <div className="runtime-details-body" data-testid="runtime-details-body">
                   {diagnosticsSections.map((section) => (
@@ -1207,14 +1814,17 @@ function RuntimeSetupView({
   );
 }
 
-function App() {
+function AppContent() {
   const desktop = window.codexAccountDesktop;
+  const { showToast } = useToast();
   const [activeView, setActiveView] = useState("profiles");
-  const [sidebarMode, setSidebarMode] = useState(window.innerWidth < 1100 ? "minimal" : "fixed");
+  const [viewportSizeClass, setViewportSizeClass] = useState(() => classifyWidth(window.innerWidth));
+  const [sidebarMode, setSidebarMode] = useState("fixed");
   const [state, setState] = useState(null);
   const [backendState, setBackendState] = useState(null);
   const [releaseNotes, setReleaseNotes] = useState(null);
   const [updateStatus, setUpdateStatus] = useState(null);
+  const [checkingUpdateStatus, setCheckingUpdateStatus] = useState(false);
   const [debugLogs, setDebugLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState("");
@@ -1247,6 +1857,28 @@ function App() {
   const activeTitle = useMemo(() => views.find((view) => view.id === activeView)?.label || "Profiles", [activeView]);
   const updateAvailable = !!updateStatus?.update_available;
   const visibleColumns = useMemo(() => normalizeColumns(columnPrefs), [columnPrefs]);
+  const compactMode = viewportSizeClass === "size-compact";
+  const effectiveSidebarMode = compactMode ? "minimal" : sidebarMode;
+
+  function notifySuccess(title, description = "") {
+    showToast({ tone: "success", title, description });
+  }
+
+  useEffect(() => {
+    if (!error) return;
+    showToast({ tone: "danger", title: "Action failed", description: error });
+  }, [error, showToast]);
+
+  function openConfirmDialog({ title, body, confirmLabel = "Confirm", tone = "danger", onConfirm }) {
+    setModal({
+      type: "confirm-action",
+      title,
+      body,
+      confirmLabel,
+      tone,
+      onConfirm,
+    });
+  }
 
   function applyDesktopState(nextState, { backend = undefined, chain = undefined } = {}) {
     setState(nextState);
@@ -1576,6 +2208,7 @@ function App() {
       const next = await switchControllerRef.current.switchProfile(target);
       applyDesktopState(next);
       setActivatedProfile(target);
+      notifySuccess("Profile switched", `Current profile: ${target}`);
       setTimeout(() => setActivatedProfile((current) => (current === target ? "" : current)), 1100);
     } catch (err) {
       loadAll().catch(() => {});
@@ -1589,12 +2222,13 @@ function App() {
     setError("");
     try {
       await desktop.testNotification();
+      notifySuccess("Notification sent", "A test desktop notification was triggered.");
     } catch (err) {
       setError(err?.message || String(err));
     }
   }
 
-  async function restartUiService() {
+  async function executeRestartUiService() {
     if (restartInFlightRef.current) {
       return;
     }
@@ -1626,6 +2260,7 @@ function App() {
       });
       await loadAll();
       setError("");
+      notifySuccess("Service restarted", "The local UI service is ready.");
     } catch (err) {
       setError(err?.message || String(err));
     } finally {
@@ -1634,13 +2269,26 @@ function App() {
     }
   }
 
-  async function killAll() {
+  function restartUiService() {
+    return executeRestartUiService();
+  }
+
+  async function executeKillAll() {
     try {
       await request("/api/system/kill-all", { method: "POST", body: JSON.stringify({}) });
       await loadAll();
+      notifySuccess("Processes stopped", "All managed background processes were stopped.");
     } catch (err) {
       setError(err?.message || String(err));
     }
+  }
+
+  function killAll() {
+    return executeKillAll();
+  }
+
+  function requestExit() {
+    return executeKillAll();
   }
 
   async function toggleTheme() {
@@ -1655,12 +2303,16 @@ function App() {
   }
 
   async function checkForUpdates() {
+    setCheckingUpdateStatus(true);
     try {
       const next = await request("/api/app-update-status?force=true", {});
       setUpdateStatus(next);
       setActiveView("update");
+      notifySuccess("Update check complete", next?.status_text || "Status refreshed.");
     } catch (err) {
       setError(err?.message || String(err));
+    } finally {
+      setCheckingUpdateStatus(false);
     }
   }
 
@@ -1670,6 +2322,7 @@ function App() {
       setUpdateStatus(next.update_status || updateStatus);
       await loadAll();
       setActiveView("update");
+      notifySuccess("Update started", "The update command has been sent.");
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1692,6 +2345,7 @@ function App() {
       a.download = `codex-account-debug-${Date.now()}.json`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1200);
+      notifySuccess("Debug export ready", "Saved desktop debug snapshot.");
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1701,8 +2355,30 @@ function App() {
     setModal({ type: "columns" });
   }
 
-  async function openRowActions(name) {
-    setModal({ type: "row-actions", name });
+  async function openRowActions(profile) {
+    if (!profile?.name) return;
+    setModal({
+      type: "row-actions",
+      profile: {
+        name: profile.name,
+        email: profile.email_display || profile.email || "",
+        accountId: profile.account_id || "",
+      },
+    });
+  }
+
+  async function copyToClipboard(label, value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      notifySuccess("Nothing to copy", `${label} is empty for this profile.`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      notifySuccess("Copied", `${label} copied to clipboard.`);
+    } catch (_) {
+      setError(`Unable to copy ${label.toLowerCase()} to clipboard.`);
+    }
   }
 
   async function openAddAccount() {
@@ -1720,10 +2396,6 @@ function App() {
 
   async function openChainEditor() {
     setModal({ type: "chain-edit", chain: Array.isArray(chainOrder) ? [...chainOrder] : [] });
-  }
-
-  async function openUpdateView() {
-    setActiveView("update");
   }
 
   async function toggleEligibility(name, eligible) {
@@ -1761,6 +2433,7 @@ function App() {
         refreshAutoSwitchState(),
         refreshCurrentUsage({ timeoutSec: 8 }),
       ]);
+      notifySuccess("Rapid test started");
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1773,6 +2446,7 @@ function App() {
         refreshAutoSwitchState(),
         refreshCurrentUsage({ timeoutSec: 8 }),
       ]);
+      notifySuccess("Switch command sent");
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1782,6 +2456,7 @@ function App() {
     try {
       await request("/api/auto-switch/stop-tests", { method: "POST", body: JSON.stringify({}) });
       await refreshAutoSwitchState();
+      notifySuccess("Tests stopped");
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1794,6 +2469,7 @@ function App() {
         refreshAutoSwitchState(),
         refreshCurrentUsage({ timeoutSec: 8 }),
       ]);
+      notifySuccess("Auto-switch test started");
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1804,6 +2480,7 @@ function App() {
       const next = await request("/api/auto-switch/auto-arrange", { method: "POST", body: JSON.stringify({}) });
       setChainOrder(Array.isArray(next?.chain) ? next.chain : []);
       refreshAutoSwitchState().catch(() => {});
+      notifySuccess("Chain reordered");
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1820,6 +2497,7 @@ function App() {
     } else {
       await loadAll();
       setModal(null);
+      notifySuccess("Profile added");
     }
   }
 
@@ -1840,6 +2518,7 @@ function App() {
     });
     setModal(null);
     await loadAll();
+    notifySuccess("Import applied");
   }
 
   async function handleRename(name) {
@@ -1853,15 +2532,26 @@ function App() {
   }
 
   async function handleRemove(name) {
-    if (!window.confirm(`Remove profile '${name}'?`)) return;
-    await request("/api/local/remove", { method: "POST", body: JSON.stringify({ name }) });
-    await loadAll();
+    openConfirmDialog({
+      title: "Remove profile",
+      body: `Remove profile "${name}"?`,
+      confirmLabel: "Remove",
+      tone: "danger",
+      onConfirm: async () => {
+        await request("/api/local/remove", { method: "POST", body: JSON.stringify({ name }) });
+        await loadAll();
+      },
+    });
   }
 
   async function handleRemoveAll() {
-    if (!window.confirm("Remove ALL saved profiles?")) return;
-    await request("/api/local/remove-all", { method: "POST", body: JSON.stringify({}) });
-    await loadAll();
+    try {
+      await request("/api/local/remove-all", { method: "POST", body: JSON.stringify({}) });
+      await loadAll();
+      notifySuccess("Profiles removed", "All saved profiles were removed.");
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
   }
 
   async function handleExportProfiles(names, filename) {
@@ -1888,6 +2578,7 @@ function App() {
     }
     setModal(null);
     await loadAll();
+    notifySuccess("Export ready", "The selected profiles were exported.");
   }
 
   async function loadReleaseNotes(force = false) {
@@ -1914,8 +2605,39 @@ function App() {
 
   useEffect(() => {
     loadAll();
+    const classList = document.body.classList;
+    const applyViewportClasses = (width, height) => {
+      const widthClass = classifyWidth(width);
+      const heightClass = classifyHeight(height);
+      classList.remove(...WIDTH_CLASS_NAMES, ...HEIGHT_CLASS_NAMES);
+      classList.add(widthClass, heightClass);
+      setViewportSizeClass(widthClass);
+    };
+    const observedRoot = document.documentElement;
+    const syncViewportClasses = () => {
+      applyViewportClasses(
+        observedRoot?.clientWidth || window.innerWidth,
+        observedRoot?.clientHeight || window.innerHeight,
+      );
+    };
+    let resizeObserver = null;
+    if (typeof ResizeObserver === "function") {
+      resizeObserver = new ResizeObserver((entries) => {
+        const entry = entries?.[0];
+        if (!entry) return;
+        applyViewportClasses(entry.contentRect.width, entry.contentRect.height);
+      });
+      resizeObserver.observe(observedRoot);
+    } else {
+      window.addEventListener("resize", syncViewportClasses);
+    }
+    syncViewportClasses();
     const offNavigate = desktop.onNavigate((view) => setActiveView(view === "usage" ? "profiles" : view));
-    const offSidebar = desktop.onToggleSidebar(() => setSidebarMode((mode) => (mode === "fixed" ? "minimal" : "fixed")));
+    const offSidebar = desktop.onToggleSidebar(() => {
+      if (!document.body.classList.contains("size-compact")) {
+        setSidebarMode((mode) => (mode === "fixed" ? "minimal" : "fixed"));
+      }
+    });
     const offRuntime = desktop.onRuntimeStatus((status) => {
       setRuntimeStatus(status);
       if (isRuntimeOperational(status)) {
@@ -1930,6 +2652,9 @@ function App() {
       offSidebar?.();
       offRuntime?.();
       offProgress?.();
+      if (resizeObserver) resizeObserver.disconnect();
+      else window.removeEventListener("resize", syncViewportClasses);
+      classList.remove(...WIDTH_CLASS_NAMES, ...HEIGHT_CLASS_NAMES);
     };
   }, []);
 
@@ -2027,15 +2752,16 @@ function App() {
   }
 
   return (
-    <main className="desktop-shell" data-testid="electron-renderer">
+    <main className={`desktop-shell sidebar-${effectiveSidebarMode}`} data-testid="electron-renderer">
       <Sidebar
         state={state}
         activeView={activeView}
-        mode={sidebarMode}
+        mode={effectiveSidebarMode}
+        canToggle={!compactMode}
         onModeChange={setSidebarMode}
         onNavigate={setActiveView}
         updateAvailable={updateAvailable}
-        onExit={killAll}
+        onExit={requestExit}
       />
       <div className="workspace">
         <TopBar
@@ -2060,6 +2786,8 @@ function App() {
             onToggleEligibility={toggleEligibility}
             visibleColumns={visibleColumns}
             sort={sort}
+            compactMode={compactMode}
+            viewportSizeClass={viewportSizeClass}
             onSort={(key) => setSort((current) => ({ key, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" }))}
           />
         )}
@@ -2084,14 +2812,49 @@ function App() {
         {activeView === "notifications" && <NotificationsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
         {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onToggleTheme={toggleTheme} onToggleDebug={toggleDebug} onSavePatch={saveUiPatch} />}
         {activeView === "guide" && <GuideView releaseNotes={releaseNotes} onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})} />}
-        {activeView === "update" && <UpdateView updateStatus={updateStatus} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
+        {activeView === "update" && <UpdateView updateStatus={updateStatus} checking={checkingUpdateStatus || loading} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
         {activeView === "debug" && <DebugView debugLogs={debugLogs} onExport={onExportDebug} />}
-        {activeView === "about" && <AboutView backendState={backendState} />}
+        {activeView === "about" && <AboutView backendState={backendState} version={updateStatus?.current_version} onOpenExternal={(url) => desktop.openExternal(url)} />}
         {error ? <div className="workspace-error" role="alert">{error}</div> : null}
       </div>
 
+      {modal?.type === "confirm-action" && (
+        <Dialog
+          title={modal.title || "Confirm action"}
+          size="sm"
+          onClose={() => setModal(null)}
+          footer={(
+            <>
+              <Button onClick={() => setModal(null)}>Cancel</Button>
+              <Button
+                variant={modal.tone === "warning" ? "warning" : "danger"}
+                onClick={() => {
+                  const onConfirm = modal.onConfirm;
+                  setModal(null);
+                  Promise.resolve(onConfirm?.()).catch((err) => setError(err?.message || String(err)));
+                }}
+              >
+                {modal.confirmLabel || "Confirm"}
+              </Button>
+            </>
+          )}
+        >
+          <p>{modal.body || "Are you sure you want to continue?"}</p>
+        </Dialog>
+      )}
+
       {modal?.type === "columns" && (
-        <Dialog title="Table Columns" size="md" onClose={() => setModal(null)} footer={<><button className="btn" onClick={() => { setColumnPrefs(defaultColumns); saveStoredColumns(defaultColumns); setModal(null); }}>Reset Defaults</button><button className="btn btn-primary" onClick={() => setModal(null)}>Done</button></>}>
+        <Dialog
+          title="Table columns"
+          size="md"
+          onClose={() => setModal(null)}
+          footer={(
+            <>
+              <Button onClick={() => { setColumnPrefs(defaultColumns); saveStoredColumns(defaultColumns); setModal(null); }}>Reset defaults</Button>
+              <Button variant="primary" onClick={() => setModal(null)}>Done</Button>
+            </>
+          )}
+        >
           <div className="columns-grid">
             {columnDefs.filter((col) => !col.required).map((col) => (
               <label key={col.key} className="modal-check">
@@ -2113,17 +2876,19 @@ function App() {
       )}
 
       {modal?.type === "row-actions" && (
-        <Dialog title="Row Actions" size="sm" onClose={() => setModal(null)} footer={<button className="btn" onClick={() => setModal(null)}>Done</button>}>
-          <p>Profile: {modal.name}</p>
+        <Dialog title="Row actions" size="sm" onClose={() => setModal(null)} footer={<Button onClick={() => setModal(null)}>Done</Button>}>
+          <LabelValueRow label="Profile" value={modal.profile?.name || "-"} />
           <div className="settings-inline-actions">
-            <button className="btn" onClick={() => { setModal(null); handleRename(modal.name).catch((e) => setError(e?.message || String(e))); }}>Rename</button>
-            <button className="btn btn-danger" onClick={() => { setModal(null); handleRemove(modal.name).catch((e) => setError(e?.message || String(e))); }}>Remove</button>
+            <Button onClick={() => { setModal(null); handleRename(modal.profile?.name).catch((e) => setError(e?.message || String(e))); }}>Edit</Button>
+            <Button onClick={() => copyToClipboard("Email", modal.profile?.email)}>Copy email</Button>
+            <Button onClick={() => copyToClipboard("ID", modal.profile?.accountId)}>Copy ID</Button>
+            <Button variant="danger" onClick={() => { setModal(null); handleRemove(modal.profile?.name); }}>Remove account</Button>
           </div>
         </Dialog>
       )}
 
       {modal?.type === "add-account" && (
-        <Dialog title="Add Account" size="md" onClose={() => setModal(null)} footer={<button className="btn" onClick={() => setModal(null)}>Close</button>}>
+        <Dialog title="Add account" size="md" onClose={() => setModal(null)} footer={<Button onClick={() => setModal(null)}>Close</Button>}>
           <div className="modal-form">
             <label>Profile name</label>
             <input value={modal.name} onChange={(event) => setModal((current) => ({ ...current, name: event.target.value }))} placeholder="work" />
@@ -2133,12 +2898,12 @@ function App() {
               <option value="normal">Normal Login</option>
             </select>
             <div className="settings-inline-actions">
-              <button className="btn btn-primary" onClick={() => startAddAccount(modal.mode, modal.name).catch((e) => setError(e?.message || String(e)))}>Start</button>
+              <Button variant="primary" onClick={() => startAddAccount(modal.mode, modal.name).catch((e) => setError(e?.message || String(e)))}>Start</Button>
             </div>
             {modal.session && (
               <div className="modal-card-inline">
                 <div><label>Status</label><strong>{modal.session.status || "-"}</strong></div>
-                <div><label>URL</label><strong>{modal.session.url || "-"}</strong></div>
+                <div><label>Login URL</label><strong>{modal.session.url || "-"}</strong></div>
                 <div><label>Code</label><strong>{modal.session.code || "-"}</strong></div>
               </div>
             )}
@@ -2147,7 +2912,12 @@ function App() {
       )}
 
       {modal?.type === "export" && (
-        <Dialog title="Export Profiles" size="lg" onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => handleExportProfiles(modal.selected || [], modal.filename || "profiles").catch((e) => setError(e?.message || String(e)))}>Export Selected</button>}>
+        <Dialog
+          title="Export profiles"
+          size="lg"
+          onClose={() => setModal(null)}
+          footer={<Button variant="primary" onClick={() => handleExportProfiles(modal.selected || [], modal.filename || "profiles").catch((e) => setError(e?.message || String(e)))}>Export selected</Button>}
+        >
           <div className="modal-form">
             <label>Archive name</label>
             <input value={modal.filename} onChange={(event) => setModal((current) => ({ ...current, filename: event.target.value }))} />
@@ -2173,15 +2943,35 @@ function App() {
       )}
 
       {modal?.type === "import" && (
-        <Dialog title="Import Profiles" size="sm" onClose={() => setModal(null)} footer={<><input ref={fileInputRef} type="file" accept=".camzip,application/zip" style={{ display: "none" }} onChange={(event) => { const file = event.target.files?.[0]; if (file) importAnalyze(file).catch((err) => setError(err?.message || String(err))); event.target.value = ""; }} /><button className="btn" onClick={() => fileInputRef.current?.click()}>Choose Archive</button></>}>
+        <Dialog
+          title="Import profiles"
+          size="sm"
+          onClose={() => setModal(null)}
+          footer={(
+            <>
+              <input
+                ref={fileInputRef}
+                className="hidden-file-input"
+                type="file"
+                accept=".camzip,application/zip"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) importAnalyze(file).catch((err) => setError(err?.message || String(err)));
+                  event.target.value = "";
+                }}
+              />
+              <Button onClick={() => fileInputRef.current?.click()}>Choose archive</Button>
+            </>
+          )}
+        >
           <p>Imported data may grant account access. Keep exported files private.</p>
-          <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}>Analyze Import</button>
+          <Button variant="primary" onClick={() => fileInputRef.current?.click()}>Analyze import</Button>
         </Dialog>
       )}
 
       {modal?.type === "import-review" && (
-        <Dialog title="Import Review" size="lg" onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => applyImport(modal.analysis, modal.selections || []).catch((e) => setError(e?.message || String(e)))}>Apply Import</button>}>
-          <p>Archive: {modal.file?.name || "uploaded file"}</p>
+        <Dialog title="Import review" size="lg" onClose={() => setModal(null)} footer={<Button variant="primary" onClick={() => applyImport(modal.analysis, modal.selections || []).catch((e) => setError(e?.message || String(e)))}>Apply import</Button>}>
+          <LabelValueRow label="Archive" value={modal.file?.name || "uploaded file"} />
           <div className="columns-grid">
             {(modal.analysis?.profiles || []).map((row) => (
               <label key={row.name} className="modal-check">
@@ -2203,23 +2993,28 @@ function App() {
       )}
 
       {modal?.type === "chain-edit" && (
-        <Dialog title="Edit Switch Chain" size="lg" onClose={() => setModal(null)} footer={<button className="btn btn-primary" onClick={() => { request("/api/auto-switch/chain", { method: "POST", body: JSON.stringify({ chain: modal.chain || [] }) }).then(() => loadAll()).catch((e) => setError(e?.message || String(e))); setModal(null); }}>Save</button>}>
+        <Dialog
+          title="Edit switch chain"
+          size="lg"
+          onClose={() => setModal(null)}
+          footer={<Button variant="primary" onClick={() => { request("/api/auto-switch/chain", { method: "POST", body: JSON.stringify({ chain: modal.chain || [] }) }).then(() => loadAll()).catch((e) => setError(e?.message || String(e))); setModal(null); }}>Save</Button>}
+        >
           <p>Drag order is simplified to up/down controls in the desktop shell.</p>
           <div className="chain-list">
             {(modal.chain || []).map((name, index) => (
               <div key={name} className="chain-row">
                 <strong>{name}</strong>
                 <div className="settings-inline-actions">
-                  <button className="btn" disabled={index === 0} onClick={() => setModal((current) => {
+                  <Button disabled={index === 0} onClick={() => setModal((current) => {
                     const next = [...current.chain];
                     [next[index - 1], next[index]] = [next[index], next[index - 1]];
                     return { ...current, chain: next };
-                  })}>Up</button>
-                  <button className="btn" disabled={index === (modal.chain || []).length - 1} onClick={() => setModal((current) => {
+                  })}>Up</Button>
+                  <Button disabled={index === (modal.chain || []).length - 1} onClick={() => setModal((current) => {
                     const next = [...current.chain];
                     [next[index + 1], next[index]] = [next[index], next[index + 1]];
                     return { ...current, chain: next };
-                  })}>Down</button>
+                  })}>Down</Button>
                 </div>
               </div>
             ))}
@@ -2227,6 +3022,14 @@ function App() {
         </Dialog>
       )}
     </main>
+  );
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }
 

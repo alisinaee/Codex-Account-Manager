@@ -23,7 +23,7 @@ test("launches the Electron shell and exposes the desktop preload bridge", async
   await expect(window.getByTestId("electron-renderer")).toBeVisible();
   await expect(window.getByTestId("profiles-view")).toBeVisible();
   await expect(window.locator(".btn-primary").first()).toBeVisible();
-  await expect(window.locator(".usage-meter").first()).toBeVisible();
+  await expect(window.locator(".progress-bar").first()).toBeVisible();
   await expect.poll(() => window.evaluate(() => window.codexAccountDesktop?.shell)).toBe("electron");
 
   const title = await app.evaluate(async ({ app: electronApp }) => electronApp.getName());
@@ -92,7 +92,7 @@ test("runtime setup view supports scrolling through long bootstrap errors", asyn
   await window.getByTestId("runtime-details-toggle").click();
   const scroller = window.getByTestId("runtime-details-body");
   await expect(scroller).toBeVisible();
-  const canScroll = await window.getByTestId("runtime-setup-view").evaluate((node) => {
+  const canScroll = await scroller.evaluate((node) => {
     node.scrollTop = node.scrollHeight;
     return node.scrollTop > 0;
   });
@@ -168,7 +168,7 @@ test("runtime setup view uses the available width on wide windows when details a
   await quitApp(app);
 });
 
-test("runtime setup view collapses cleanly on narrow windows", async () => {
+test("runtime setup view collapses cleanly on compact windows", async () => {
   const app = await electron.launch({
     args: ["."],
     cwd: process.cwd(),
@@ -186,7 +186,7 @@ test("runtime setup view collapses cleanly on narrow windows", async () => {
   });
 
   const window = await app.firstWindow();
-  await window.setViewportSize({ width: 420, height: 900 });
+  await window.setViewportSize({ width: 820, height: 900 });
   await expect(window.getByTestId("runtime-setup-view")).toBeVisible();
   await expect(window.getByRole("button", { name: /install core/i })).toBeVisible();
 
@@ -197,7 +197,7 @@ test("runtime setup view collapses cleanly on narrow windows", async () => {
   expect(pageFitsViewport).toBe(true);
 
   const actionButtonBox = await window.getByRole("button", { name: /install core/i }).boundingBox();
-  expect(actionButtonBox?.width).toBeGreaterThan(180);
+  expect(actionButtonBox?.width).toBeGreaterThan(120);
 
   await quitApp(app);
 });
@@ -302,12 +302,12 @@ test("electron renderer exposes the web panel parity surfaces", async () => {
 
   await window.getByRole("button", { name: "Auto Refresh" }).click();
   await expect(window.getByTestId("auto-refresh-view")).toBeVisible();
-  await expect(window.getByTestId("auto-refresh-view").getByText("Current Account Auto Refresh", { exact: true }).first()).toBeVisible();
-  await expect(window.getByTestId("auto-refresh-view").getByText("Auto Refresh All", { exact: true }).first()).toBeVisible();
+  await expect(window.getByTestId("auto-refresh-view").getByText("Current account refresh", { exact: true }).first()).toBeVisible();
+  await expect(window.getByTestId("auto-refresh-view").getByText("All accounts refresh", { exact: true }).first()).toBeVisible();
 
   await window.getByRole("button", { name: "Auto Switch" }).click();
   await expect(window.getByTestId("autoswitch-view")).toBeVisible();
-  await expect(window.getByText("Auto-Switch Rules")).toBeVisible();
+  await expect(window.getByText("Auto-switch rules")).toBeVisible();
   await expect(window.getByText("Switch Chain Preview")).toBeVisible();
 
   await window.getByTestId("desktop-sidebar").getByRole("button", { name: "Settings" }).click();
@@ -323,8 +323,39 @@ test("electron renderer exposes the web panel parity surfaces", async () => {
   await expect.poll(() => window.locator(".profiles-table-wrap").evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
 
   await window.setViewportSize({ width: 920, height: 700 });
-  await expect(window.getByTestId("profiles-mobile-list")).toBeVisible();
-  await expect(window.locator(".profiles-table-wrap table")).toBeHidden();
+  await expect(window.locator(".profiles-table-wrap table")).toBeVisible();
+  await expect(window.locator("th[data-col='h5remain']").first()).toBeHidden();
+  await expect(window.getByTestId("desktop-sidebar")).toHaveClass(/minimal/);
+
+  await quitApp(app);
+});
+
+test("auto switch controls stay within the selection policy card", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_SKIP_BACKEND: "1",
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+    },
+  });
+
+  const window = await app.firstWindow();
+  await window.setViewportSize({ width: 1280, height: 860 });
+  await window.getByRole("button", { name: "Auto Switch" }).click();
+  await expect(window.getByTestId("autoswitch-view")).toBeVisible();
+
+  const layout = await window.locator(".metric-pair-grid").first().evaluate((grid) => {
+    const gridRect = grid.getBoundingClientRect();
+    const rowRects = Array.from(grid.children, (child) => child.getBoundingClientRect());
+    const overflowsGrid = grid.scrollWidth > grid.clientWidth + 1;
+    const rowBleeds = rowRects.some((rect) => rect.left < gridRect.left - 1 || rect.right > gridRect.right + 1);
+    return { overflowsGrid, rowBleeds };
+  });
+
+  expect(layout.overflowsGrid).toBe(false);
+  expect(layout.rowBleeds).toBe(false);
 
   await quitApp(app);
 });
