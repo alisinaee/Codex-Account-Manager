@@ -4,12 +4,10 @@ import iconUrl from "../../assets/codex-account-manager.svg";
 import "./styles.css";
 import {
   AboutIcon,
-  AutoRefreshIcon,
   AutoSwitchIcon,
   DebugIcon,
   DoorClosedIcon,
   GuideIcon,
-  NotificationsIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   ProfilesIcon,
@@ -61,12 +59,8 @@ function NavIcon({ id }) {
   switch (id) {
     case "profiles":
       return <ProfilesIcon />;
-    case "auto-refresh":
-      return <AutoRefreshIcon />;
     case "autoswitch":
       return <AutoSwitchIcon />;
-    case "notifications":
-      return <NotificationsIcon />;
     case "settings":
       return <SettingsIcon />;
     case "guide":
@@ -86,15 +80,25 @@ function NavIcon({ id }) {
 
 const views = [
   { id: "profiles", label: "Profiles", key: "1", icon: "profiles" },
-  { id: "auto-refresh", label: "Auto Refresh", key: "2", icon: "auto-refresh" },
-  { id: "autoswitch", label: "Auto Switch", key: "3", icon: "autoswitch" },
-  { id: "notifications", label: "Notifications", key: "4", icon: "notifications" },
+  { id: "autoswitch", label: "Auto Switch", key: "2", icon: "autoswitch" },
   { id: "settings", label: "Settings", key: ",", icon: "settings" },
   { id: "guide", label: "Guide & Help", key: "?", icon: "guide" },
   { id: "update", label: "Update", key: "u", icon: "update" },
   { id: "debug", label: "Debug", key: "d", icon: "debug" },
   { id: "about", label: "About", key: "a", icon: "about" },
 ];
+
+function normalizeViewId(view) {
+  switch (view) {
+    case "usage":
+      return "profiles";
+    case "auto-refresh":
+    case "notifications":
+      return "settings";
+    default:
+      return view;
+  }
+}
 
 const columnDefs = [
   { key: "cur", label: "Status", required: false },
@@ -290,7 +294,7 @@ const tableColumnLayout = {
   added: { colClassName: "col-added", width: "5%" },
   note: { colClassName: "col-note", width: "4%" },
   auto: { colClassName: "col-auto", width: "40px" },
-  actions: { colClassName: "col-actions", width: "148px" },
+  actions: { colClassName: "col-actions", width: "116px" },
 };
 
 function planBadgeVariant(value) {
@@ -928,73 +932,71 @@ function ProfilesView({
   );
 }
 
-function AutoRefreshView({ state, onSavePatch }) {
+function AutoRefreshSettingsCard({ state, onSavePatch }) {
   const ui = state?.config?.ui || {};
 
   return (
-    <section className="view auto-refresh-view" data-testid="auto-refresh-view">
-      <SectionCard className="control-card settings-card auto-refresh-panel">
-        <div className="group-title">Refresh rules</div>
-        <div className="auto-refresh-sections">
-          <section className="auto-refresh-section">
-            <div className="auto-refresh-title-row">
-              <h3>Current account refresh</h3>
-              <span>Unit: seconds</span>
+    <SectionCard className="control-card control-card-full settings-card settings-refresh-card">
+      <div className="group-title">Refresh rules</div>
+      <div className="auto-refresh-sections">
+        <section className="auto-refresh-section">
+          <div className="auto-refresh-title-row">
+            <h3>Current account refresh</h3>
+            <span>Unit: seconds</span>
+          </div>
+          <div className="auto-refresh-row">
+            <span className="setting-label">Enabled</span>
+            <span className="toggle auto-refresh-toggle">
+              <ToggleSwitch
+                checked={!!ui.current_auto_refresh_enabled}
+                onChange={(nextValue) => onSavePatch({ ui: { current_auto_refresh_enabled: nextValue } })}
+                ariaLabel="Enable current account refresh"
+              />
+            </span>
+          </div>
+          <div className="auto-refresh-control-surface">
+            <div className="auto-refresh-inline-controls">
+              <span className="setting-label auto-refresh-inline-label">Delay (seconds)</span>
+              <StepperInput
+                value={ui.current_refresh_interval_sec ?? 5}
+                min={1}
+                max={3600}
+                unit="sec"
+                onChange={(value) => onSavePatch({ ui: { current_refresh_interval_sec: value } })}
+              />
             </div>
-            <div className="auto-refresh-row">
-              <span className="setting-label">Enabled</span>
-              <span className="toggle auto-refresh-toggle">
-                <ToggleSwitch
-                  checked={!!ui.current_auto_refresh_enabled}
-                  onChange={(nextValue) => onSavePatch({ ui: { current_auto_refresh_enabled: nextValue } })}
-                  ariaLabel="Enable current account refresh"
-                />
-              </span>
+          </div>
+        </section>
+        <section className="auto-refresh-section">
+          <div className="auto-refresh-title-row">
+            <h3>All accounts refresh</h3>
+            <span>Unit: minutes</span>
+          </div>
+          <div className="auto-refresh-row">
+            <span className="setting-label">Enabled</span>
+            <span className="toggle auto-refresh-toggle">
+              <ToggleSwitch
+                checked={!!ui.all_auto_refresh_enabled}
+                onChange={(nextValue) => onSavePatch({ ui: { all_auto_refresh_enabled: nextValue } })}
+                ariaLabel="Enable all accounts refresh"
+              />
+            </span>
+          </div>
+          <div className="auto-refresh-control-surface">
+            <div className="auto-refresh-inline-controls">
+              <span className="setting-label auto-refresh-inline-label">Delay (minutes)</span>
+              <StepperInput
+                value={ui.all_refresh_interval_min ?? 5}
+                min={1}
+                max={60}
+                unit="min"
+                onChange={(value) => onSavePatch({ ui: { all_refresh_interval_min: value } })}
+              />
             </div>
-            <div className="auto-refresh-control-surface">
-              <div className="auto-refresh-inline-controls">
-                <span className="setting-label auto-refresh-inline-label">Delay (seconds)</span>
-                <StepperInput
-                  value={ui.current_refresh_interval_sec ?? 5}
-                  min={1}
-                  max={3600}
-                  unit="sec"
-                  onChange={(value) => onSavePatch({ ui: { current_refresh_interval_sec: value } })}
-                />
-              </div>
-            </div>
-          </section>
-          <section className="auto-refresh-section">
-            <div className="auto-refresh-title-row">
-              <h3>All accounts refresh</h3>
-              <span>Unit: minutes</span>
-            </div>
-            <div className="auto-refresh-row">
-              <span className="setting-label">Enabled</span>
-              <span className="toggle auto-refresh-toggle">
-                <ToggleSwitch
-                  checked={!!ui.all_auto_refresh_enabled}
-                  onChange={(nextValue) => onSavePatch({ ui: { all_auto_refresh_enabled: nextValue } })}
-                  ariaLabel="Enable all accounts refresh"
-                />
-              </span>
-            </div>
-            <div className="auto-refresh-control-surface">
-              <div className="auto-refresh-inline-controls">
-                <span className="setting-label auto-refresh-inline-label">Delay (minutes)</span>
-                <StepperInput
-                  value={ui.all_refresh_interval_min ?? 5}
-                  min={1}
-                  max={60}
-                  unit="min"
-                  onChange={(value) => onSavePatch({ ui: { all_refresh_interval_min: value } })}
-                />
-              </div>
-            </div>
-          </section>
-        </div>
-      </SectionCard>
-    </section>
+          </div>
+        </section>
+      </div>
+    </SectionCard>
   );
 }
 
@@ -1146,54 +1148,50 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
   );
 }
 
-function NotificationsView({ state, onNotify, onSavePatch }) {
+function NotificationsSettingsCard({ state, onNotify, onSavePatch }) {
   const notifications = state?.config?.notifications || {};
 
   return (
-    <section className="view notifications-view" data-testid="notifications-view">
-      <div className="controls-grid">
-        <SectionCard className="control-card control-card-full notify-card settings-card">
-          <div className="group-title">Notifications</div>
-          <div className="setting-row inset-row">
-            <span className="setting-label">Enable notifications</span>
-            <span className="toggle">
-              <ToggleSwitch
-                checked={!!notifications.enabled}
-                onChange={(nextValue) => onSavePatch({ notifications: { enabled: nextValue } })}
-                ariaLabel="Enable notifications"
-              />
-            </span>
-          </div>
-          <div className="metric-pair-grid">
-            <div className="setting-row metric inset-row">
-              <span className="setting-label">Notify when 5h usage exceeds (%)</span>
-              <StepperInput
-                value={notifications.thresholds?.h5_warn_pct ?? 20}
-                min={0}
-                max={100}
-                onChange={(value) => onSavePatch({ notifications: { thresholds: { h5_warn_pct: value } } })}
-              />
-            </div>
-            <div className="setting-row metric inset-row">
-              <span className="setting-label">Notify when weekly usage exceeds (%)</span>
-              <StepperInput
-                value={notifications.thresholds?.weekly_warn_pct ?? 20}
-                min={0}
-                max={100}
-                onChange={(value) => onSavePatch({ notifications: { thresholds: { weekly_warn_pct: value } } })}
-              />
-            </div>
-          </div>
-          <div className="alarm-actions">
-            <Button className="btn-block" type="button" onClick={onNotify}>Test notification</Button>
-          </div>
-        </SectionCard>
+    <SectionCard className="control-card control-card-full notify-card settings-card">
+      <div className="group-title">Notifications</div>
+      <div className="setting-row inset-row">
+        <span className="setting-label">Enable notifications</span>
+        <span className="toggle">
+          <ToggleSwitch
+            checked={!!notifications.enabled}
+            onChange={(nextValue) => onSavePatch({ notifications: { enabled: nextValue } })}
+            ariaLabel="Enable notifications"
+          />
+        </span>
       </div>
-    </section>
+      <div className="metric-pair-grid">
+        <div className="setting-row metric inset-row">
+          <span className="setting-label">Notify when 5h usage exceeds (%)</span>
+          <StepperInput
+            value={notifications.thresholds?.h5_warn_pct ?? 20}
+            min={0}
+            max={100}
+            onChange={(value) => onSavePatch({ notifications: { thresholds: { h5_warn_pct: value } } })}
+          />
+        </div>
+        <div className="setting-row metric inset-row">
+          <span className="setting-label">Notify when weekly usage exceeds (%)</span>
+          <StepperInput
+            value={notifications.thresholds?.weekly_warn_pct ?? 20}
+            min={0}
+            max={100}
+            onChange={(value) => onSavePatch({ notifications: { thresholds: { weekly_warn_pct: value } } })}
+          />
+        </div>
+      </div>
+      <div className="alarm-actions">
+        <Button className="btn-block" type="button" onClick={onNotify}>Test notification</Button>
+      </div>
+    </SectionCard>
   );
 }
 
-function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebug, onSavePatch }) {
+function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebug, onNotify, onSavePatch }) {
   const ui = state?.config?.ui || {};
   const isWindows = window.codexAccountDesktop?.platform === "win32";
   const logsEnabled = !!ui.debug_mode;
@@ -1236,6 +1234,8 @@ function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebu
               />
             </div>
           </SectionCard>
+          <AutoRefreshSettingsCard state={state} onSavePatch={onSavePatch} />
+          <NotificationsSettingsCard state={state} onNotify={onNotify} onSavePatch={onSavePatch} />
           {isWindows ? (
             <SectionCard className="control-card settings-card">
               <div className="group-title">Windows Integration</div>
@@ -2632,7 +2632,7 @@ function AppContent() {
       window.addEventListener("resize", syncViewportClasses);
     }
     syncViewportClasses();
-    const offNavigate = desktop.onNavigate((view) => setActiveView(view === "usage" ? "profiles" : view));
+    const offNavigate = desktop.onNavigate((view) => setActiveView(normalizeViewId(view)));
     const offSidebar = desktop.onToggleSidebar(() => {
       if (!document.body.classList.contains("size-compact")) {
         setSidebarMode((mode) => (mode === "fixed" ? "minimal" : "fixed"));
@@ -2759,7 +2759,7 @@ function AppContent() {
         mode={effectiveSidebarMode}
         canToggle={!compactMode}
         onModeChange={setSidebarMode}
-        onNavigate={setActiveView}
+        onNavigate={(view) => setActiveView(normalizeViewId(view))}
         updateAvailable={updateAvailable}
         onExit={requestExit}
       />
@@ -2791,12 +2791,6 @@ function AppContent() {
             onSort={(key) => setSort((current) => ({ key, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" }))}
           />
         )}
-        {activeView === "auto-refresh" && (
-          <AutoRefreshView
-            state={state}
-            onSavePatch={saveUiPatch}
-          />
-        )}
         {activeView === "autoswitch" && (
           <AutoSwitchView
             state={state}
@@ -2809,8 +2803,7 @@ function AppContent() {
             onAutoArrange={autoArrange}
           />
         )}
-        {activeView === "notifications" && <NotificationsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
-        {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onToggleTheme={toggleTheme} onToggleDebug={toggleDebug} onSavePatch={saveUiPatch} />}
+        {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onToggleTheme={toggleTheme} onToggleDebug={toggleDebug} onNotify={testNotification} onSavePatch={saveUiPatch} />}
         {activeView === "guide" && <GuideView releaseNotes={releaseNotes} onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})} />}
         {activeView === "update" && <UpdateView updateStatus={updateStatus} checking={checkingUpdateStatus || loading} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
         {activeView === "debug" && <DebugView debugLogs={debugLogs} onExport={onExportDebug} />}

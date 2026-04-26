@@ -1973,16 +1973,16 @@ body.size-wide .profiles-table-wrap .col-note {
 }
 
 body.size-compact .profiles-table-wrap col.col-profile {
-  width: 18% !important;
+  width: 14% !important;
 }
 
 body.size-compact .profiles-table-wrap col.col-email {
-  width: 27% !important;
+  width: 36% !important;
 }
 
 body.size-compact .profiles-table-wrap col.col-5h,
 body.size-compact .profiles-table-wrap col.col-weekly {
-  width: 16% !important;
+  width: 19% !important;
 }
 
 body.size-compact .profiles-table-wrap col.col-status {
@@ -1990,28 +1990,166 @@ body.size-compact .profiles-table-wrap col.col-status {
 }
 
 body.size-compact .profiles-table-wrap col.col-actions {
-  width: 120px !important;
+  width: 80px !important;
+}
+
+body.size-compact .profiles-table-wrap th[data-col="actions"],
+body.size-compact .profiles-table-wrap td[data-col="actions"] {
+  width: 80px !important;
+  min-width: 80px;
+  max-width: 80px;
+  box-sizing: border-box;
 }
 
 body.size-normal .profiles-table-wrap col.col-actions {
-  width: 148px !important;
+  width: 116px !important;
 }
 
 body.size-wide .profiles-table-wrap col.col-actions,
 body.size-ultrawide .profiles-table-wrap col.col-actions {
-  width: 148px !important;
+  width: 116px !important;
+}
+
+body.size-normal .profiles-table-wrap th[data-col="actions"],
+body.size-normal .profiles-table-wrap td[data-col="actions"],
+body.size-wide .profiles-table-wrap th[data-col="actions"],
+body.size-wide .profiles-table-wrap td[data-col="actions"],
+body.size-ultrawide .profiles-table-wrap th[data-col="actions"],
+body.size-ultrawide .profiles-table-wrap td[data-col="actions"] {
+  width: 116px !important;
+  min-width: 116px;
+  max-width: 116px;
+  box-sizing: border-box;
+}
+
+body.size-compact .profiles-table-wrap th[data-col="cur"],
+body.size-compact .profiles-table-wrap td[data-col="cur"] {
+  width: 18px !important;
+  min-width: 18px;
+  max-width: 18px;
+  box-sizing: border-box;
+}
+
+body.size-normal .profiles-table-wrap th[data-col="cur"],
+body.size-normal .profiles-table-wrap td[data-col="cur"],
+body.size-wide .profiles-table-wrap th[data-col="cur"],
+body.size-wide .profiles-table-wrap td[data-col="cur"],
+body.size-ultrawide .profiles-table-wrap th[data-col="cur"],
+body.size-ultrawide .profiles-table-wrap td[data-col="cur"] {
+  width: 24px !important;
+  min-width: 24px;
+  max-width: 24px;
+  box-sizing: border-box;
+}
+
+body.size-normal .profiles-table-wrap th[data-col="auto"],
+body.size-normal .profiles-table-wrap td[data-col="auto"],
+body.size-wide .profiles-table-wrap th[data-col="auto"],
+body.size-wide .profiles-table-wrap td[data-col="auto"],
+body.size-ultrawide .profiles-table-wrap th[data-col="auto"],
+body.size-ultrawide .profiles-table-wrap td[data-col="auto"] {
+  width: 40px !important;
+  min-width: 40px;
+  max-width: 40px;
+  box-sizing: border-box;
+}
+
+body.size-normal .profiles-table-wrap col.col-profile {
+  width: 8% !important;
 }
 
 body.size-normal .profiles-table-wrap col.col-email {
-  width: 16% !important;
+  width: 24% !important;
+}
+
+body.size-normal .profiles-table-wrap col.col-5h,
+body.size-normal .profiles-table-wrap col.col-weekly {
+  width: 9% !important;
+}
+
+body.size-normal .profiles-table-wrap col.col-5h-rem,
+body.size-normal .profiles-table-wrap col.col-w-rem {
+  width: 10% !important;
+}
+
+body.size-normal .profiles-table-wrap col.col-plan,
+body.size-normal .profiles-table-wrap col.col-paid {
+  width: 5% !important;
+}
+
+body.size-normal .profiles-table-wrap col.col-auto,
+body.size-wide .profiles-table-wrap col.col-auto,
+body.size-ultrawide .profiles-table-wrap col.col-auto {
+  width: 40px !important;
+}
+
+body.size-wide .profiles-table-wrap col.col-profile {
+  width: 7% !important;
 }
 
 body.size-wide .profiles-table-wrap col.col-email {
-  width: 15% !important;
+  width: 18% !important;
+}
+
+body.size-wide .profiles-table-wrap col.col-5h,
+body.size-wide .profiles-table-wrap col.col-weekly {
+  width: 8% !important;
+}
+
+body.size-wide .profiles-table-wrap col.col-5h-rem,
+body.size-wide .profiles-table-wrap col.col-5h-reset,
+body.size-wide .profiles-table-wrap col.col-w-rem,
+body.size-wide .profiles-table-wrap col.col-w-reset {
+  width: 7% !important;
+}
+
+body.size-wide .profiles-table-wrap col.col-plan,
+body.size-wide .profiles-table-wrap col.col-paid {
+  width: 5% !important;
+}
+
+body.size-wide .profiles-table-wrap col.col-added {
+  width: 6% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-profile {
+  width: 7% !important;
 }
 
 body.size-ultrawide .profiles-table-wrap col.col-email {
-  width: 16% !important;
+  width: 17.5% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-5h,
+body.size-ultrawide .profiles-table-wrap col.col-weekly {
+  width: 7% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-5h-rem,
+body.size-ultrawide .profiles-table-wrap col.col-w-rem {
+  width: 7% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-5h-reset,
+body.size-ultrawide .profiles-table-wrap col.col-w-reset {
+  width: 6% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-plan,
+body.size-ultrawide .profiles-table-wrap col.col-paid {
+  width: 4% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-id {
+  width: 6% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-added {
+  width: 5% !important;
+}
+
+body.size-ultrawide .profiles-table-wrap col.col-note {
+  width: 8% !important;
 }
 
 .profiles-table-wrap td[data-col="email"],
@@ -2085,8 +2223,8 @@ body.size-ultrawide .profiles-table-wrap col.col-email {
 .profiles-table-wrap td[data-col="actions"] {
   padding-top: 0;
   padding-bottom: 0;
-  padding-left: 4px;
-  padding-right: 8px;
+  padding-left: 2px;
+  padding-right: 4px;
   overflow: visible;
 }
 
@@ -2121,8 +2259,8 @@ body.size-compact .columns-btn .columns-hidden-badge {
 .actions-cell.compact {
   display: grid;
   grid-template-columns: 32px 32px;
-  gap: 8px;
-  justify-content: center;
+  gap: 6px;
+  justify-content: end;
   width: 100%;
   min-width: 0;
   padding-right: 0;
@@ -2141,16 +2279,17 @@ body.size-compact .profiles-table-wrap td[data-col="actions"] .actions-switch-bt
 }
 
 .profiles-table-wrap td[data-col="actions"] .actions-cell > .btn:not(.actions-menu-btn) {
-  width: 80px;
-  min-width: 80px;
-  max-width: 80px;
-  padding-inline: 8px;
+  width: 72px;
+  min-width: 72px;
+  max-width: 72px;
+  padding-inline: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .profiles-table-wrap td[data-col="actions"] .actions-cell {
-  justify-content: center;
+  justify-content: end;
+  gap: 6px;
 }
 
 .profiles-table-wrap td[data-col="actions"] .actions-menu-btn {
