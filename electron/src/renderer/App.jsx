@@ -293,7 +293,7 @@ const tableColumnLayout = {
   id: { colClassName: "col-id", width: "6%" },
   added: { colClassName: "col-added", width: "5%" },
   note: { colClassName: "col-note", width: "4%" },
-  auto: { colClassName: "col-auto", width: "40px" },
+  auto: { colClassName: "col-auto", width: "48px" },
   actions: { colClassName: "col-actions", width: "116px" },
 };
 
@@ -565,7 +565,7 @@ function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate,
         </Button>
       </div>
 
-      <nav aria-label="Desktop sections" onClick={(event) => event.stopPropagation()}>
+      <nav className="scrollable" aria-label="Desktop sections" onClick={(event) => event.stopPropagation()}>
         {views.map((view) => (
           <Button
             key={view.id}
@@ -905,7 +905,7 @@ function ProfilesView({
             </Button>
           </div>
         </div>
-        <div className={`table-wrap profiles-table-wrap ${wideMode ? "wide-columns" : ""}`}>
+        <div className={`table-wrap profiles-table-wrap scrollable scrollable-with-fade ${wideMode ? "wide-columns" : ""}`}>
           <AccountsTable
             profiles={profiles}
             switching={switching}
@@ -1018,6 +1018,13 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
   const chainOrder = Array.isArray(state?.list?.profiles) ? state.list.profiles.map((row) => row.name) : [];
   const chainRows = sortRows(buildProfileRows(state), { key: "profile", dir: "asc" }).filter((row) => chainOrder.includes(row.name));
   const pendingSwitch = Boolean(autoState.pending_switch_due_at);
+  const usageAverage = (key) => {
+    const values = chainRows
+      .map((row) => usageValue(row, key))
+      .filter((value) => Number.isFinite(value));
+    if (!values.length) return "-";
+    return `${Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)}%`;
+  };
 
   return (
     <section className="view autoswitch-view" data-testid="autoswitch-view">
@@ -1122,7 +1129,7 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
             <div className="chain-title">Switch Chain Preview</div>
             <Button onClick={onOpenChainEdit}>Edit</Button>
           </div>
-          <div className="chain-track-wrap">
+          <div className="chain-track-wrap scrollable">
             <div className="chain-track">
               {chainRows.length ? chainRows.map((row) => (
                 <span key={row.name} className="chain-node">
@@ -1141,6 +1148,14 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
             <span title="5H means five-hour usage window">5H = 5-hour usage</span>
             {" · "}
             <span title="W means weekly usage window">W = weekly usage</span>
+          </div>
+        </div>
+        <div className="autoswitch-hint-zone">
+          <span>Accounts switch in chain order when a threshold is reached.</span>
+          <div className="autoswitch-mini-stats" aria-label="Switch chain summary">
+            <LabelValueRow label="Total accounts" value={chainRows.length || "-"} />
+            <LabelValueRow label="Average 5H usage" value={usageAverage("usage_5h")} />
+            <LabelValueRow label="Average weekly usage" value={usageAverage("usage_weekly")} />
           </div>
         </div>
       </SectionCard>
@@ -1199,7 +1214,7 @@ function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebu
   const platformName = window.codexAccountDesktop?.platform || navigator.platform || "unknown";
 
   return (
-    <section className="view settings-view" data-testid="settings-view">
+    <section className="view settings-view scrollable" data-testid="settings-view">
       <div className="settings-layout">
         <div className="controls-grid">
           <SectionCard className="control-card settings-card">
@@ -1300,7 +1315,7 @@ function GuideView({ releaseNotes, onRefreshReleaseNotes }) {
 
         <SectionCard className="settings-card guide-changelog-card">
           <div className="group-title">Changelog</div>
-          <div className="release-sections">
+          <div className="release-sections scrollable scrollable-with-fade">
             {notes.length === 0 ? (
               <div className="muted">No release notes available.</div>
             ) : notes.slice(0, 10).map((note, index) => {
@@ -1364,6 +1379,11 @@ function UpdateView({ updateStatus, checking, onCheck, onRunUpdate }) {
         <SectionCard className="settings-card sparse-bottom-fill">
           <div className="group-title">Recent update guidance</div>
           <p className="muted">When an update is available, run it from this page and keep this window open until status changes to ready.</p>
+          <div className="update-guidance-list" aria-label="What gets updated">
+            <LabelValueRow label="Renderer" value="Desktop screens, layout fixes, dialogs, and table behavior." />
+            <LabelValueRow label="Python core" value="Account switching, usage collection, and local command logic." />
+            <LabelValueRow label="Local API" value="The private service bridge used by the Electron shell." />
+          </div>
         </SectionCard>
       </div>
     </section>
@@ -1441,7 +1461,7 @@ function DebugView({ debugLogs, onExport }) {
           aria-label="Search logs"
         />
       </div>
-      <div ref={panelRef} className="debug-log-panel" onScroll={onPanelScroll}>
+      <div ref={panelRef} className="debug-log-panel scrollable scrollable-with-fade" onScroll={onPanelScroll}>
         {filteredLogs.length ? filteredLogs.map((row, index) => (
           <div key={`${row.ts || index}-${index}`} className={`debug-line log-${String(row.level || "info").toLowerCase()}`}>
             <span>{row.ts || "-"}</span>

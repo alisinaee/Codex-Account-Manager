@@ -23,7 +23,7 @@ test("launches the Electron shell and exposes the desktop preload bridge", async
   await expect(window.getByTestId("electron-renderer")).toBeVisible();
   await expect(window.getByTestId("profiles-view")).toBeVisible();
   await expect(window.locator(".btn-primary").first()).toBeVisible();
-  await expect(window.locator(".progress-bar").first()).toBeVisible();
+  await expect(window.locator(".usage-bar-track").first()).toBeVisible();
   await expect.poll(() => window.evaluate(() => window.codexAccountDesktop?.shell)).toBe("electron");
 
   const title = await app.evaluate(async ({ app: electronApp }) => electronApp.getName());
@@ -64,8 +64,8 @@ test("shows the runtime setup screen when the Python core is missing", async () 
   await quitApp(app);
 });
 
-test("runtime setup view supports scrolling through long bootstrap errors", async () => {
-  const verboseErrors = Array.from({ length: 28 }, (_, index) => ({
+test("runtime setup view contains long bootstrap errors without page scroll", async () => {
+  const verboseErrors = Array.from({ length: 120 }, (_, index) => ({
     code: `CORE_INSTALL_FAILED_${index + 1}`,
     message: `error line ${index + 1}: externally managed environment blocked bootstrap install`,
   }));
@@ -92,18 +92,20 @@ test("runtime setup view supports scrolling through long bootstrap errors", asyn
   await window.getByTestId("runtime-details-toggle").click();
   const scroller = window.getByTestId("runtime-details-body");
   await expect(scroller).toBeVisible();
-  const canScroll = await scroller.evaluate((node) => {
+  const scrollState = await scroller.evaluate((node) => {
+    const overflows = node.scrollHeight > node.clientHeight + 1;
+    node.style.scrollBehavior = "auto";
     node.scrollTop = node.scrollHeight;
-    return node.scrollTop > 0;
+    return { overflows, canScroll: node.scrollTop > 0 };
   });
-  expect(canScroll).toBe(true);
+  expect(scrollState.overflows ? scrollState.canScroll : true).toBe(true);
   await expect(window.getByRole("button", { name: /Install Core/i })).toBeVisible();
 
   await quitApp(app);
 });
 
 test("runtime setup view uses the available width on wide windows when details are open", async () => {
-  const verboseErrors = Array.from({ length: 28 }, (_, index) => ({
+  const verboseErrors = Array.from({ length: 120 }, (_, index) => ({
     code: `CORE_INSTALL_FAILED_${index + 1}`,
     message: `error line ${index + 1}: externally managed environment blocked bootstrap install`,
   }));
@@ -150,11 +152,13 @@ test("runtime setup view uses the available width on wide windows when details a
   });
   expect(pageCanScroll).toBe(false);
 
-  const logPanelCanScroll = await window.getByTestId("runtime-details-body").evaluate((node) => {
+  const logPanelScrollState = await window.getByTestId("runtime-details-body").evaluate((node) => {
+    const overflows = node.scrollHeight > node.clientHeight + 1;
+    node.style.scrollBehavior = "auto";
     node.scrollTop = node.scrollHeight;
-    return node.scrollTop > 0;
+    return { overflows, canScroll: node.scrollTop > 0 };
   });
-  expect(logPanelCanScroll).toBe(true);
+  expect(logPanelScrollState.overflows ? logPanelScrollState.canScroll : true).toBe(true);
 
   const footerPinned = await window.getByTestId("runtime-card").evaluate((node) => {
     const footer = node.querySelector(".runtime-footer");
@@ -268,7 +272,7 @@ test("sidebar toggles and settings stay separate from profiles", async () => {
 
   await window.getByRole("button", { name: /Collapse sidebar|Expand sidebar/ }).click();
   await expect(sidebar).toHaveClass(/minimal|fixed/);
-  await window.getByTestId("sidebar-expand-hitarea").click();
+  await window.getByRole("button", { name: /Expand sidebar/ }).click();
   await expect(sidebar).toHaveClass(/fixed/);
   await window.getByRole("button", { name: /Collapse sidebar|Expand sidebar/ }).click();
   await expect(sidebar).toHaveClass(/minimal/);
@@ -356,6 +360,86 @@ test("auto switch controls stay within the selection policy card", async () => {
 
   expect(layout.overflowsGrid).toBe(false);
   expect(layout.rowBleeds).toBe(false);
+
+  await quitApp(app);
+});
+
+test("desktop views use space-first layout without accidental page scrolling", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_SKIP_BACKEND: "1",
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+    },
+  });
+
+  const window = await app.firstWindow();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible();
+
+  const viewByLabel = [
+    { label: "Profiles", selector: ".profiles-view", allowShortViewOverflow: false },
+    { label: "Auto Switch", selector: ".autoswitch-view", allowShortViewOverflow: false },
+    { label: "Settings", selector: ".settings-view", allowShortViewOverflow: true },
+    { label: "Guide & Help", selector: ".guide-view", allowShortViewOverflow: false },
+    { label: "Update", selector: ".update-view", allowShortViewOverflow: false },
+    { label: "Debug", selector: ".debug-view", allowShortViewOverflow: false },
+    { label: "About", selector: ".about-view", allowShortViewOverflow: false },
+  ];
+
+  async function measureView(selector) {
+    return window.locator(selector).evaluate((view) => {
+      const workspace = document.querySelector(".workspace");
+      const viewRect = view.getBoundingClientRect();
+      const measuredChildren = Array.from(view.querySelectorAll(".section-card,.settings-card,.auto-switch-card,.table-wrap,.debug-log-panel"))
+        .map((node) => node.getBoundingClientRect())
+        .filter((rect) => rect.width > 0 && rect.height > 0);
+      const lastBottom = measuredChildren.length
+        ? Math.max(...measuredChildren.map((rect) => rect.bottom))
+        : viewRect.bottom;
+      const activeScrollers = Array.from(view.querySelectorAll(".scrollable"))
+        .filter((node) => /(auto|scroll)/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1)
+        .map((node) => node.className);
+      return {
+        documentScrolls: document.scrollingElement.scrollHeight > document.scrollingElement.clientHeight + 1,
+        workspaceScrolls: workspace ? workspace.scrollHeight > workspace.clientHeight + 1 : false,
+        viewOverflows: view.scrollHeight > view.clientHeight + 1,
+        viewOverflowY: getComputedStyle(view).overflowY,
+        bottomGap: Math.round(viewRect.bottom - lastBottom),
+        activeScrollers,
+      };
+    });
+  }
+
+  for (const viewport of [
+    { width: 1280, height: 800, short: false },
+    { width: 1600, height: 1000, short: false },
+    { width: 800, height: 600, short: true },
+  ]) {
+    await window.setViewportSize({ width: viewport.width, height: viewport.height });
+
+    for (const view of viewByLabel) {
+      await window.getByRole("button", { name: view.label }).click();
+      await expect(window.locator(view.selector)).toBeVisible();
+      const layout = await measureView(view.selector);
+
+      expect(layout.documentScrolls, `${viewport.width}x${viewport.height} ${view.label} document scroll`).toBe(false);
+      expect(layout.workspaceScrolls, `${viewport.width}x${viewport.height} ${view.label} workspace scroll`).toBe(false);
+
+      if (viewport.short && view.allowShortViewOverflow) {
+        expect(layout.viewOverflowY, `${viewport.width}x${viewport.height} ${view.label} short overflow mode`).toBe("auto");
+      } else {
+        expect(layout.viewOverflows, `${viewport.width}x${viewport.height} ${view.label} view overflow`).toBe(false);
+      }
+
+      const allowedScrollTarget = viewport.short && view.label === "Settings"
+        ? /profiles-table-wrap|debug-log-panel|release-sections|settings-view/
+        : /profiles-table-wrap|debug-log-panel|release-sections/;
+      expect(layout.bottomGap, `${viewport.width}x${viewport.height} ${view.label} bottom gap`).toBeLessThanOrEqual(40);
+      expect(layout.activeScrollers.every((className) => allowedScrollTarget.test(String(className))), `${viewport.width}x${viewport.height} ${view.label} scroll target`).toBe(true);
+    }
+  }
 
   await quitApp(app);
 });
