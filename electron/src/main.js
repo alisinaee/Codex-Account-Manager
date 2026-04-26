@@ -155,10 +155,10 @@ function toggleRendererSidebar() {
 function createMainWindow() {
   const iconPath = getIconPath();
   mainWindow = new BrowserWindow({
-    width: 1240,
-    height: 820,
-    minWidth: 380,
-    minHeight: 620,
+    width: 1280,
+    height: 800,
+    minWidth: 800,
+    minHeight: 560,
     title: APP_NAME,
     icon: iconPath,
     show: false,
@@ -215,7 +215,7 @@ async function refreshUsage() {
   }
   const summary = buildUsageSummary(latestUsagePayload);
   if (tray) {
-    applyTrayState({ tray, Menu, summary, actions: buildTrayActions() });
+    applyTrayState({ tray, Menu, summary, actions: buildTrayActions(), nativeImage });
   }
   return summary;
 }
@@ -223,7 +223,7 @@ async function refreshUsage() {
 function applyTrayFromLatestUsage() {
   const summary = buildUsageSummary(latestUsagePayload);
   if (tray) {
-    applyTrayState({ tray, Menu, summary, actions: buildTrayActions() });
+    applyTrayState({ tray, Menu, summary, actions: buildTrayActions(), nativeImage });
   }
   applyWindowsTaskbarUsage({
     windowLike: mainWindow,

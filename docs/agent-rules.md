@@ -22,6 +22,36 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-26T21:41:56+03:30
+- Changed files: `electron/src/styles/components.css`
+- Summary: Made profiles table action controls fixed-size inside the Actions column so Switch no longer stretches or truncates unnecessarily.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:ad8282d82576 -->
+
+### 2026-04-26T21:40:36+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
+- Summary: Restored real colgroup sizing for the profiles table and widened the actions column so Switch and row actions fit.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:a552f9010904 -->
+
+### 2026-04-26T21:35:10+03:30
+- Changed files: `electron/src/styles/components.css`
+- Summary: Pinned the profiles table row actions menu button inside the actions cell and made the switch button shrink within the remaining width.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:c27ee072b336 -->
+
+### 2026-04-26T19:18:40+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`, `electron/src/renderer/components/DataTable.jsx`, `electron/src/renderer/components/StatusDot.jsx`, `electron/src/renderer/icon-pack.jsx`, `electron/src/renderer/table-layout.mjs`, `electron/tests/table-layout.test.js`
+- Summary: Implemented collapsed sidebar mini usage arcs, resilient sidebar toggle/exit/nav hit targets, fixed-layout profiles table with colgroup responsive hiding, restored colored usage bars, truncation/date formatting/tooltip rules, and row-actions copy/edit/remove options.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:362c4023c1dd -->
+
+### 2026-04-26T18:42:19+03:30
+- Changed files: `electron/src/main.js`, `electron/src/renderer/App.jsx`, `electron/src/styles/base.css`, `electron/src/styles/components.css`, `electron/src/styles/tokens.css`, `electron/tests/e2e/electron-shell.spec.js`
+- Summary: Reworked Electron responsive behavior around a full-window shell and body breakpoint classes (`size-*`, `height-*`), removed web-style centered/max-width primary layouts, added per-page height-aware fill/scroll rules, and updated shell E2E expectations for compact and runtime layouts.
+- Behavior impact: Added or refreshed 3 behavior rule(s) from user instructions.
+<!-- fingerprint:56e1d014ac0c -->
+
 ### 2026-04-25T17:26:22+03:30
 - Changed files: `README.md`, `codex_account_manager/cli.py`, `docs/architecture.md`, `docs/cli-reference.md`, `docs/development.md`, `electron/package-lock.json`, `electron/package.json`, `electron/scripts/smoke.js`, +10 more
 - Summary: Added packaged Electron runtime bootstrap with doctor JSON contract, setup screen, in-app Python core installer flow, production packaging scripts, and matching tests/docs.
@@ -112,35 +142,5 @@
 - Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
 <!-- fingerprint:bebdbafcfe54 -->
 
-### 2026-04-24T10:17:11+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`
-- Summary: Locked account table layout to fixed mode so loading placeholders cannot reflow column widths during usage fetches; added regression assertion for table-layout fixed in UI render test.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:7ab5e1264878 -->
-
-### 2026-04-24T09:15:30+03:30
-- Changed files: `README.md`, `codex_account_manager/cli.py`, `tests/test_cli_core.py`
-- Summary: Documented supported Codex clients and the manual reload caveat after account switches in README and in-app guide/help, with a render test.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:71d4e4060b11 -->
-
-### 2026-04-24T09:07:00+03:30
-- Changed files: `README.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `LICENSE`, `.github/ISSUE_TEMPLATE/bug_report.md`, `.github/ISSUE_TEMPLATE/feature_request.md`, `.github/pull_request_template.md`, `docs/assets/screenshots/codex-account-manager-demo.gif`, `docs/agent-rules.md`
-- Summary: Implemented the GitHub discoverability pass with a conversion-focused README rewrite, trust docs, GitHub templates, and a lightweight README demo GIF.
-- Behavior impact: Recorded the current GitHub-facing onboarding and trust surfaces for future AI context.
-<!-- fingerprint:fdc3ec6d9182 -->
-
-### 2026-04-24T08:43:10+03:30
-- Changed files: `README.md`, `docs/assets/screenshots/web-ui-panel-v0.0.12-blurred-emails.png`, `docs/assets/screenshots/web-ui-panel-blurred-emails.png`
-- Summary: Renamed the README screenshot asset to a versioned filename so GitHub does not reuse a cached old image URL.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:7e744536d759 -->
-
-### 2026-04-24T08:20:50+03:30
-- Changed files: `docs/assets/screenshots/web-ui-panel-blurred-emails.png`, `README.md`
-- Summary: Replaced the README web panel screenshot with the latest image and blurred account emails before committing it.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:38ea10b9051a -->
-
 ## Last Updated
-- 2026-04-25T17:26:22+03:30
+- 2026-04-26T21:41:56+03:30

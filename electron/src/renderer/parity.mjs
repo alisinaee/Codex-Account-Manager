@@ -56,12 +56,12 @@ export function getAllRefreshIntervalMs(ui = {}) {
 
 export function formatAutoSwitchCountdown(dueAtText, dueAt, nowMs = Date.now()) {
   if (!dueAt) {
-    return dueAtText || "Switch in 00:00";
+    return dueAtText || "No pending switch";
   }
   const remaining = Math.max(0, Math.floor(Number(dueAt) - nowMs / 1000));
   const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
   const ss = String(remaining % 60).padStart(2, "0");
-  return `Switch in ${mm}:${ss}`;
+  return `Switching in ${mm}:${ss}`;
 }
 
 export async function waitForServiceRestart({

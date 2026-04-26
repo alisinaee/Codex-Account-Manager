@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const { buildNotificationOptions, notificationsEnabled } = require("../src/notifications");
 const {
+  applyTrayState,
   buildMacMenuBarTitle,
   buildStatusIconDataUrl,
   buildStatusTone,
@@ -106,16 +107,59 @@ test("buildTrayMenuTemplate avoids data-url menu icons on macOS", () => {
   assert.match(items[2].label, /^🟢 /);
 });
 
-test("buildMacMenuBarTitle keeps the macOS status bar compact but informative", () => {
+test("buildMacMenuBarTitle keeps the macOS fallback title compact and informative", () => {
   assert.equal(
     buildMacMenuBarTitle({
       available: true,
       profileName: "acc6",
-      fiveHourPercent: 62,
-      weeklyPercent: 80,
+      fiveHourPercent: 9,
+      weeklyPercent: 48,
     }),
-    "acc6 5H 62% W 80%",
+    "acc6 5H \u001b[31m9%\u001b[0m W \u001b[33m48%\u001b[0m",
   );
+});
+
+test("applyTrayState uses macOS tray title with ansi-colored percentages", () => {
+  const calls = [];
+  const summary = {
+    available: true,
+    profileName: "acc6",
+    fiveHourPercent: 9,
+    weeklyPercent: 48,
+    tooltip: "Codex Account Manager\nProfile acc6",
+  };
+  const tray = {
+    setToolTip(value) {
+      calls.push(["tooltip", value]);
+    },
+    setTitle(title, options) {
+      calls.push(["title", title, options]);
+    },
+    setContextMenu(menu) {
+      calls.push(["menu", menu]);
+    },
+  };
+  const Menu = {
+    buildFromTemplate(template) {
+      return { template };
+    },
+  };
+
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  try {
+    applyTrayState({ tray, Menu, summary, actions: {} });
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  }
+
+  assert.deepEqual(calls[0], ["tooltip", "Codex Account Manager\nProfile acc6"]);
+  assert.deepEqual(calls[1], [
+    "title",
+    "acc6 5H \u001b[31m9%\u001b[0m W \u001b[33m48%\u001b[0m",
+    undefined,
+  ]);
+  assert.equal(calls[2][0], "menu");
 });
 
 test("buildStatusTone colors usage by remaining percentage", () => {

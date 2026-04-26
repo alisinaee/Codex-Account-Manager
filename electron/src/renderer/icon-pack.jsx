@@ -17,11 +17,24 @@ function IconBase({ children, ...props }) {
   );
 }
 
-export function SidebarToggleIcon() {
+export function PanelLeftCloseIcon() {
   return (
     <IconBase>
-      <rect x="3" y="4" width="18" height="16" rx="4" />
-      <path d="M10 4v16" />
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M9 4.5v15" />
+      <path d="m17.5 12-3-2.5" />
+      <path d="m17.5 12-3 2.5" />
+    </IconBase>
+  );
+}
+
+export function PanelLeftOpenIcon() {
+  return (
+    <IconBase>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M9 4.5v15" />
+      <path d="m14.5 12 3-2.5" />
+      <path d="m14.5 12 3 2.5" />
     </IconBase>
   );
 }

@@ -43,8 +43,8 @@ test("parity helpers clamp current and all refresh intervals to the stable web p
 test("parity helpers format auto-switch countdown from due timestamp", async () => {
   const { formatAutoSwitchCountdown } = await import("../src/renderer/parity.mjs");
 
-  assert.equal(formatAutoSwitchCountdown("", 130, 100000), "Switch in 00:30");
-  assert.equal(formatAutoSwitchCountdown("Switch in 00:00", null, 100000), "Switch in 00:00");
+  assert.equal(formatAutoSwitchCountdown("", 130, 100000), "Switching in 00:30");
+  assert.equal(formatAutoSwitchCountdown("No pending switch", null, 100000), "No pending switch");
 });
 
 test("restart parity waits for service drop before accepting recovery", async () => {

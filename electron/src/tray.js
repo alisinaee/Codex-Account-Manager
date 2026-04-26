@@ -36,6 +36,19 @@ function compactProfileName(name) {
   return value.length > 12 ? `${value.slice(0, 11)}…` : value;
 }
 
+function toneAnsiColor(value) {
+  const tone = buildStatusTone(value);
+  if (tone === "danger") return "\u001b[31m";
+  if (tone === "warning") return "\u001b[33m";
+  if (tone === "caution") return "\u001b[33m";
+  if (tone === "good") return "\u001b[32m";
+  return "\u001b[37m";
+}
+
+function colorizeMacTitleValue(label, value) {
+  return `${label} ${toneAnsiColor(value)}${toPercentLabel(value)}\u001b[0m`;
+}
+
 function statusItem(label, tone, platform) {
   const marker = tone === "danger"
     ? "🔴"
@@ -81,10 +94,10 @@ function buildMacMenuBarTitle(summary = {}) {
   if (!summary.available) return "";
   const profileName = compactProfileName(summary.profileName);
   if (!profileName) return "";
-  return `${profileName} 5H ${toPercentLabel(summary.fiveHourPercent)} W ${toPercentLabel(summary.weeklyPercent)}`;
+  return `${profileName} ${colorizeMacTitleValue("5H", summary.fiveHourPercent)} ${colorizeMacTitleValue("W", summary.weeklyPercent)}`;
 }
 
-function applyTrayState({ tray, Menu, summary, actions }) {
+function applyTrayState({ tray, Menu, summary, actions, nativeImage }) {
   if (!tray || !Menu) {
     return;
   }
@@ -126,7 +139,7 @@ function createTray({ Tray, Menu, nativeImage, summary, actions }) {
   const rawIcon = nativeImage?.createFromPath ? nativeImage.createFromPath(iconPath) : iconPath;
   const icon = prepareTrayIcon(rawIcon);
   const tray = new Tray(icon);
-  applyTrayState({ tray, Menu, summary, actions });
+  applyTrayState({ tray, Menu, summary, actions, nativeImage });
   return tray;
 }
 
