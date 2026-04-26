@@ -1,13 +1,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { buildNotificationOptions } = require("../src/notifications");
+const { buildNotificationOptions, notificationsEnabled } = require("../src/notifications");
 const {
   buildMacMenuBarTitle,
   buildStatusIconDataUrl,
   buildStatusTone,
   buildTrayMenuTemplate,
   prepareTrayIcon,
+  resolveTrayIconPath,
 } = require("../src/tray");
 
 test("buildNotificationOptions formats current usage for Electron notifications", () => {
@@ -39,6 +40,12 @@ test("buildNotificationOptions includes app icon when provided", () => {
   assert.equal(buildNotificationOptions(payload, "/tmp/icon.png").icon, "/tmp/icon.png");
 });
 
+test("notificationsEnabled follows the desktop notification toggle", () => {
+  assert.equal(notificationsEnabled({ notifications: { enabled: true } }), true);
+  assert.equal(notificationsEnabled({ notifications: { enabled: false } }), false);
+  assert.equal(notificationsEnabled({}), false);
+});
+
 test("buildTrayMenuTemplate includes readable color-coded desktop status actions", () => {
   const items = buildTrayMenuTemplate({
     platform: "linux",
@@ -60,8 +67,8 @@ test("buildTrayMenuTemplate includes readable color-coded desktop status actions
 
   assert.deepEqual(labels, [
     "Current acc6",
-    "5H 48% left",
-    "Weekly 78% left",
+    "🟡 5H 48% left",
+    "🟢 Weekly 78% left",
     "separator",
     "Open Codex Account Manager",
     "Refresh Usage",
@@ -72,8 +79,8 @@ test("buildTrayMenuTemplate includes readable color-coded desktop status actions
     "Quit",
   ]);
   assert.equal(items[0].enabled, true);
-  assert.ok(items[1].icon.startsWith("data:image/svg+xml;base64,"));
-  assert.ok(items[2].icon.startsWith("data:image/svg+xml;base64,"));
+  assert.equal(items[1].icon, undefined);
+  assert.equal(items[2].icon, undefined);
 });
 
 test("buildTrayMenuTemplate avoids data-url menu icons on macOS", () => {
@@ -95,6 +102,8 @@ test("buildTrayMenuTemplate avoids data-url menu icons on macOS", () => {
 
   assert.equal(items[1].icon, undefined);
   assert.equal(items[2].icon, undefined);
+  assert.match(items[1].label, /^🟡 /);
+  assert.match(items[2].label, /^🟢 /);
 });
 
 test("buildMacMenuBarTitle keeps the macOS status bar compact but informative", () => {
@@ -142,4 +151,26 @@ test("prepareTrayIcon resizes macOS tray image and marks it as a template image"
     ["resize", { width: 18, height: 18 }],
     ["setTemplateImage", true],
   ]);
+});
+
+test("prepareTrayIcon resizes the Windows tray image to a compact 16px icon", () => {
+  const calls = [];
+  const resized = { kind: "win-resized" };
+  const image = {
+    resize(options) {
+      calls.push(["resize", options]);
+      return resized;
+    },
+  };
+
+  assert.equal(prepareTrayIcon(image, "win32"), resized);
+  assert.deepEqual(calls, [
+    ["resize", { width: 16, height: 16 }],
+  ]);
+});
+
+test("resolveTrayIconPath prefers the dedicated tray asset on macOS and Windows", () => {
+  assert.match(resolveTrayIconPath("darwin"), /codex-account-manager-tray\.svg$/);
+  assert.match(resolveTrayIconPath("win32"), /codex-account-manager\.png$/);
+  assert.match(resolveTrayIconPath("linux"), /codex-account-manager\.png$/);
 });

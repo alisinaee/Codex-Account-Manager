@@ -10,6 +10,7 @@ const { buildServiceRuntimeContract, getDefaultBackendState } = require("./backe
 const DEFAULT_MIN_CORE_VERSION = "0.0.12";
 const DEFAULT_INSTALL_SPEC = "git+https://github.com/alisinaee/Codex-Account-Manager.git@main";
 const RUNTIME_STATE_FILE = "runtime-state.json";
+const WINGET_PYTHON_ID_PREFIX = "Python.Python.";
 
 function formatLogLines(rows = []) {
   if (!Array.isArray(rows) || !rows.length) {
@@ -461,10 +462,122 @@ function buildBootstrapInstallPlan({ python, pipx, brew, packageName = DEFAULT_I
   ];
 }
 
+function parseWingetPythonVersionFromId(id) {
+  const value = String(id || "");
+  if (!value.startsWith(WINGET_PYTHON_ID_PREFIX)) {
+    return [];
+  }
+  return versionParts(value.slice(WINGET_PYTHON_ID_PREFIX.length));
+}
+
+function compareVersionArrays(left = [], right = []) {
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const a = Number.isFinite(left[index]) ? left[index] : 0;
+    const b = Number.isFinite(right[index]) ? right[index] : 0;
+    if (a > b) return 1;
+    if (a < b) return -1;
+  }
+  return 0;
+}
+
+function buildPythonRuntimeInstallPlan({ platform = process.platform } = {}) {
+  if (platform !== "win32") {
+    return [];
+  }
+  return [];
+}
+
+function resolveWindowsPythonWingetIds({ spawnSyncImpl = spawnSync } = {}) {
+  const discovered = new Set();
+  const query = spawnSyncImpl("winget", ["search", "Python.Python", "--source", "winget"], {
+    encoding: "utf8",
+    timeout: 12000,
+  });
+  const output = String(query.stdout || query.stderr || "");
+  const matches = output.match(/Python\.Python\.[0-9.]+/g) || [];
+  for (const id of matches) {
+    discovered.add(id);
+  }
+
+  const candidates = Array.from(discovered)
+    .filter((id) => parseWingetPythonVersionFromId(id)[0] >= 3)
+    .sort((a, b) => compareVersionArrays(parseWingetPythonVersionFromId(b), parseWingetPythonVersionFromId(a)));
+
+  const fallback = ["Python.Python.3.14", "Python.Python.3.13", "Python.Python.3.12", "Python.Python.3.11"];
+  return unique([...candidates, ...fallback]);
+}
+
+function buildPythonRuntimeInstallPlan({ platform = process.platform, packageIds = [] } = {}) {
+  if (platform !== "win32") {
+    return [];
+  }
+  return unique(packageIds).map((id, index) => ({
+    label: index === 0 ? "Install Python 3" : `Install Python 3 (fallback ${index})`,
+    command: "winget",
+    args: [
+      "install",
+      "-e",
+      "--id",
+      String(id),
+      "--source",
+      "winget",
+      "--scope",
+      "user",
+      "--silent",
+      "--disable-interactivity",
+      "--accept-source-agreements",
+      "--accept-package-agreements",
+    ],
+    timeoutMs: 600000,
+  }));
+}
+
+function stripAnsi(text) {
+  return String(text || "").replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function normalizeOutputChunk(text) {
+  return stripAnsi(text)
+    .replace(/\u0008/g, "")
+    .replace(/\r/g, "\n");
+}
+
+function isSpinnerFrame(text) {
+  const compact = String(text || "").replace(/\s+/g, "");
+  return compact.length > 0 && /^[-\\|/]+$/.test(compact);
+}
+
+function isProgressBarLine(text) {
+  const line = String(text || "").trim();
+  if (!line) return false;
+  return /^[\u2588\u2593\u2592\u2591]+\s+\d+(?:\.\d+)?\s*(?:[KMG]B)\s*\/\s*\d+(?:\.\d+)?\s*(?:[KMG]B)$/i.test(line)
+    || /^[\u2588\u2593\u2592\u2591]+\s+\d+%$/.test(line)
+    || /^\d+%$/.test(line);
+}
+
+function isIgnorableTerminalLine(text) {
+  return isSpinnerFrame(text) || isProgressBarLine(text);
+}
+
+function extractCommandErrorDetail({ stdout = "", stderr = "", code = 1 } = {}) {
+  const merged = `${stderr}\n${stdout}`;
+  const filtered = normalizeOutputChunk(merged)
+    .split(/[\r\n]+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isIgnorableTerminalLine(line));
+  if (!filtered.length) {
+    return `command exited with ${code}`;
+  }
+  return filtered.slice(-3).join("\n");
+}
+
 function runInstallStep(step, { spawnImpl = spawn, onProgress = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     const stdout = [];
     const stderr = [];
+    let lastProgressMessage = "";
     let settled = false;
     let timer = null;
 
@@ -495,14 +608,19 @@ function runInstallStep(step, { spawnImpl = spawn, onProgress = () => {} } = {})
         stream.setEncoding("utf8");
       }
       stream.on("data", (chunk) => {
-        const text = String(chunk || "");
+        const text = normalizeOutputChunk(chunk);
         if (!text) return;
-        bucket.push(text);
         const lines = text
-          .split(/\r?\n/)
+          .split(/[\r\n]+/)
           .map((line) => line.trim())
           .filter(Boolean);
-        for (const line of lines.slice(-2)) {
+        const meaningful = lines.filter((line) => !isIgnorableTerminalLine(line));
+        if (meaningful.length) {
+          bucket.push(`${meaningful.join("\n")}\n`);
+        }
+        for (const line of meaningful) {
+          if (line === lastProgressMessage) continue;
+          lastProgressMessage = line;
           onProgress({ type: "output", status: "running", label: step.label, message: line });
         }
       });
@@ -523,7 +641,7 @@ function runInstallStep(step, { spawnImpl = spawn, onProgress = () => {} } = {})
           finish(null, result);
           return;
         }
-        const detail = String(result.stderr || result.stdout || `command exited with ${code}`).trim();
+        const detail = extractCommandErrorDetail(result);
         finish(new Error(detail));
       });
     } else {
@@ -536,7 +654,7 @@ function runInstallStep(step, { spawnImpl = spawn, onProgress = () => {} } = {})
         child.kill("SIGTERM");
       }
       finish(new Error(`Timed out while running ${step.label}.`));
-    }, 120000);
+    }, Number(step.timeoutMs || 120000));
   });
 }
 
@@ -576,17 +694,84 @@ async function installPythonCore(runtimeState, {
   return logs;
 }
 
+async function installPythonRuntime(runtimeState, {
+  platform = process.platform,
+  spawnImpl = spawn,
+  spawnSyncImpl = spawnSync,
+  onProgress = () => {},
+} = {}) {
+  if (platform !== "win32") {
+    throw new Error("Automatic Python installation is currently supported only on Windows.");
+  }
+
+  const wingetCheck = spawnSyncImpl("winget", ["--version"], {
+    encoding: "utf8",
+    timeout: 8000,
+  });
+  if (wingetCheck.error || wingetCheck.status !== 0) {
+    throw new Error("winget is not available. Install App Installer (Microsoft Store) and try again.");
+  }
+
+  const packageIds = resolveWindowsPythonWingetIds({ spawnSyncImpl });
+  const plan = buildPythonRuntimeInstallPlan({ platform, runtimeState, packageIds });
+  if (!plan.length) {
+    throw new Error("No compatible Python package was found in winget sources.");
+  }
+
+  const logs = [];
+  let lastError = null;
+  for (let index = 0; index < plan.length; index += 1) {
+    const step = plan[index];
+    onProgress({ type: "step", status: "running", label: step.label });
+    try {
+      const result = await runInstallStep(step, {
+        spawnImpl,
+        onProgress,
+      });
+      logs.push({
+        label: step.label,
+        command: step.command,
+        args: step.args,
+        stdout: String(result.stdout || ""),
+        stderr: String(result.stderr || ""),
+        status: result.status,
+      });
+      onProgress({ type: "step", status: "done", label: step.label });
+      return logs;
+    } catch (error) {
+      lastError = error;
+      onProgress({ type: "step", status: "failed", label: step.label, message: String(error?.message || error) });
+      const noPackageFound = /no package found matching input criteria/i.test(String(error?.message || ""));
+      if (!noPackageFound || index === plan.length - 1) {
+        throw error;
+      }
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  return logs;
+}
+
 module.exports = {
   buildBootstrapInstallPlan,
+  buildPythonRuntimeInstallPlan,
+  compareVersionArrays,
   detectBrew,
   detectPipx,
   detectPython,
+  extractCommandErrorDetail,
   formatRuntimeDiagnostics,
   installPythonCore,
+  installPythonRuntime,
+  isProgressBarLine,
+  isSpinnerFrame,
   isVersionAtLeast,
   loadStoredRuntimeState,
   normalizeRuntimeStatus,
+  parseWingetPythonVersionFromId,
   pythonInstallUrl,
+  resolveWindowsPythonWingetIds,
   resolveRuntimeStatus,
   runDoctor,
   saveStoredRuntimeState,

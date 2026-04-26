@@ -37,14 +37,20 @@ function compactProfileName(name) {
 }
 
 function statusItem(label, tone, platform) {
+  const marker = tone === "danger"
+    ? "🔴"
+    : tone === "warning"
+      ? "🟠"
+      : tone === "caution"
+        ? "🟡"
+        : tone === "good"
+          ? "🟢"
+          : "⚪";
+  const prefixedLabel = `${marker} ${label}`;
   if (platform === "darwin") {
-    return { label, enabled: true };
+    return { label: prefixedLabel, enabled: true };
   }
-  return {
-    label,
-    enabled: true,
-    icon: buildStatusIconDataUrl(tone),
-  };
+  return { label: prefixedLabel, enabled: true };
 }
 
 function buildTrayMenuTemplate(actions = {}) {
@@ -92,18 +98,31 @@ function applyTrayState({ tray, Menu, summary, actions }) {
 }
 
 function prepareTrayIcon(image, platform = process.platform) {
-  if (platform !== "darwin" || !image) {
+  if (!image) {
     return image;
   }
-  const resized = typeof image.resize === "function" ? image.resize({ width: 18, height: 18 }) : image;
-  if (typeof resized.setTemplateImage === "function") {
-    resized.setTemplateImage(true);
+  if (platform === "darwin") {
+    const resized = typeof image.resize === "function" ? image.resize({ width: 18, height: 18 }) : image;
+    if (typeof resized.setTemplateImage === "function") {
+      resized.setTemplateImage(true);
+    }
+    return resized;
   }
-  return resized;
+  if (platform === "win32") {
+    return typeof image.resize === "function" ? image.resize({ width: 16, height: 16 }) : image;
+  }
+  return typeof image.resize === "function" ? image.resize({ width: 18, height: 18 }) : image;
+}
+
+function resolveTrayIconPath(platform = process.platform) {
+  if (platform === "darwin") {
+    return getTrayIconPath();
+  }
+  return getIconPath();
 }
 
 function createTray({ Tray, Menu, nativeImage, summary, actions }) {
-  const iconPath = process.platform === "darwin" ? getTrayIconPath() : getIconPath();
+  const iconPath = resolveTrayIconPath(process.platform);
   const rawIcon = nativeImage?.createFromPath ? nativeImage.createFromPath(iconPath) : iconPath;
   const icon = prepareTrayIcon(rawIcon);
   const tray = new Tray(icon);
@@ -120,4 +139,5 @@ module.exports = {
   createTray,
   getIconPath,
   prepareTrayIcon,
+  resolveTrayIconPath,
 };

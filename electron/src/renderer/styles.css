@@ -1181,6 +1181,70 @@ table.wide-columns td[data-col="auto"] {
   justify-content: flex-end;
 }
 
+.auto-refresh-view {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.auto-refresh-panel {
+  align-self: start;
+}
+
+.auto-refresh-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.auto-refresh-section {
+  display: grid;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-black);
+}
+
+.auto-refresh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.auto-refresh-control-surface {
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #050505;
+}
+
+.auto-refresh-inline-controls {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.auto-refresh-inline-label {
+  white-space: nowrap;
+}
+
+.auto-refresh-inline-controls .stepper {
+  flex: 0 0 auto;
+}
+
+.auto-refresh-inline-controls .toggle {
+  flex: 0 0 auto;
+}
+
+.auto-refresh-toggle {
+  justify-content: flex-end;
+}
+
 .auto-switch-card {
   align-content: start;
 }
@@ -1670,6 +1734,17 @@ table.wide-columns td[data-col="auto"] {
   }
 
   .desktop-topbar {
+    padding: 12px;
+  }
+
+  .auto-refresh-inline-controls {
+    align-items: stretch;
+    flex-direction: column;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .auto-refresh-control-surface {
     padding: 12px;
   }
 

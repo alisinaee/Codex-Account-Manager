@@ -27,11 +27,11 @@ test("Electron icon helper resolves project-owned assets", () => {
   const trayIcon = getTrayIconPath();
 
   assert.equal(path.basename(source), "codex_account_manager.svg");
-  assert.match(source, /codex_account_manager\/assets\/codex_account_manager\.svg$/);
-  assert.match(png, /electron\/assets\/codex-account-manager\.png$/);
-  assert.match(dock, /electron\/assets\/codex-account-manager\.icns$/);
-  assert.match(icns, /electron\/assets\/codex-account-manager\.icns$/);
-  assert.match(trayIcon, /electron\/assets\/codex-account-manager-tray\.svg$/);
+  assert.match(source, /codex_account_manager[\\/]assets[\\/]codex_account_manager\.svg$/);
+  assert.match(png, /electron[\\/]assets[\\/]codex-account-manager\.png$/);
+  assert.match(dock, /electron[\\/]assets[\\/]codex-account-manager\.icns$/);
+  assert.match(icns, /electron[\\/]assets[\\/]codex-account-manager\.icns$/);
+  assert.match(trayIcon, /electron[\\/]assets[\\/]codex-account-manager-tray\.svg$/);
   assert.ok(fs.existsSync(source), "source SVG should exist");
   assert.ok(fs.existsSync(png), "Electron PNG icon should exist");
   assert.ok(fs.existsSync(dock), "Electron Dock icon should exist");
@@ -63,6 +63,6 @@ test("electron package metadata is ready for packaged app identity", () => {
 test("getElectronAssetPath only resolves inside electron assets", () => {
   const asset = getElectronAssetPath("codex-account-manager.png");
 
-  assert.match(asset, /electron\/assets\/codex-account-manager\.png$/);
+  assert.match(asset, /electron[\\/]assets[\\/]codex-account-manager\.png$/);
   assert.ok(fs.existsSync(asset));
 });

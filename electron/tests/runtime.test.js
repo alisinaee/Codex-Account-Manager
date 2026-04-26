@@ -3,10 +3,14 @@ const assert = require("node:assert/strict");
 
 const {
   buildBootstrapInstallPlan,
+  buildPythonRuntimeInstallPlan,
+  extractCommandErrorDetail,
   detectPython,
   detectPipx,
   formatRuntimeDiagnostics,
   installPythonCore,
+  installPythonRuntime,
+  resolveWindowsPythonWingetIds,
   resolveRuntimeStatus,
 } = require("../src/runtime");
 
@@ -20,6 +24,55 @@ test("buildBootstrapInstallPlan installs pipx and the Python core through the se
     ["Refresh pipx path", "/usr/bin/python3", ["-m", "pipx", "ensurepath"]],
     ["Install Codex Account Manager", "/usr/bin/python3", ["-m", "pipx", "install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"]],
   ]);
+});
+
+test("buildPythonRuntimeInstallPlan uses winget on Windows", () => {
+  const plan = buildPythonRuntimeInstallPlan({
+    platform: "win32",
+    packageIds: ["Python.Python.3.14"],
+  });
+  assert.deepEqual(plan.map((step) => [step.label, step.command, step.args]), [
+    ["Install Python 3", "winget", [
+      "install",
+      "-e",
+      "--id",
+      "Python.Python.3.14",
+      "--source",
+      "winget",
+      "--scope",
+      "user",
+      "--silent",
+      "--disable-interactivity",
+      "--accept-source-agreements",
+      "--accept-package-agreements",
+    ]],
+  ]);
+});
+
+test("resolveWindowsPythonWingetIds picks latest Python 3 ids from winget search", () => {
+  const ids = resolveWindowsPythonWingetIds({
+    spawnSyncImpl: (_command, args) => {
+      if (args?.[0] === "search") {
+        return {
+          status: 0,
+          stdout: "Python 3.11 Python.Python.3.11 3.11.9\nPython 3.14 Python.Python.3.14 3.14.4",
+          stderr: "",
+        };
+      }
+      return { status: 1, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(ids[0], "Python.Python.3.14");
+  assert.ok(ids.includes("Python.Python.3.11"));
+});
+
+test("extractCommandErrorDetail drops progress bar noise and keeps final errors", () => {
+  const message = extractCommandErrorDetail({
+    stdout: "█████▒▒▒▒ 10%\n██████▒▒▒ 20%\n",
+    stderr: "No package found matching input criteria.\n",
+    code: 1,
+  });
+  assert.equal(message, "No package found matching input criteria.");
 });
 
 test("buildBootstrapInstallPlan skips pipx installation when a pipx binary is already available", () => {
@@ -209,7 +262,7 @@ test("resolveRuntimeStatus accepts a legacy installed core when doctor is unsupp
   assert.ok(runtime.errors.some((row) => row.code === "LEGACY_CORE"));
 });
 
-test("installPythonCore refreshes the pipx command after Homebrew installation and streams progress", async () => {
+test("installPythonCore refreshes the pipx command through the selected Python runtime and streams progress", async () => {
   const progress = [];
   const spawned = [];
   const childFactories = [];
@@ -261,15 +314,77 @@ test("installPythonCore refreshes the pipx command after Homebrew installation a
 
   assert.equal(spawned.length, 3);
   assert.deepEqual(spawned.map(([, args]) => args), [
-    ["install", "pipx"],
-    ["ensurepath"],
-    ["install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"],
+    ["-m", "pip", "install", "--user", "--break-system-packages", "pipx"],
+    ["-m", "pipx", "ensurepath"],
+    ["-m", "pipx", "install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"],
   ]);
-  assert.match(spawned[1][0], /pipx$/);
-  assert.match(spawned[2][0], /pipx$/);
+  assert.equal(spawned[0][0], "/opt/homebrew/bin/python3");
+  assert.equal(spawned[1][0], "/opt/homebrew/bin/python3");
+  assert.equal(spawned[2][0], "/opt/homebrew/bin/python3");
   assert.ok(progress.some((event) => event.label === "Install pipx" && event.status === "running"));
   assert.ok(progress.some((event) => event.label === "Refresh pipx path" && event.message === "ensurepath done"));
   assert.ok(progress.some((event) => event.label === "Install Codex Account Manager" && event.status === "done"));
+});
+
+test("installPythonRuntime installs Python with winget and streams progress", async () => {
+  const progress = [];
+  const spawned = [];
+  const makeChild = ({ stdout = "", stderr = "", code = 0 }) => ({
+    stdout: {
+      setEncoding() {},
+      on(event, handler) {
+        if (event === "data" && stdout) process.nextTick(() => handler(stdout));
+      },
+    },
+    stderr: {
+      setEncoding() {},
+      on(event, handler) {
+        if (event === "data" && stderr) process.nextTick(() => handler(stderr));
+      },
+    },
+    on(event, handler) {
+      if (event === "close") process.nextTick(() => handler(code));
+    },
+  });
+
+  await installPythonRuntime({}, {
+    platform: "win32",
+    onProgress: (event) => progress.push(event),
+    spawnSyncImpl: (command, args) => {
+      if (command === "winget" && args?.[0] === "--version") {
+        return { status: 0, stdout: "v1.9.0", stderr: "" };
+      }
+      if (command === "winget" && args?.[0] === "search") {
+        return { status: 0, stdout: "Python 3.14 Python.Python.3.14 3.14.4", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: "missing" };
+    },
+    spawnImpl: (command, args) => {
+      spawned.push([command, args]);
+      return makeChild({ stdout: "Successfully installed\n" });
+    },
+  });
+
+  assert.equal(spawned.length, 1);
+  assert.deepEqual(spawned[0], [
+    "winget",
+    [
+      "install",
+      "-e",
+      "--id",
+      "Python.Python.3.14",
+      "--source",
+      "winget",
+      "--scope",
+      "user",
+      "--silent",
+      "--disable-interactivity",
+      "--accept-source-agreements",
+      "--accept-package-agreements",
+    ],
+  ]);
+  assert.ok(progress.some((event) => event.label === "Install Python 3" && event.status === "running"));
+  assert.ok(progress.some((event) => event.label === "Install Python 3" && event.status === "done"));
 });
 
 test("formatRuntimeDiagnostics includes backend logs and runtime details", () => {
