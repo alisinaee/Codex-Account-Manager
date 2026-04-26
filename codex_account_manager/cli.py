@@ -218,6 +218,7 @@ DEFAULT_CAM_CONFIG = {
         "all_auto_refresh_enabled": False,
         "all_refresh_interval_min": 5,
         "debug_mode": False,
+        "windows_taskbar_usage_enabled": False,
     },
     "notifications": {
         "enabled": False,
@@ -733,6 +734,7 @@ def sanitize_cam_config(raw: dict) -> dict:
     ui.pop("auto_refresh", None)
     ui.pop("refresh_interval_sec", None)
     ui["debug_mode"] = bool(ui.get("debug_mode", False))
+    ui["windows_taskbar_usage_enabled"] = bool(ui.get("windows_taskbar_usage_enabled", False))
     cfg["ui"] = ui
 
     notif = cfg.get("notifications", {})
@@ -4809,29 +4811,12 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 return _json_ok({"scheduled": True, "will_close_page": True, "port": target_port, "config": cfg})
             if self.command == "POST" and path == "/api/system/restart":
                 push_event("system-restart", "ui-service restart requested from UI")
-                helper_code = (
-                    "import subprocess,time,sys; "
-                    "time.sleep(0.45); "
-                    "sys.exit(subprocess.call(sys.argv[1:]))"
-                )
-                cmd = [
-                    sys.executable,
-                    "-c",
-                    helper_code,
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "ui-service",
-                    "restart",
-                    "--host",
+                cmd = _build_ui_restart_helper_command(
                     str(host or UI_DEFAULT_HOST),
-                    "--port",
-                    str(int(port or UI_DEFAULT_PORT)),
-                    "--interval",
-                    str(float(interval_sec)),
-                    "--idle-timeout",
-                    str(float(idle_timeout_sec)),
-                    "--no-open",
-                ]
+                    int(port or UI_DEFAULT_PORT),
+                    float(interval_sec),
+                    float(idle_timeout_sec),
+                )
                 try:
                     popen_kwargs = {
                         "stdin": subprocess.DEVNULL,
@@ -5783,8 +5768,60 @@ def _autostart_label() -> str:
     return "codex.account.manager.ui"
 
 
+def _ui_service_command_base() -> list[str]:
+    script_path = str(Path(__file__).resolve())
+    if sys.platform.startswith("win"):
+        current_python = str(sys.executable or "").strip()
+        if current_python and Path(current_python).exists():
+            return [current_python, script_path]
+        py_launcher = shutil.which("py")
+        if py_launcher:
+            return [py_launcher, "-3", script_path]
+        python_cmd = shutil.which("python")
+        if python_cmd:
+            return [python_cmd, script_path]
+    current_python = str(sys.executable or "").strip()
+    if current_python and Path(current_python).exists():
+        return [current_python, script_path]
+    python3_cmd = shutil.which("python3")
+    if python3_cmd:
+        return [python3_cmd, script_path]
+    return ["python", script_path]
+
+
+def _build_ui_service_restart_command(host: str, port: int, interval_sec: float, idle_timeout_sec: float) -> list[str]:
+    return _ui_service_command_base() + [
+        "ui-service",
+        "restart",
+        "--host",
+        str(host or UI_DEFAULT_HOST),
+        "--port",
+        str(int(port or UI_DEFAULT_PORT)),
+        "--interval",
+        str(float(interval_sec)),
+        "--idle-timeout",
+        str(float(idle_timeout_sec)),
+        "--no-open",
+    ]
+
+
+def _build_ui_restart_helper_command(host: str, port: int, interval_sec: float, idle_timeout_sec: float) -> list[str]:
+    helper_code = (
+        "import subprocess,time,sys; "
+        "time.sleep(0.45); "
+        "sys.exit(subprocess.call(sys.argv[1:]))"
+    )
+    restart_cmd = _build_ui_service_restart_command(host, port, interval_sec, idle_timeout_sec)
+    return [
+        restart_cmd[0],
+        "-c",
+        helper_code,
+        *restart_cmd,
+    ]
+
+
 def _autostart_command(no_open: bool = True) -> list[str]:
-    cmd = [sys.executable, str(Path(__file__).resolve()), "ui-service", "start"]
+    cmd = _ui_service_command_base() + ["ui-service", "start"]
     if no_open:
         cmd.append("--no-open")
     return cmd

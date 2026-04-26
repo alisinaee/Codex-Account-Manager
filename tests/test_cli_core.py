@@ -69,6 +69,59 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(cli.electron_app_dir().name, "electron")
         self.assertTrue((cli.electron_app_dir() / "package.json").exists())
 
+    @mock.patch("codex_account_manager.cli._ui_service_command_base")
+    def test_build_ui_service_restart_command_reuses_runtime_base(self, mock_base):
+        mock_base.return_value = ["py", "-3", "C:\\repo\\codex_account_manager\\cli.py"]
+
+        command = cli._build_ui_service_restart_command("127.0.0.1", 4673, 5.0, 0.0)
+
+        self.assertEqual(
+            command,
+            [
+                "py",
+                "-3",
+                "C:\\repo\\codex_account_manager\\cli.py",
+                "ui-service",
+                "restart",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "4673",
+                "--interval",
+                "5.0",
+                "--idle-timeout",
+                "0.0",
+                "--no-open",
+            ],
+        )
+
+    @mock.patch("codex_account_manager.cli._ui_service_command_base")
+    def test_build_ui_restart_helper_command_keeps_interpreter_and_script(self, mock_base):
+        mock_base.return_value = ["py", "-3", "C:\\repo\\codex_account_manager\\cli.py"]
+
+        command = cli._build_ui_restart_helper_command("127.0.0.1", 4673, 5.0, 0.0)
+
+        self.assertEqual(command[:3], ["py", "-c", mock.ANY])
+        self.assertEqual(
+            command[3:],
+            [
+                "py",
+                "-3",
+                "C:\\repo\\codex_account_manager\\cli.py",
+                "ui-service",
+                "restart",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "4673",
+                "--interval",
+                "5.0",
+                "--idle-timeout",
+                "0.0",
+                "--no-open",
+            ],
+        )
+
     @mock.patch("codex_account_manager.cli.is_ui_healthy", return_value=True)
     @mock.patch("codex_account_manager.cli.read_ui_pid_info", return_value={"host": "127.0.0.1", "port": 4673, "pid": 4242, "token": "session-token"})
     @mock.patch("codex_account_manager.cli.detect_core_runtime")

@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
   getRuntimeStatus: () => ipcRenderer.invoke("desktop:get-runtime-status"),
   copyRuntimeDiagnostics: () => ipcRenderer.invoke("desktop:copy-runtime-diagnostics"),
   retryRuntimeCheck: () => ipcRenderer.invoke("desktop:retry-runtime-check"),
+  installPythonRuntime: () => ipcRenderer.invoke("desktop:install-python-runtime"),
   installPythonCore: () => ipcRenderer.invoke("desktop:install-python-core"),
   startBackendService: () => ipcRenderer.invoke("desktop:start-backend-service"),
   stopBackendService: () => ipcRenderer.invoke("desktop:stop-backend-service"),

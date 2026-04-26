@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const {
   getElectronLaunchSpec,
@@ -30,11 +31,11 @@ test("missingRuntimeBins passes when runtime binaries exist", () => {
 test("getMacDevAppPaths targets a branded macOS runtime bundle", () => {
   const paths = getMacDevAppPaths("/tmp/electron");
 
-  assert.equal(paths.sourceApp, "/tmp/electron/node_modules/electron/dist/Electron.app");
-  assert.equal(paths.appBundle, "/tmp/electron/.codex-electron-runtime/Codex Account Manager.app");
-  assert.equal(paths.executable, "/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/MacOS/Electron");
-  assert.equal(paths.infoPlist, "/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/Info.plist");
-  assert.equal(paths.iconTarget, "/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/Resources/codex-account-manager.icns");
+  assert.equal(paths.sourceApp, path.normalize("/tmp/electron/node_modules/electron/dist/Electron.app"));
+  assert.equal(paths.appBundle, path.normalize("/tmp/electron/.codex-electron-runtime/Codex Account Manager.app"));
+  assert.equal(paths.executable, path.normalize("/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/MacOS/Electron"));
+  assert.equal(paths.infoPlist, path.normalize("/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/Info.plist"));
+  assert.equal(paths.iconTarget, path.normalize("/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/Resources/codex-account-manager.icns"));
 });
 
 test("getElectronLaunchSpec uses branded macOS app bundle launcher", () => {
@@ -52,7 +53,7 @@ test("getElectronLaunchSpec uses branded macOS app bundle launcher", () => {
     execFileSyncImpl: (...args) => toolCalls.push(args),
   });
 
-  assert.equal(spec.command, "/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/MacOS/Electron");
+  assert.equal(spec.command, path.normalize("/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/MacOS/Electron"));
   assert.equal(spec.args[0], ".");
   assert.equal(spec.options.cwd, "/tmp/electron");
   assert.equal(spec.options.env.CAM_ELECTRON_RENDERER_URL, "http://127.0.0.1:5173");
@@ -61,10 +62,10 @@ test("getElectronLaunchSpec uses branded macOS app bundle launcher", () => {
   assert.equal(toolCalls.length, 5);
   assert.deepEqual(toolCalls[0], [
     "/usr/bin/ditto",
-    ["/tmp/electron/node_modules/electron/dist/Electron.app", "/tmp/electron/.codex-electron-runtime/Codex Account Manager.app"],
+    [path.normalize("/tmp/electron/node_modules/electron/dist/Electron.app"), path.normalize("/tmp/electron/.codex-electron-runtime/Codex Account Manager.app")],
   ]);
   assert.deepEqual(toolCalls[1], [
     "/usr/libexec/PlistBuddy",
-    ["-c", "Set :CFBundleDisplayName Codex Account Manager", "/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/Info.plist"],
+    ["-c", "Set :CFBundleDisplayName Codex Account Manager", path.normalize("/tmp/electron/.codex-electron-runtime/Codex Account Manager.app/Contents/Info.plist")],
   ]);
 });

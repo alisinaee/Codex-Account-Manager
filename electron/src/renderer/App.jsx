@@ -29,6 +29,14 @@ import {
   currentProfileName,
   usagePercentNumber,
 } from "./view-model.mjs";
+import {
+  applyProfileSelection,
+  deepMerge,
+  formatAutoSwitchCountdown,
+  getAllRefreshIntervalMs,
+  getCurrentRefreshIntervalMs,
+  waitForServiceRestart,
+} from "./parity.mjs";
 import Dialog from "./components/Dialog.jsx";
 
 function NavIcon({ id }) {
@@ -253,6 +261,27 @@ function fileToBase64(file) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+function isRuntimeOperational(status) {
+  if (status?.phase === "ready") {
+    return true;
+  }
+  return Boolean(
+    status?.python?.supported
+      && status?.core?.installed
+      && status?.uiService?.running,
+  );
+}
+
+function waitMs(delay) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delay);
+  });
+}
+
+function joinBaseUrl(baseUrl, path) {
+  return `${String(baseUrl || "").replace(/\/+$/, "")}${String(path || "")}`;
 }
 
 function UsageCell({ row, usageKey }) {
@@ -553,53 +582,56 @@ function InlineStepper({ value, min, max, step = 1, unit, onChange }) {
       <button type="button" onClick={() => onChange(updateNumber(value, -step, min, max, min))}>-</button>
       <input type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value || min))} />
       <button type="button" onClick={() => onChange(updateNumber(value, step, min, max, min))}>+</button>
-      {unit ? <span className="label">{unit}</span> : null}
     </div>
   );
 }
 
-function AutoRefreshView({ state, loading, onRefresh, onSavePatch }) {
+function AutoRefreshView({ state, onSavePatch }) {
   const ui = state?.config?.ui || {};
 
   return (
-    <section className="view" data-testid="auto-refresh-view">
-      <div className="controls-grid auto-refresh-grid">
-        <section className="control-card settings-card">
-          <div className="group-title">Current Account Auto Refresh</div>
-          <div className="setting-row inset-row refresh-setting-row">
-            <span className="setting-label">Current Account Auto Refresh</span>
-            <div className="field-block refresh-setting-controls">
-              <InlineStepper
-                value={ui.current_refresh_interval_sec ?? 5}
-                min={1}
-                max={3600}
-                unit="sec"
-                onChange={(value) => onSavePatch({ ui: { current_refresh_interval_sec: value } })}
-              />
-              <label className="toggle refresh-setting-toggle"><input type="checkbox" checked={!!ui.current_auto_refresh_enabled} onChange={(event) => onSavePatch({ ui: { current_auto_refresh_enabled: event.target.checked } })} /></label>
+    <section className="view auto-refresh-view" data-testid="auto-refresh-view">
+      <section className="control-card settings-card auto-refresh-panel">
+        <div className="group-title">Refresh Rules</div>
+        <div className="auto-refresh-sections">
+          <section className="auto-refresh-section">
+            <div className="auto-refresh-row">
+              <span className="setting-label">Enabled</span>
+              <label className="toggle auto-refresh-toggle"><input type="checkbox" checked={!!ui.current_auto_refresh_enabled} onChange={(event) => onSavePatch({ ui: { current_auto_refresh_enabled: event.target.checked } })} /></label>
             </div>
-          </div>
-        </section>
-        <section className="control-card settings-card">
-          <div className="group-title">Auto Refresh All</div>
-          <div className="setting-row inset-row refresh-setting-row">
-            <span className="setting-label">Auto Refresh All</span>
-            <div className="field-block refresh-setting-controls">
-              <InlineStepper
-                value={ui.all_refresh_interval_min ?? 5}
-                min={1}
-                max={60}
-                unit="min"
-                onChange={(value) => onSavePatch({ ui: { all_refresh_interval_min: value } })}
-              />
-              <label className="toggle refresh-setting-toggle"><input type="checkbox" checked={!!ui.all_auto_refresh_enabled} onChange={(event) => onSavePatch({ ui: { all_auto_refresh_enabled: event.target.checked } })} /></label>
+            <div className="auto-refresh-control-surface">
+              <div className="auto-refresh-inline-controls">
+                <span className="setting-label auto-refresh-inline-label">Delay (sec)</span>
+                <InlineStepper
+                  value={ui.current_refresh_interval_sec ?? 5}
+                  min={1}
+                  max={3600}
+                  unit="sec"
+                  onChange={(value) => onSavePatch({ ui: { current_refresh_interval_sec: value } })}
+                />
+              </div>
             </div>
-          </div>
-        </section>
-      </div>
-      <div className="settings-inline-actions auto-refresh-actions">
-        <button className={loading ? "btn btn-primary btn-progress" : "btn btn-primary"} onClick={onRefresh} disabled={loading}>{loading ? "Refreshing" : "Refresh"}</button>
-      </div>
+          </section>
+          <section className="auto-refresh-section">
+            <div className="auto-refresh-row">
+              <span className="setting-label">Enabled</span>
+              <label className="toggle auto-refresh-toggle"><input type="checkbox" checked={!!ui.all_auto_refresh_enabled} onChange={(event) => onSavePatch({ ui: { all_auto_refresh_enabled: event.target.checked } })} /></label>
+            </div>
+            <div className="auto-refresh-control-surface">
+              <div className="auto-refresh-inline-controls">
+                <span className="setting-label auto-refresh-inline-label">Delay (min)</span>
+                <InlineStepper
+                  value={ui.all_refresh_interval_min ?? 5}
+                  min={1}
+                  max={60}
+                  unit="min"
+                  onChange={(value) => onSavePatch({ ui: { all_refresh_interval_min: value } })}
+                />
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
     </section>
   );
 }
@@ -612,14 +644,7 @@ function useCountdownText(dueAtText, dueAt) {
     return () => window.clearInterval(timer);
   }, []);
 
-  if (!dueAt) {
-    return dueAtText || "Switch in 00:00";
-  }
-
-  const remaining = Math.max(0, Math.floor(Number(dueAt) - now / 1000));
-  const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
-  const ss = String(remaining % 60).padStart(2, "0");
-  return `Switch in ${mm}:${ss}`;
+  return formatAutoSwitchCountdown(dueAtText, dueAt, now);
 }
 
 function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRapidTest, onStopTests, onTestAutoSwitch, onAutoArrange }) {
@@ -766,8 +791,9 @@ function NotificationsView({ state, onNotify, onSavePatch }) {
   );
 }
 
-function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebug }) {
+function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebug, onSavePatch }) {
   const ui = state?.config?.ui || {};
+  const isWindows = window.codexAccountDesktop?.platform === "win32";
 
   return (
     <section className="view" data-testid="settings-view">
@@ -791,6 +817,16 @@ function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebu
             <button className="btn btn-primary-danger" onClick={onKillAll}>Kill All</button>
           </div>
         </section>
+        {isWindows ? (
+          <section className="control-card settings-card">
+            <div className="group-title">Windows Integration</div>
+            <div className="setting-row inset-row">
+              <span className="setting-label">Show current 5H usage on taskbar</span>
+              <label className="toggle"><input type="checkbox" checked={!!ui.windows_taskbar_usage_enabled} onChange={(event) => onSavePatch({ ui: { windows_taskbar_usage_enabled: event.target.checked } })} /></label>
+            </div>
+            <p className="muted">Adds a compact current 5H usage badge to the Windows taskbar button.</p>
+          </section>
+        ) : null}
       </div>
     </section>
   );
@@ -869,13 +905,25 @@ function AboutView({ backendState }) {
   );
 }
 
-function RuntimeSetupView({ runtimeStatus, runtimeProgress, busy, onRetry, onInstallCore, onStartBackend, onOpenExternal, onCopyDiagnostics }) {
+function RuntimeSetupView({
+  runtimeStatus,
+  runtimeProgress,
+  busy,
+  onRetry,
+  onInstallPython,
+  onInstallCore,
+  onStartBackend,
+  onOpenExternal,
+  onCopyDiagnostics,
+}) {
   const phase = runtimeStatus?.phase || "checking_runtime";
   const pythonInstallUrl = runtimeStatus?.python?.installUrl;
   const errorMessages = Array.isArray(runtimeStatus?.errors) ? runtimeStatus.errors : [];
   const progressRows = Array.isArray(runtimeProgress) ? runtimeProgress : [];
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [copyState, setCopyState] = useState("");
+  const autoResumeKeyRef = useRef("");
+  const autoInstallCoreKeyRef = useRef("");
   const heading = phase === "python_missing" ? "Install Python"
     : phase === "service_starting" ? "Starting local service"
       : phase === "error" && runtimeStatus?.reason === "core_update_required" ? "Update Python Core"
@@ -895,6 +943,59 @@ function RuntimeSetupView({ runtimeStatus, runtimeProgress, busy, onRetry, onIns
   const hasPython = Boolean(runtimeStatus?.python?.supported);
   const hasCore = Boolean(runtimeStatus?.core?.installed);
   const hasBackend = Boolean(runtimeStatus?.uiService?.running);
+
+  useEffect(() => {
+    const shouldAutoResume = !busy && phase !== "ready" && hasPython && hasCore && hasBackend;
+    if (!shouldAutoResume) {
+      autoResumeKeyRef.current = "";
+      return undefined;
+    }
+    const signature = `${phase}:${runtimeStatus?.reason || ""}:${runtimeStatus?.core?.commandPath || ""}:${runtimeStatus?.uiService?.baseUrl || ""}`;
+    if (autoResumeKeyRef.current === signature) {
+      return undefined;
+    }
+    autoResumeKeyRef.current = signature;
+    const timer = window.setTimeout(() => {
+      onRetry?.();
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [
+    busy,
+    hasBackend,
+    hasCore,
+    hasPython,
+    onRetry,
+    phase,
+    runtimeStatus?.core?.commandPath,
+    runtimeStatus?.reason,
+    runtimeStatus?.uiService?.baseUrl,
+  ]);
+
+  useEffect(() => {
+    const shouldAutoInstallCore = !busy && phase === "core_missing" && hasPython && !hasCore;
+    if (!shouldAutoInstallCore) {
+      autoInstallCoreKeyRef.current = "";
+      return undefined;
+    }
+    const signature = `${phase}:${runtimeStatus?.reason || ""}:${runtimeStatus?.python?.version || ""}`;
+    if (autoInstallCoreKeyRef.current === signature) {
+      return undefined;
+    }
+    autoInstallCoreKeyRef.current = signature;
+    const timer = window.setTimeout(() => {
+      onInstallCore?.();
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [
+    busy,
+    hasCore,
+    hasPython,
+    onInstallCore,
+    phase,
+    runtimeStatus?.python?.version,
+    runtimeStatus?.reason,
+  ]);
+
   const activeStep = !hasPython ? 0 : !hasCore ? 1 : !hasBackend ? 2 : 2;
   const stepRows = [
     {
@@ -951,7 +1052,11 @@ function RuntimeSetupView({ runtimeStatus, runtimeProgress, busy, onRetry, onIns
             ? "The installer finished. The app is now starting the local service."
             : "The desktop shell needs the local Python core before the main UI can open.";
   const primaryAction = phase === "python_missing"
-    ? { label: "Install Python", onClick: () => onOpenExternal(pythonInstallUrl), disabled: !pythonInstallUrl || busy }
+    ? {
+      label: "Install Python",
+      onClick: onInstallPython || (() => onOpenExternal(pythonInstallUrl)),
+      disabled: busy || (!onInstallPython && !pythonInstallUrl),
+    }
     : phase === "service_starting" || runtimeStatus?.reason === "backend_start_failed"
       ? { label: "Start Service", onClick: onStartBackend, disabled: busy }
       : { label: "Install Core", onClick: onInstallCore, disabled: busy };
@@ -1125,10 +1230,78 @@ function App() {
   const fileInputRef = useRef(null);
   const exportSelectionRef = useRef([]);
   const [chainOrder, setChainOrder] = useState([]);
+  const stateRef = useRef(null);
+  const backendStateRef = useRef(null);
+  const configRevisionRef = useRef(null);
+  const configSaveQueueRef = useRef(Promise.resolve());
+  const pendingConfigSavesRef = useRef(0);
+  const currentRefreshRunningRef = useRef(false);
+  const allRefreshRunningRef = useRef(false);
+  const autoSwitchRefreshRunningRef = useRef(false);
+  const restartInFlightRef = useRef(false);
+  const currentRefreshTimerRef = useRef(null);
+  const allRefreshTimerRef = useRef(null);
+  const autoSwitchStateTimerRef = useRef(null);
+  const [, setClockTick] = useState(Date.now());
 
   const activeTitle = useMemo(() => views.find((view) => view.id === activeView)?.label || "Profiles", [activeView]);
   const updateAvailable = !!updateStatus?.update_available;
   const visibleColumns = useMemo(() => normalizeColumns(columnPrefs), [columnPrefs]);
+
+  function applyDesktopState(nextState, { backend = undefined, chain = undefined } = {}) {
+    setState(nextState);
+    stateRef.current = nextState;
+    configRevisionRef.current = Number(nextState?.config?._meta?.revision || configRevisionRef.current || 1);
+    if (backend !== undefined) {
+      setBackendState(backend);
+      backendStateRef.current = backend;
+    }
+    if (chain !== undefined) {
+      setChainOrder(Array.isArray(chain?.chain) ? chain.chain : []);
+    }
+    if (nextState?.config?.ui?.column_prefs) {
+      setColumnPrefs(normalizeColumns(nextState.config.ui.column_prefs));
+    }
+  }
+
+  function applyConfigState(nextConfig) {
+    configRevisionRef.current = Number(nextConfig?._meta?.revision || configRevisionRef.current || 1);
+    setState((current) => {
+      if (!current) {
+        return current;
+      }
+      const nextState = { ...current, config: nextConfig };
+      stateRef.current = nextState;
+      return nextState;
+    });
+    if (nextConfig?.ui?.column_prefs) {
+      const normalized = normalizeColumns(nextConfig.ui.column_prefs);
+      setColumnPrefs(normalized);
+      saveStoredColumns(normalized);
+    }
+  }
+
+  function applyUsageState(nextUsage) {
+    setState((current) => {
+      if (!current) {
+        return current;
+      }
+      const nextState = { ...current, usage: nextUsage };
+      stateRef.current = nextState;
+      return nextState;
+    });
+  }
+
+  function applyAutoSwitchState(nextAutoSwitch) {
+    setState((current) => {
+      if (!current) {
+        return current;
+      }
+      const nextState = { ...current, autoSwitch: nextAutoSwitch };
+      stateRef.current = nextState;
+      return nextState;
+    });
+  }
 
   async function request(path, options = {}) {
     try {
@@ -1142,13 +1315,43 @@ function App() {
     }
   }
 
+  async function fetchBackendJson(path, { timeoutMs = 1200 } = {}) {
+    const service = backendStateRef.current || runtimeStatus?.uiService || {};
+    const baseUrl = service.baseUrl || joinBaseUrl(`http://${service.host || "127.0.0.1"}:${service.port || 4673}`, "/");
+    const headers = {};
+    if (service.token) {
+      headers["X-Codex-Token"] = service.token;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(joinBaseUrl(baseUrl, path), {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.error?.message || `request failed: ${response.status}`);
+      }
+      return payload?.data || payload;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
   async function loadAll() {
     setLoading(true);
     setError("");
     try {
+      if (pendingConfigSavesRef.current > 0) {
+        try {
+          await configSaveQueueRef.current;
+        } catch (_) {}
+      }
       const runtime = await desktop.getRuntimeStatus();
       setRuntimeStatus(runtime);
-      if (runtime?.phase !== "ready") {
+      if (!isRuntimeOperational(runtime)) {
         setState(null);
         setBackendState(null);
         return;
@@ -1163,15 +1366,10 @@ function App() {
         request(appendSessionToken("/api/debug/logs?tail=240", backend?.token), {}),
         request("/api/auto-switch/chain", {}),
       ]);
-      setState(core);
-      setBackendState(backend);
+      applyDesktopState(core, { backend, chain });
       setUpdateStatus(update);
       setReleaseNotes(notes);
       setDebugLogs(Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : []);
-      setChainOrder(Array.isArray(chain?.chain) ? chain.chain : []);
-      if (core?.config?.ui?.column_prefs) {
-        setColumnPrefs(normalizeColumns(core.config.ui.column_prefs));
-      }
     } catch (err) {
       setError(err?.message || String(err));
     } finally {
@@ -1183,13 +1381,62 @@ function App() {
     await loadAll();
   }
 
+  async function refreshCurrentUsage({ timeoutSec = 6 } = {}) {
+    if (currentRefreshRunningRef.current || !isRuntimeOperational(runtimeStatus)) {
+      return;
+    }
+    currentRefreshRunningRef.current = true;
+    try {
+      const usage = await request(`/api/usage-local/current?timeout=${encodeURIComponent(String(Math.max(1, timeoutSec)))}`, {});
+      applyUsageState(usage);
+    } catch (err) {
+      setError((current) => current || `current usage: ${err?.message || String(err)}`);
+    } finally {
+      currentRefreshRunningRef.current = false;
+    }
+  }
+
+  async function refreshAllAccountsUsage({ timeoutSec = 7 } = {}) {
+    if (allRefreshRunningRef.current || !isRuntimeOperational(runtimeStatus)) {
+      return;
+    }
+    allRefreshRunningRef.current = true;
+    try {
+      const usage = await request(`/api/usage-local?timeout=${encodeURIComponent(String(Math.max(1, timeoutSec)))}&force=true`, {});
+      applyUsageState(usage);
+    } catch (err) {
+      setError((current) => current || `all usage: ${err?.message || String(err)}`);
+    } finally {
+      allRefreshRunningRef.current = false;
+    }
+  }
+
+  async function refreshAutoSwitchState() {
+    if (autoSwitchRefreshRunningRef.current || !isRuntimeOperational(runtimeStatus)) {
+      return;
+    }
+    autoSwitchRefreshRunningRef.current = true;
+    try {
+      const autoSwitch = await request("/api/auto-switch/state", {});
+      applyAutoSwitchState(autoSwitch);
+      if (activeView === "autoswitch") {
+        const chain = await request("/api/auto-switch/chain", {});
+        setChainOrder(Array.isArray(chain?.chain) ? chain.chain : []);
+      }
+    } catch (_) {
+      // Ignore polling errors; the next cycle will retry.
+    } finally {
+      autoSwitchRefreshRunningRef.current = false;
+    }
+  }
+
   async function retryRuntimeCheck() {
     setRuntimeBusy(true);
     setError("");
     try {
       const next = await desktop.retryRuntimeCheck();
       setRuntimeStatus(next);
-      if (next?.phase === "ready") {
+      if (isRuntimeOperational(next)) {
         await loadAll();
       }
     } catch (err) {
@@ -1206,7 +1453,30 @@ function App() {
     try {
       const next = await desktop.installPythonCore();
       setRuntimeStatus(next);
-      if (next?.phase === "ready") {
+      if (isRuntimeOperational(next)) {
+        await loadAll();
+      }
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }
+
+  async function installPythonRuntime() {
+    if (typeof desktop.installPythonRuntime !== "function") {
+      if (runtimeStatus?.python?.installUrl) {
+        await desktop.openExternal(runtimeStatus.python.installUrl);
+      }
+      return;
+    }
+    setRuntimeBusy(true);
+    setError("");
+    setRuntimeProgress([]);
+    try {
+      const next = await desktop.installPythonRuntime();
+      setRuntimeStatus(next);
+      if (isRuntimeOperational(next)) {
         await loadAll();
       }
     } catch (err) {
@@ -1222,7 +1492,7 @@ function App() {
     try {
       const next = await desktop.startBackendService();
       setRuntimeStatus(next);
-      if (next?.phase === "ready") {
+      if (isRuntimeOperational(next)) {
         await loadAll();
       }
     } catch (err) {
@@ -1237,13 +1507,55 @@ function App() {
   }
 
   async function saveUiPatch(patch) {
-    const next = await desktop.saveConfig(patch);
-    setState(next);
-    if (patch?.ui?.column_prefs) {
-      setColumnPrefs(normalizeColumns(patch.ui.column_prefs));
-      saveStoredColumns(patch.ui.column_prefs);
+    if (!patch || typeof patch !== "object") {
+      return stateRef.current?.config || null;
     }
-    return next;
+
+    const optimisticConfig = deepMerge(stateRef.current?.config || {}, patch);
+    applyConfigState(optimisticConfig);
+
+    pendingConfigSavesRef.current += 1;
+    const executeSave = async () => {
+      const payload = deepMerge({}, patch);
+      if (Number.isFinite(Number(configRevisionRef.current))) {
+        payload.base_revision = Number(configRevisionRef.current);
+      }
+      try {
+        const nextConfig = await request("/api/ui-config", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        applyConfigState(nextConfig);
+        return nextConfig;
+      } catch (error) {
+        const message = String(error?.message || error);
+        if (/Config changed elsewhere/i.test(message)) {
+          const liveConfig = await request("/api/ui-config", {});
+          applyConfigState(liveConfig);
+          const retryPayload = deepMerge({}, patch);
+          if (Number.isFinite(Number(configRevisionRef.current))) {
+            retryPayload.base_revision = Number(configRevisionRef.current);
+          }
+          const retriedConfig = await request("/api/ui-config", {
+            method: "POST",
+            body: JSON.stringify(retryPayload),
+          });
+          applyConfigState(retriedConfig);
+          return retriedConfig;
+        }
+        try {
+          const liveConfig = await request("/api/ui-config", {});
+          applyConfigState(liveConfig);
+        } catch (_) {}
+        throw error;
+      } finally {
+        pendingConfigSavesRef.current = Math.max(0, pendingConfigSavesRef.current - 1);
+      }
+    };
+
+    const run = configSaveQueueRef.current.then(executeSave);
+    configSaveQueueRef.current = run.catch(() => null);
+    return run;
   }
 
   async function switchProfile(name) {
@@ -1255,12 +1567,18 @@ function App() {
     setSwitching(target);
     setActivatedProfile("");
     setError("");
+    setState((current) => {
+      const nextState = applyProfileSelection(current, target);
+      stateRef.current = nextState;
+      return nextState;
+    });
     try {
       const next = await switchControllerRef.current.switchProfile(target);
-      setState(next);
+      applyDesktopState(next);
       setActivatedProfile(target);
       setTimeout(() => setActivatedProfile((current) => (current === target ? "" : current)), 1100);
     } catch (err) {
+      loadAll().catch(() => {});
       setError(err?.message || String(err));
     } finally {
       setSwitching("");
@@ -1277,11 +1595,42 @@ function App() {
   }
 
   async function restartUiService() {
+    if (restartInFlightRef.current) {
+      return;
+    }
+    restartInFlightRef.current = true;
+    setLoading(true);
+    setError("");
+    let reloadAfterMs = 1200;
+    let previousHealthVersion = "";
     try {
-      await request("/api/system/restart", { method: "POST", body: JSON.stringify({}) });
+      try {
+        const initialHealth = await fetchBackendJson(`/api/health?r=${Date.now()}`, { timeoutMs: 900 });
+        previousHealthVersion = String(initialHealth?.version || "").trim();
+      } catch (_) {}
+      try {
+        const response = await request("/api/system/restart", { method: "POST", body: JSON.stringify({}) });
+        reloadAfterMs = Math.max(400, Number(response?.reload_after_ms || 1200));
+      } catch (err) {
+        const message = String(err?.message || err);
+        if (!/Failed to fetch|network/i.test(message)) {
+          throw err;
+        }
+      }
+      setError("Restarting UI service...");
+      await waitForServiceRestart({
+        previousVersion: previousHealthVersion,
+        reloadAfterMs,
+        wait: waitMs,
+        fetchHealth: () => fetchBackendJson(`/api/health?r=${Date.now()}`, { timeoutMs: 900 }),
+      });
       await loadAll();
+      setError("");
     } catch (err) {
       setError(err?.message || String(err));
+    } finally {
+      restartInFlightRef.current = false;
+      setLoading(false);
     }
   }
 
@@ -1383,7 +1732,23 @@ function App() {
         method: "POST",
         body: JSON.stringify({ name, eligible }),
       });
-      await loadAll();
+      setState((current) => {
+        if (!current?.list?.profiles) {
+          return current;
+        }
+        const nextState = {
+          ...current,
+          list: {
+            ...current.list,
+            profiles: current.list.profiles.map((row) => (
+              row.name === name ? { ...row, auto_switch_eligible: eligible } : row
+            )),
+          },
+        };
+        stateRef.current = nextState;
+        return nextState;
+      });
+      refreshAutoSwitchState().catch(() => {});
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1392,7 +1757,10 @@ function App() {
   async function runRapidTest() {
     try {
       await request("/api/auto-switch/rapid-test", { method: "POST", body: JSON.stringify({}) });
-      await loadAll();
+      await Promise.all([
+        refreshAutoSwitchState(),
+        refreshCurrentUsage({ timeoutSec: 8 }),
+      ]);
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1401,7 +1769,10 @@ function App() {
   async function runAutoSwitch() {
     try {
       await request("/api/auto-switch/run-switch", { method: "POST", body: JSON.stringify({}) });
-      await loadAll();
+      await Promise.all([
+        refreshAutoSwitchState(),
+        refreshCurrentUsage({ timeoutSec: 8 }),
+      ]);
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1410,7 +1781,7 @@ function App() {
   async function stopTests() {
     try {
       await request("/api/auto-switch/stop-tests", { method: "POST", body: JSON.stringify({}) });
-      await loadAll();
+      await refreshAutoSwitchState();
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1419,7 +1790,10 @@ function App() {
   async function testAutoSwitch() {
     try {
       await request("/api/auto-switch/test", { method: "POST", body: JSON.stringify({ timeout_sec: 30 }) });
-      await loadAll();
+      await Promise.all([
+        refreshAutoSwitchState(),
+        refreshCurrentUsage({ timeoutSec: 8 }),
+      ]);
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1429,7 +1803,7 @@ function App() {
     try {
       const next = await request("/api/auto-switch/auto-arrange", { method: "POST", body: JSON.stringify({}) });
       setChainOrder(Array.isArray(next?.chain) ? next.chain : []);
-      await loadAll();
+      refreshAutoSwitchState().catch(() => {});
     } catch (err) {
       setError(err?.message || String(err));
     }
@@ -1527,12 +1901,24 @@ function App() {
   }
 
   useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    backendStateRef.current = backendState;
+  }, [backendState]);
+
+  useEffect(() => {
+    configRevisionRef.current = Number(state?.config?._meta?.revision || configRevisionRef.current || 1);
+  }, [state?.config?._meta?.revision]);
+
+  useEffect(() => {
     loadAll();
     const offNavigate = desktop.onNavigate((view) => setActiveView(view === "usage" ? "profiles" : view));
     const offSidebar = desktop.onToggleSidebar(() => setSidebarMode((mode) => (mode === "fixed" ? "minimal" : "fixed")));
     const offRuntime = desktop.onRuntimeStatus((status) => {
       setRuntimeStatus(status);
-      if (status?.phase === "ready") {
+      if (isRuntimeOperational(status)) {
         loadAll().catch(() => {});
       }
     });
@@ -1548,18 +1934,90 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setClockTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (currentRefreshTimerRef.current) {
+      window.clearInterval(currentRefreshTimerRef.current);
+      currentRefreshTimerRef.current = null;
+    }
+    if (!isRuntimeOperational(runtimeStatus)) {
+      return undefined;
+    }
+    const intervalMs = getCurrentRefreshIntervalMs(state?.config?.ui || {});
+    if (!intervalMs) {
+      return undefined;
+    }
+    currentRefreshTimerRef.current = window.setInterval(() => {
+      const intervalSec = Math.max(1, Math.round(intervalMs / 1000));
+      refreshCurrentUsage({ timeoutSec: Math.max(2, Math.min(12, intervalSec + 2)) }).catch(() => {});
+    }, intervalMs);
+    return () => {
+      if (currentRefreshTimerRef.current) {
+        window.clearInterval(currentRefreshTimerRef.current);
+        currentRefreshTimerRef.current = null;
+      }
+    };
+  }, [runtimeStatus?.phase, state?.config?.ui?.current_auto_refresh_enabled, state?.config?.ui?.current_refresh_interval_sec]);
+
+  useEffect(() => {
+    if (allRefreshTimerRef.current) {
+      window.clearInterval(allRefreshTimerRef.current);
+      allRefreshTimerRef.current = null;
+    }
+    if (!isRuntimeOperational(runtimeStatus)) {
+      return undefined;
+    }
+    const intervalMs = getAllRefreshIntervalMs(state?.config?.ui || {});
+    if (!intervalMs) {
+      return undefined;
+    }
+    allRefreshTimerRef.current = window.setInterval(() => {
+      refreshAllAccountsUsage({ timeoutSec: 7 }).catch(() => {});
+    }, intervalMs);
+    return () => {
+      if (allRefreshTimerRef.current) {
+        window.clearInterval(allRefreshTimerRef.current);
+        allRefreshTimerRef.current = null;
+      }
+    };
+  }, [runtimeStatus?.phase, state?.config?.ui?.all_auto_refresh_enabled, state?.config?.ui?.all_refresh_interval_min]);
+
+  useEffect(() => {
+    if (autoSwitchStateTimerRef.current) {
+      window.clearInterval(autoSwitchStateTimerRef.current);
+      autoSwitchStateTimerRef.current = null;
+    }
+    if (!isRuntimeOperational(runtimeStatus)) {
+      return undefined;
+    }
+    autoSwitchStateTimerRef.current = window.setInterval(() => {
+      refreshAutoSwitchState().catch(() => {});
+    }, 1000);
+    return () => {
+      if (autoSwitchStateTimerRef.current) {
+        window.clearInterval(autoSwitchStateTimerRef.current);
+        autoSwitchStateTimerRef.current = null;
+      }
+    };
+  }, [runtimeStatus?.phase, activeView]);
+
+  useEffect(() => {
     if (activeView === "guide") loadReleaseNotes().catch(() => {});
     if (activeView === "debug") loadDebugLogs().catch(() => {});
     if (activeView === "update") loadAll().catch(() => {});
   }, [activeView]);
 
-  if (runtimeStatus?.phase !== "ready") {
+  if (!isRuntimeOperational(runtimeStatus)) {
     return (
       <RuntimeSetupView
         runtimeStatus={runtimeStatus}
         runtimeProgress={runtimeProgress}
         busy={runtimeBusy}
         onRetry={retryRuntimeCheck}
+        onInstallPython={installPythonRuntime}
         onInstallCore={installCore}
         onStartBackend={startBackendService}
         onOpenExternal={(url) => desktop.openExternal(url)}
@@ -1608,8 +2066,6 @@ function App() {
         {activeView === "auto-refresh" && (
           <AutoRefreshView
             state={state}
-            loading={loading}
-            onRefresh={refreshState}
             onSavePatch={saveUiPatch}
           />
         )}
@@ -1626,7 +2082,7 @@ function App() {
           />
         )}
         {activeView === "notifications" && <NotificationsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
-        {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onToggleTheme={toggleTheme} onToggleDebug={toggleDebug} />}
+        {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onToggleTheme={toggleTheme} onToggleDebug={toggleDebug} onSavePatch={saveUiPatch} />}
         {activeView === "guide" && <GuideView releaseNotes={releaseNotes} onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})} />}
         {activeView === "update" && <UpdateView updateStatus={updateStatus} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
         {activeView === "debug" && <DebugView debugLogs={debugLogs} onExport={onExportDebug} />}

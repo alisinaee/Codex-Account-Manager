@@ -4,6 +4,10 @@ const { buildUsageSummary } = require("./usage");
 
 const APP_TITLE = "Codex Account Manager";
 
+function notificationsEnabled(config = {}) {
+  return Boolean(config?.notifications?.enabled);
+}
+
 function buildNotificationOptions(usagePayload, iconPath = "") {
   const summary = buildUsageSummary(usagePayload);
   const options = {
@@ -33,5 +37,6 @@ function sendUsageNotification(electronNotification, usagePayload, onClick, icon
 module.exports = {
   APP_TITLE,
   buildNotificationOptions,
+  notificationsEnabled,
   sendUsageNotification,
 };

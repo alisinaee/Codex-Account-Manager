@@ -7,10 +7,11 @@ const { createApiClient } = require("./api-client");
 const { ensureBackendRunning, fetchCurrentUsage, getDefaultBackendState, runServiceCommand } = require("./backend");
 const { APP_ID, APP_NAME, getIconPath } = require("./icons");
 const { buildApplicationMenuTemplate, shouldQuitOnWindowAllClosed } = require("./menu");
-const { sendUsageNotification } = require("./notifications");
+const { notificationsEnabled, sendUsageNotification } = require("./notifications");
 const {
   formatRuntimeDiagnostics,
   installPythonCore,
+  installPythonRuntime,
   loadStoredRuntimeState,
   normalizeRuntimeStatus,
   resolveRuntimeStatus,
@@ -18,6 +19,7 @@ const {
 } = require("./runtime");
 const { applyTrayState, createTray } = require("./tray");
 const { buildUsageSummary } = require("./usage");
+const { applyWindowsTaskbarUsage, ensureWindowsNotificationShortcut } = require("./windows-integration");
 
 app.setName(APP_NAME);
 app.name = APP_NAME;
@@ -192,6 +194,12 @@ function createMainWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+  applyWindowsTaskbarUsage({
+    windowLike: mainWindow,
+    nativeImage,
+    summary: buildUsageSummary(latestUsagePayload),
+    config: desktopState?.config,
+  });
 }
 
 async function refreshUsage() {
@@ -217,6 +225,12 @@ function applyTrayFromLatestUsage() {
   if (tray) {
     applyTrayState({ tray, Menu, summary, actions: buildTrayActions() });
   }
+  applyWindowsTaskbarUsage({
+    windowLike: mainWindow,
+    nativeImage,
+    summary,
+    config: desktopState?.config,
+  });
   return summary;
 }
 
@@ -225,6 +239,18 @@ async function sendTestNotification() {
     await refreshUsage();
   }
   return sendUsageNotification(Notification, latestUsagePayload, focusMainWindow, getIconPath());
+}
+
+function notifySwitchIfEnabled(nextDesktopState, previousProfileName = "") {
+  const nextProfileName = String(nextDesktopState?.usage?.current_profile || nextDesktopState?.current?.profile_name || "").trim();
+  const previousName = String(previousProfileName || "").trim();
+  if (!nextProfileName || nextProfileName === previousName) {
+    return { ok: false, reason: "No switched profile to notify." };
+  }
+  if (!notificationsEnabled(nextDesktopState?.config || {})) {
+    return { ok: false, reason: "Notifications are disabled in desktop settings." };
+  }
+  return sendUsageNotification(Notification, nextDesktopState?.usage, focusMainWindow, getIconPath());
 }
 
 function buildTrayActions() {
@@ -313,6 +339,7 @@ function createMockDesktopState() {
         current_refresh_interval_sec: 5,
         all_auto_refresh_enabled: true,
         all_refresh_interval_min: 5,
+        windows_taskbar_usage_enabled: false,
       },
       notifications: { enabled: true, thresholds: { h5_warn_pct: 20, weekly_warn_pct: 20 } },
       auto_switch: { enabled: false, delay_sec: 60, ranking_mode: "balanced", thresholds: { h5_switch_pct: 20, weekly_switch_pct: 20 } },
@@ -365,7 +392,9 @@ function createMockApiClient() {
     const body = options.body ? JSON.parse(options.body) : {};
     if (method === "GET" && path === "/api/current") return state.current;
     if (method === "GET" && path === "/api/list") return state.list;
+    if (method === "GET" && (path === "/api/usage-local" || path.startsWith("/api/usage-local?"))) return state.usage;
     if (method === "GET" && path.startsWith("/api/usage-local/current")) return state.usage;
+    if (method === "GET" && path.startsWith("/api/health")) return { ok: true, version: "mock-ui-version" };
     if (method === "GET" && path === "/api/ui-config") return state.config;
     if (method === "GET" && path === "/api/auto-switch/state") return state.autoSwitch;
     if (method === "GET" && path === "/api/auto-switch/chain") {
@@ -613,6 +642,25 @@ function registerIpcHandlers() {
       throw error;
     }
   });
+  ipcMain.handle("desktop:install-python-runtime", async () => {
+    try {
+      pushRuntimeProgress({ type: "run", status: "starting", label: "Install Python runtime" });
+      await installPythonRuntime(runtimeState, {
+        onProgress: (event) => pushRuntimeProgress(event),
+      });
+      pushRuntimeProgress({ type: "run", status: "done", label: "Install Python runtime" });
+      return checkRuntime({ activateBackend: true });
+    } catch (error) {
+      setRuntimeState({
+        ...runtimeState,
+        phase: "python_missing",
+        reason: "python_install_failed",
+        message: String(error?.message || error),
+        errors: [...runtimeState.errors, { code: "PYTHON_INSTALL_FAILED", message: String(error?.message || error) }],
+      });
+      throw error;
+    }
+  });
   ipcMain.handle("desktop:start-backend-service", async () => checkRuntime({ activateBackend: true }));
   ipcMain.handle("desktop:stop-backend-service", async () => {
     if (runtimeState.core.commandPath) {
@@ -656,7 +704,22 @@ function registerIpcHandlers() {
       throw new Error(runtimeState.message || "desktop request API is unavailable");
     }
     if (typeof apiClient.request === "function") {
-      return requestWithTokenRefresh(path, options);
+      const result = await requestWithTokenRefresh(path, options);
+      const method = String(options?.method || "GET").toUpperCase();
+      if (method === "GET" && (path === "/api/usage-local" || path.startsWith("/api/usage-local?") || path.startsWith("/api/usage-local/current"))) {
+        latestUsagePayload = result;
+        if (desktopState) {
+          desktopState = { ...desktopState, usage: result };
+        }
+        applyTrayFromLatestUsage();
+      }
+      if ((method === "GET" || method === "POST") && path === "/api/ui-config") {
+        if (desktopState) {
+          desktopState = { ...desktopState, config: result };
+        }
+        applyTrayFromLatestUsage();
+      }
+      return result;
     }
     throw new Error("desktop request API is unavailable");
   });
@@ -681,6 +744,7 @@ function registerIpcHandlers() {
     if (!apiClient) {
       throw new Error(runtimeState.message || "Python core is not ready.");
     }
+    const previousProfileName = String(desktopState?.usage?.current_profile || desktopState?.current?.profile_name || "").trim();
     try {
       desktopState = await apiClient.switchProfile(String(name || ""));
     } catch (error) {
@@ -692,6 +756,7 @@ function registerIpcHandlers() {
     }
     latestUsagePayload = desktopState.usage;
     applyTrayFromLatestUsage();
+    notifySwitchIfEnabled(desktopState, previousProfileName);
     return desktopState;
   });
   ipcMain.handle("desktop:save-config", async (_event, patch) => {
@@ -715,6 +780,13 @@ function registerIpcHandlers() {
 }
 
 async function bootstrap() {
+  ensureWindowsNotificationShortcut({
+    shell,
+    app,
+    appId: APP_ID,
+    appName: APP_NAME,
+    iconPath: getIconPath(),
+  });
   registerIpcHandlers();
   installApplicationMenu();
   createMainWindow();
