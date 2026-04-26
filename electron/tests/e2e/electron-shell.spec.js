@@ -292,7 +292,8 @@ test("electron renderer exposes the web panel parity surfaces", async () => {
 
   const window = await app.firstWindow();
   await expect(window.getByRole("button", { name: "Columns" })).toBeVisible();
-  await expect(window.getByRole("button", { name: /Auto Refresh/i })).toBeVisible();
+  await expect(window.getByRole("button", { name: /Auto Refresh/i })).toHaveCount(0);
+  await expect(window.getByRole("button", { name: /Notifications/i })).toHaveCount(0);
   await expect(window.getByRole("button", { name: /Guide & Help/i })).toBeVisible();
   await expect(window.getByRole("button", { name: /Update/i })).toBeVisible();
   await expect(window.getByRole("button", { name: /Debug/i })).toBeVisible();
@@ -300,19 +301,18 @@ test("electron renderer exposes the web panel parity surfaces", async () => {
   await expect(window.getByTestId("sidebar-current-profile")).toContainText("work");
   await expect(window.getByTestId("sidebar-current-profile")).toContainText("work@example.test");
 
-  await window.getByRole("button", { name: "Auto Refresh" }).click();
-  await expect(window.getByTestId("auto-refresh-view")).toBeVisible();
-  await expect(window.getByTestId("auto-refresh-view").getByText("Current account refresh", { exact: true }).first()).toBeVisible();
-  await expect(window.getByTestId("auto-refresh-view").getByText("All accounts refresh", { exact: true }).first()).toBeVisible();
+  await window.getByTestId("desktop-sidebar").getByRole("button", { name: "Settings" }).click();
+  await expect(window.getByTestId("settings-view")).toBeVisible();
+  await expect(window.getByText("Appearance")).toBeVisible();
+  await expect(window.getByText("Maintenance")).toBeVisible();
+  await expect(window.getByText("Current account refresh", { exact: true }).first()).toBeVisible();
+  await expect(window.getByText("All accounts refresh", { exact: true }).first()).toBeVisible();
+  await expect(window.getByText("Notifications", { exact: true }).first()).toBeVisible();
 
   await window.getByRole("button", { name: "Auto Switch" }).click();
   await expect(window.getByTestId("autoswitch-view")).toBeVisible();
   await expect(window.getByText("Auto-switch rules")).toBeVisible();
   await expect(window.getByText("Switch Chain Preview")).toBeVisible();
-
-  await window.getByTestId("desktop-sidebar").getByRole("button", { name: "Settings" }).click();
-  await expect(window.getByText("Appearance")).toBeVisible();
-  await expect(window.getByText("Maintenance")).toBeVisible();
 
   await window.getByRole("button", { name: "Profiles" }).click();
   await expect(window.getByRole("button", { name: /Add Account/i })).toBeVisible();

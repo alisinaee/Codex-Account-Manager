@@ -22,6 +22,12 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-26T22:53:35+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
+- Summary: Tightened Electron profile table Actions column widths across breakpoints and redistributed freed width to data columns.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:43f820feda19 -->
+
 ### 2026-04-26T21:41:56+03:30
 - Changed files: `electron/src/styles/components.css`
 - Summary: Made profiles table action controls fixed-size inside the Actions column so Switch no longer stretches or truncates unnecessarily.
@@ -136,11 +142,5 @@
 - Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
 <!-- fingerprint:b63cc22f9f2f -->
 
-### 2026-04-24T10:21:37+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`
-- Summary: Removed table-wide fixed-width constraints that caused horizontal scrolling; stabilized loading-state usage metric width by reserving consistent usage percentage space instead.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:bebdbafcfe54 -->
-
 ## Last Updated
-- 2026-04-26T21:41:56+03:30
+- 2026-04-26T22:53:35+03:30
