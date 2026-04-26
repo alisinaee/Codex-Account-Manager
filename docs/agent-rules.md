@@ -22,6 +22,18 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-26T23:24:39+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`, `electron/tests/e2e/electron-shell.spec.js`, `electron/tests/runtime.test.js`
+- Summary: Implemented space-first Electron desktop layouts with explicit scroll containers, per-page flex fill behavior, Auto Switch stats fill area, Update guidance details, E2E layout regression coverage, and refreshed stale runtime/E2E assertions.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:a5b19558dddf -->
+
+### 2026-04-26T23:01:13+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
+- Summary: Widened the Electron profile table Auto column to prevent toggle clipping beside Actions.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:e25ad94ecad8 -->
+
 ### 2026-04-26T22:53:35+03:30
 - Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
 - Summary: Tightened Electron profile table Actions column widths across breakpoints and redistributed freed width to data columns.
@@ -124,23 +136,5 @@
 - Behavior impact: Recorded code-level deltas for future AI context.
 <!-- fingerprint:e7d5b2d9840e -->
 
-### 2026-04-24T13:07:24+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `README.md`, `docs/development.md`, `docs/cli-reference.md`, `docs/agent-rules.md`
-- Summary: Added codex-account electron convenience command that runs npm install when needed and starts the optional Electron dev shell from the source checkout; documented it as the preferred dev-shell launch command.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:1b987356e1ac -->
-
-### 2026-04-24T12:40:38+03:30
-- Changed files: `README.md`, `docs/architecture.md`, `docs/development.md`, `electron/package.json`, `electron/src/main.js`, `electron/src/preload.js`, `electron/src/backend.js`, `electron/src/usage.js`, +7 more
-- Summary: Added optional Electron development shell that loads the existing local web panel, starts or connects to ui-service, shows current usage in tray/menu-bar state, supports Electron-native test notifications, and includes Node plus Playwright Electron tests.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:7a74444da071 -->
-
-### 2026-04-24T11:38:07+03:30
-- Changed files: `README.md`, `docs/agent-rules.md`
-- Summary: Expanded README Privacy / Security language to clearly state there is no live API server or hosted backend and that profile/auth data stays local unless users explicitly export/share it.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:b63cc22f9f2f -->
-
 ## Last Updated
-- 2026-04-26T22:53:35+03:30
+- 2026-04-26T23:24:39+03:30

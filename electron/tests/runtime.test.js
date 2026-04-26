@@ -262,7 +262,7 @@ test("resolveRuntimeStatus accepts a legacy installed core when doctor is unsupp
   assert.ok(runtime.errors.some((row) => row.code === "LEGACY_CORE"));
 });
 
-test("installPythonCore refreshes the pipx command through the selected Python runtime and streams progress", async () => {
+test("installPythonCore refreshes the Homebrew pipx command and streams progress", async () => {
   const progress = [];
   const spawned = [];
   const childFactories = [];
@@ -305,7 +305,7 @@ test("installPythonCore refreshes the pipx command through the selected Python r
     },
     spawnImpl: (command, args) => {
       spawned.push([command, args]);
-      if (command === "/opt/homebrew/bin/brew" && args[0] === "install" && args[1] === "pipx") {
+      if ((command === "brew" || command === "/opt/homebrew/bin/brew") && args[0] === "install" && args[1] === "pipx") {
         brewInstalledPipx = true;
       }
       return childFactories.shift() || makeChild({});
@@ -314,13 +314,13 @@ test("installPythonCore refreshes the pipx command through the selected Python r
 
   assert.equal(spawned.length, 3);
   assert.deepEqual(spawned.map(([, args]) => args), [
-    ["-m", "pip", "install", "--user", "--break-system-packages", "pipx"],
-    ["-m", "pipx", "ensurepath"],
-    ["-m", "pipx", "install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"],
+    ["install", "pipx"],
+    ["ensurepath"],
+    ["install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"],
   ]);
-  assert.equal(spawned[0][0], "/opt/homebrew/bin/python3");
-  assert.equal(spawned[1][0], "/opt/homebrew/bin/python3");
-  assert.equal(spawned[2][0], "/opt/homebrew/bin/python3");
+  assert.equal(spawned[0][0], "brew");
+  assert.equal(spawned[1][0], "/opt/homebrew/bin/pipx");
+  assert.equal(spawned[2][0], "/opt/homebrew/bin/pipx");
   assert.ok(progress.some((event) => event.label === "Install pipx" && event.status === "running"));
   assert.ok(progress.some((event) => event.label === "Refresh pipx path" && event.message === "ensurepath done"));
   assert.ok(progress.some((event) => event.label === "Install Codex Account Manager" && event.status === "done"));
