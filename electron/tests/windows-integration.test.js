@@ -2,8 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  applyWindowsTrayUsage,
   applyWindowsTaskbarUsage,
   buildTaskbarUsageOverlayDataUrl,
+  buildWindowsTrayUsageDataUrl,
   buildWindowsNotificationShortcutSpec,
   windowsTaskbarUsageEnabled,
 } = require("../src/windows-integration");
@@ -22,6 +24,17 @@ test("buildTaskbarUsageOverlayDataUrl emits svg data when usage is available", (
   const decoded = Buffer.from(icon.replace("data:image/svg+xml;base64,", ""), "base64").toString("utf8");
 
   assert.match(decoded, />74</);
+});
+
+test("buildWindowsTrayUsageDataUrl emits compact svg data for tray usage", () => {
+  const icon = buildWindowsTrayUsageDataUrl({
+    available: true,
+    fiveHourPercent: 74,
+  });
+  const decoded = Buffer.from(icon.replace("data:image/svg+xml;base64,", ""), "base64").toString("utf8");
+
+  assert.match(decoded, />74</);
+  assert.match(decoded, /width="16"/);
 });
 
 test("applyWindowsTaskbarUsage sets a taskbar overlay when enabled", () => {
@@ -68,6 +81,55 @@ test("applyWindowsTaskbarUsage clears overlay when disabled", () => {
 
   assert.equal(applied, false);
   assert.deepEqual(calls[0], [null, ""]);
+});
+
+test("applyWindowsTrayUsage sets a dynamic tray icon on Windows when enabled", () => {
+  const calls = [];
+  const tray = {
+    setImage(image) {
+      calls.push(image);
+    },
+  };
+  const defaultIcon = { kind: "default-tray-icon" };
+  const nativeImage = {
+    createFromDataURL(dataUrl) {
+      return { dataUrl };
+    },
+  };
+
+  const applied = applyWindowsTrayUsage({
+    platform: "win32",
+    tray,
+    nativeImage,
+    defaultIcon,
+    summary: { available: true, fiveHourPercent: 74 },
+    config: { ui: { windows_taskbar_usage_enabled: true } },
+  });
+
+  assert.equal(applied, true);
+  assert.match(calls[0].dataUrl, /^data:image\/svg\+xml;base64,/);
+});
+
+test("applyWindowsTrayUsage restores the default icon when disabled", () => {
+  const calls = [];
+  const tray = {
+    setImage(image) {
+      calls.push(image);
+    },
+  };
+  const defaultIcon = { kind: "default-tray-icon" };
+
+  const applied = applyWindowsTrayUsage({
+    platform: "win32",
+    tray,
+    nativeImage: {},
+    defaultIcon,
+    summary: { available: true, fiveHourPercent: 74 },
+    config: { ui: { windows_taskbar_usage_enabled: false } },
+  });
+
+  assert.equal(applied, false);
+  assert.deepEqual(calls[0], defaultIcon);
 });
 
 test("buildWindowsNotificationShortcutSpec creates a branded start menu shortcut contract", () => {

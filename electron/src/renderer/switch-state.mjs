@@ -1,11 +1,7 @@
+import { usageProgressTone } from "./usage-thresholds.mjs";
+
 export function usageTone(value) {
-  if (value === null || value === undefined || value === "") return "";
-  const percent = Number(value);
-  if (!Number.isFinite(percent)) return "";
-  if (percent < 10) return "low";
-  if (percent < 30) return "midlow";
-  if (percent < 50) return "mid";
-  return "good";
+  return usageProgressTone(value);
 }
 
 export function buildSwitchButtonClassName(active) {

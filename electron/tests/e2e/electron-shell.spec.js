@@ -267,6 +267,7 @@ test("sidebar toggles and settings stay separate from profiles", async () => {
   });
 
   const window = await app.firstWindow();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible({ timeout: 10000 });
   const sidebar = window.getByTestId("desktop-sidebar");
   await expect(sidebar).toHaveClass(/fixed|minimal/);
 
@@ -334,6 +335,118 @@ test("electron renderer exposes the web panel parity surfaces", async () => {
   await quitApp(app);
 });
 
+test("settings page keeps scrolling, footer actions, and compact ordering stable", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_SKIP_BACKEND: "1",
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+    },
+  });
+
+  const window = await app.firstWindow();
+  await window.getByRole("button", { name: "Settings" }).click();
+  await expect(window.getByTestId("settings-view")).toBeVisible();
+
+  await window.setViewportSize({ width: 980, height: 620 });
+  const scrollState = await window.getByTestId("settings-view").evaluate((node) => {
+    node.style.scrollBehavior = "auto";
+    const overflows = node.scrollHeight > node.clientHeight + 1;
+    node.scrollTop = node.scrollHeight;
+    const lastCard = node.querySelector('[data-testid="settings-card-system"]');
+    const viewRect = node.getBoundingClientRect();
+    const lastRect = lastCard?.getBoundingClientRect();
+    return {
+      overflows,
+      canScroll: node.scrollTop > 0,
+      widthFits: node.scrollWidth <= node.clientWidth + 1,
+      lastCardVisible: !!lastRect && lastRect.bottom <= viewRect.bottom + 1,
+    };
+  });
+
+  expect(scrollState.overflows ? scrollState.canScroll : true).toBe(true);
+  expect(scrollState.widthFits).toBe(true);
+  expect(scrollState.lastCardVisible).toBe(true);
+
+  await window.setViewportSize({ width: 820, height: 720 });
+  const compactLayout = await window.getByTestId("settings-view").evaluate((node) => {
+    const ids = [
+      "settings-card-appearance",
+      "settings-card-refresh",
+      "settings-card-notifications",
+      "settings-card-maintenance",
+      "settings-card-system",
+    ];
+    const topById = Object.fromEntries(ids.map((id) => {
+      const card = node.querySelector(`[data-testid="${id}"]`);
+      return [id, card ? card.getBoundingClientRect().top : null];
+    }));
+    const footersStayInside = Array.from(node.querySelectorAll(".settings-card-footer")).every((footer) => {
+      const footerRect = footer.getBoundingClientRect();
+      const cardRect = footer.closest(".settings-card-shell")?.getBoundingClientRect();
+      return !!cardRect
+        && footerRect.left >= cardRect.left - 1
+        && footerRect.right <= cardRect.right + 1
+        && footerRect.bottom <= cardRect.bottom + 1;
+    });
+    return {
+      widthFits: node.scrollWidth <= node.clientWidth + 1,
+      topById,
+      footersStayInside,
+    };
+  });
+
+  expect(compactLayout.widthFits).toBe(true);
+  expect(compactLayout.topById["settings-card-appearance"]).toBeLessThan(compactLayout.topById["settings-card-refresh"]);
+  expect(compactLayout.topById["settings-card-refresh"]).toBeLessThan(compactLayout.topById["settings-card-notifications"]);
+  expect(compactLayout.topById["settings-card-notifications"]).toBeLessThan(compactLayout.topById["settings-card-maintenance"]);
+  expect(compactLayout.topById["settings-card-maintenance"]).toBeLessThan(compactLayout.topById["settings-card-system"]);
+  expect(compactLayout.footersStayInside).toBe(true);
+
+  await quitApp(app);
+});
+
+test("settings theme buttons apply explicit and auto theme modes", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_SKIP_BACKEND: "1",
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+    },
+  });
+
+  const window = await app.firstWindow();
+  await window.getByRole("button", { name: "Settings" }).click();
+  await expect(window.getByTestId("settings-card-appearance")).toBeVisible();
+
+  await window.getByTestId("settings-card-appearance").getByRole("button", { name: "Dark" }).click();
+  await expect.poll(() => window.evaluate(() => ({
+    theme: document.documentElement.dataset.theme,
+    mode: document.documentElement.dataset.themeMode,
+  }))).toEqual({ theme: "dark", mode: "dark" });
+
+  await window.getByTestId("settings-card-appearance").getByRole("button", { name: "Light" }).click();
+  await expect.poll(() => window.evaluate(() => ({
+    theme: document.documentElement.dataset.theme,
+    mode: document.documentElement.dataset.themeMode,
+  }))).toEqual({ theme: "light", mode: "light" });
+
+  await window.getByTestId("settings-card-appearance").getByRole("button", { name: "Auto" }).click();
+  await expect.poll(() => window.evaluate(() => document.documentElement.dataset.themeMode)).toBe("auto");
+  const autoTheme = await window.evaluate(() => ({
+    theme: document.documentElement.dataset.theme,
+    mode: document.documentElement.dataset.themeMode,
+  }));
+  expect(["dark", "light"]).toContain(autoTheme.theme);
+  expect(autoTheme.mode).toBe("auto");
+
+  await quitApp(app);
+});
+
 test("auto switch controls stay within the selection policy card", async () => {
   const app = await electron.launch({
     args: ["."],
@@ -376,12 +489,12 @@ test("desktop views use space-first layout without accidental page scrolling", a
   });
 
   const window = await app.firstWindow();
-  await expect(window.getByTestId("electron-renderer")).toBeVisible();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible({ timeout: 10000 });
 
   const viewByLabel = [
     { label: "Profiles", selector: ".profiles-view", allowShortViewOverflow: false },
     { label: "Auto Switch", selector: ".autoswitch-view", allowShortViewOverflow: false },
-    { label: "Settings", selector: ".settings-view", allowShortViewOverflow: true },
+    { label: "Settings", selector: ".settings-view", allowShortViewOverflow: true, allowViewScroller: true },
     { label: "Guide & Help", selector: ".guide-view", allowShortViewOverflow: false },
     { label: "Update", selector: ".update-view", allowShortViewOverflow: false },
     { label: "Debug", selector: ".debug-view", allowShortViewOverflow: false },
@@ -427,13 +540,15 @@ test("desktop views use space-first layout without accidental page scrolling", a
       expect(layout.documentScrolls, `${viewport.width}x${viewport.height} ${view.label} document scroll`).toBe(false);
       expect(layout.workspaceScrolls, `${viewport.width}x${viewport.height} ${view.label} workspace scroll`).toBe(false);
 
-      if (viewport.short && view.allowShortViewOverflow) {
+      if (view.allowViewScroller) {
+        expect(layout.viewOverflowY, `${viewport.width}x${viewport.height} ${view.label} overflow mode`).toBe("auto");
+      } else if (viewport.short && view.allowShortViewOverflow) {
         expect(layout.viewOverflowY, `${viewport.width}x${viewport.height} ${view.label} short overflow mode`).toBe("auto");
       } else {
         expect(layout.viewOverflows, `${viewport.width}x${viewport.height} ${view.label} view overflow`).toBe(false);
       }
 
-      const allowedScrollTarget = viewport.short && view.label === "Settings"
+      const allowedScrollTarget = view.label === "Settings"
         ? /profiles-table-wrap|debug-log-panel|release-sections|settings-view/
         : /profiles-table-wrap|debug-log-panel|release-sections/;
       expect(layout.bottomGap, `${viewport.width}x${viewport.height} ${view.label} bottom gap`).toBeLessThanOrEqual(40);

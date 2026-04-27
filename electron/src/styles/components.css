@@ -826,7 +826,12 @@ label,
 
 .usage-warning,
 .progress-tone-warning {
-  color: var(--color-amber);
+  color: var(--color-orange);
+}
+
+.usage-caution,
+.progress-tone-caution {
+  color: var(--color-yellow);
 }
 
 .usage-success,
@@ -835,7 +840,11 @@ label,
 }
 
 .progress-fill.progress-tone-warning {
-  background: var(--color-amber);
+  background: var(--color-orange);
+}
+
+.progress-fill.progress-tone-caution {
+  background: var(--color-yellow);
 }
 
 .progress-fill.progress-tone-success {
@@ -931,20 +940,32 @@ label,
 
 .stepper {
   display: inline-grid;
-  grid-template-columns: var(--control-height) minmax(var(--stepper-input-min-width), auto) var(--control-height);
-  align-items: center;
+  grid-template-columns: var(--control-height) minmax(var(--stepper-input-min-width), var(--stepper-input-min-width)) var(--control-height);
+  align-items: stretch;
   height: var(--control-height);
+  min-width: 0;
+  max-width: 100%;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-default);
   background: var(--bg-input);
+  overflow: hidden;
 }
 
 .stepper button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height);
+  min-width: var(--control-height);
   height: 100%;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 1;
 }
 
 .stepper button:hover {
@@ -971,9 +992,17 @@ select {
   border: none;
   border-inline: 1px solid var(--border-subtle);
   border-radius: 0;
+  min-width: 0;
   width: 100%;
   text-align: center;
   font-family: var(--font-mono);
+  padding-inline: var(--space-2);
+}
+
+.stepper input::-webkit-outer-spin-button,
+.stepper input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
 }
 
 .stepper-invalid {
@@ -2843,6 +2872,7 @@ body.height-short .settings-view {
 .settings-view .controls-grid {
   gap: var(--page-gap);
   align-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .settings-view .settings-inline-actions,
@@ -2853,13 +2883,19 @@ body.height-short .settings-view {
   gap: var(--form-row-gap);
 }
 
-.settings-card .group-title,
-.rules-title,
-.k {
-  margin-bottom: clamp(8px, 1vh, 12px);
+.settings-view .settings-card {
+  width: 100%;
+  display: grid;
+  gap: var(--form-row-gap);
+  align-content: start;
+}
+
+.settings-view .settings-card > .group-title {
+  margin-bottom: 0;
 }
 
 .settings-refresh-card .auto-refresh-sections {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--space-10) * 11)), 1fr));
   gap: var(--page-gap);
 }
 
@@ -2869,30 +2905,36 @@ body.height-short .settings-view {
   gap: var(--form-row-gap);
 }
 
+.settings-view .metric-pair-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--space-10) * 11)), 1fr));
+  gap: var(--page-gap);
+}
+
 .settings-refresh-card .auto-refresh-control-surface {
   padding: 0;
   border: none;
   background: transparent;
 }
 
-.notify-card {
+.settings-view .notify-card {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
 }
 
-.notify-card .group-title,
-.notify-card .metric-pair-grid {
+.settings-view .notify-card .group-title,
+.settings-view .notify-card .metric-pair-grid {
   grid-column: 1 / -1;
 }
 
-.notify-card > .setting-row {
+.settings-view .notify-card > .setting-row {
   grid-column: 1;
 }
 
-.notify-card .alarm-actions {
+.settings-view .notify-card .alarm-actions {
   grid-column: 2;
   grid-row: 2;
   align-self: center;
+  justify-self: end;
 }
 
 .settings-system-card {
@@ -2953,6 +2995,64 @@ body.size-ultrawide .autoswitch-view .rules-grid {
 
 .inline-stepper-field {
   gap: 0;
+  min-width: 0;
+  justify-items: end;
+}
+
+.settings-view .inset-row {
+  padding: 0;
+}
+
+.settings-view .setting-row,
+.settings-view .auto-refresh-row,
+.settings-view .auto-refresh-inline-controls {
+  min-width: 0;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.settings-view .setting-label,
+.settings-view .auto-refresh-inline-label,
+.settings-view .setting-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-view .setting-copy {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.settings-view .setting-copy-helper {
+  margin: 0;
+}
+
+.settings-view .setting-row > .toggle,
+.settings-view .setting-row > .inline-stepper-field,
+.settings-view .setting-row > select,
+.settings-view .setting-row > .btn,
+.settings-view .auto-refresh-row > .toggle,
+.settings-view .auto-refresh-inline-controls > .inline-stepper-field,
+.settings-view .alarm-actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.settings-view .setting-row-top {
+  align-items: flex-start;
+}
+
+.settings-view .setting-row-top > .toggle {
+  align-self: flex-start;
+}
+
+.settings-view .stepper,
+.settings-view select {
+  max-width: 100%;
+}
+
+.settings-view .stepper {
+  margin-left: auto;
 }
 
 .stepper-hint {
@@ -3094,9 +3194,251 @@ body.size-compact .update-guidance-list {
 body.size-compact .notify-card .alarm-actions {
   grid-column: 1 / -1;
   grid-row: auto;
-  justify-self: stretch;
+  justify-self: end;
 }
 
 body.size-compact .autoswitch-hint-zone {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/* Settings page refactor */
+.settings-view {
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-bottom: calc(var(--space-content-v) + var(--space-6));
+}
+
+.settings-view > .settings-layout {
+  padding-bottom: calc(var(--space-4) + var(--space-content-v));
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  align-items: start;
+}
+
+.settings-card-stack {
+  display: grid;
+  gap: var(--page-gap);
+  min-width: 0;
+}
+
+.settings-card-stack-main {
+  grid-column: 1;
+}
+
+.settings-card-stack-side {
+  grid-column: 2;
+}
+
+.settings-view .settings-card-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+}
+
+.settings-card-header {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settings-view .settings-card-shell > .group-title,
+.settings-view .settings-card-shell .group-title {
+  font-size: var(--text-lg);
+  line-height: var(--line-lg);
+}
+
+.settings-card-description,
+.settings-view .setting-copy-helper {
+  font-size: var(--text-sm);
+  line-height: var(--line-base);
+}
+
+.settings-card-body {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.settings-subsection-stack {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settings-card-footer {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settings-view .setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+  min-width: 0;
+}
+
+.settings-view .setting-copy {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settings-view .setting-label {
+  font-size: var(--text-base);
+  line-height: var(--line-sm);
+  font-weight: var(--weight-medium);
+}
+
+.settings-view .setting-control {
+  justify-self: end;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.settings-view .setting-control > .btn,
+.settings-view .setting-control > .toggle-switch,
+.settings-view .setting-control > select {
+  max-width: 100%;
+}
+
+.settings-view .setting-current-value {
+  font-size: var(--text-md);
+  line-height: var(--line-md);
+  text-transform: capitalize;
+}
+
+.settings-subsection {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+}
+
+.settings-subsection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.settings-subsection-head h3 {
+  font-size: var(--text-md);
+  line-height: var(--line-md);
+}
+
+.settings-subsection-head span {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.settings-view .stepper,
+.settings-view select {
+  max-width: 100%;
+}
+
+.settings-view .stepper {
+  margin-left: 0;
+}
+
+.settings-view .inline-stepper-field {
+  justify-items: end;
+}
+
+.settings-select-control select {
+  width: min(100%, 260px);
+}
+
+.settings-card-system .settings-system-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.settings-card-system .settings-subsection {
+  background: var(--bg-base);
+}
+
+.settings-card-system .kv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-card-system .kv-value {
+  font-size: var(--text-md);
+}
+
+body.size-compact .settings-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.size-compact .settings-card-stack-main,
+body.size-compact .settings-card-stack-side {
+  display: contents;
+}
+
+body.size-compact .settings-card-appearance {
+  order: 1;
+}
+
+body.size-compact .settings-card-refresh {
+  order: 2;
+}
+
+body.size-compact .settings-card-notifications {
+  order: 3;
+}
+
+body.size-compact .settings-card-windows {
+  order: 4;
+}
+
+body.size-compact .settings-card-maintenance {
+  order: 5;
+}
+
+body.size-compact .settings-card-system {
+  order: 6;
+}
+
+body.size-compact .settings-view .setting-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.size-compact .settings-view .setting-control {
+  justify-self: start;
+  width: 100%;
+}
+
+body.size-compact .settings-view .inline-stepper-field {
+  justify-items: start;
+}
+
+body.size-compact .settings-view .settings-card-footer,
+body.size-compact .settings-action-group {
+  justify-content: flex-start;
 }

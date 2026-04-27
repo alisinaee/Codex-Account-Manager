@@ -4,9 +4,10 @@ const assert = require("node:assert/strict");
 test("table layout helpers map usage percentage to threshold colors", async () => {
   const { usageColor } = await import("../src/renderer/table-layout.mjs");
 
-  assert.equal(usageColor(20), "var(--color-green)");
-  assert.equal(usageColor(71), "var(--color-amber)");
-  assert.equal(usageColor(100), "var(--color-red)");
+  assert.equal(usageColor(9), "var(--color-red)");
+  assert.equal(usageColor(40), "var(--color-orange)");
+  assert.equal(usageColor(70), "var(--color-yellow)");
+  assert.equal(usageColor(90), "var(--color-green)");
 });
 
 test("table layout helpers compute circular arc stroke dasharray", async () => {

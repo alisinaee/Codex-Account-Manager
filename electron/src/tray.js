@@ -1,14 +1,7 @@
 "use strict";
 
 const { getIconPath, getTrayIconPath } = require("./icons");
-
-const TONE_COLORS = {
-  danger: "#ff6b6b",
-  warning: "#ff9f43",
-  caution: "#ffd16c",
-  good: "#3fff8b",
-  neutral: "#adaaaa",
-};
+const { usageBandForPercent, usageHexColorForBand } = require("./usage-thresholds");
 
 function toPercentLabel(value) {
   const percent = Number(value);
@@ -16,16 +9,11 @@ function toPercentLabel(value) {
 }
 
 function buildStatusTone(value) {
-  const percent = Number(value);
-  if (!Number.isFinite(percent)) return "neutral";
-  if (percent < 10) return "danger";
-  if (percent < 30) return "warning";
-  if (percent < 50) return "caution";
-  return "good";
+  return usageBandForPercent(value);
 }
 
 function buildStatusIconDataUrl(tone = "neutral") {
-  const color = TONE_COLORS[tone] || TONE_COLORS.neutral;
+  const color = usageHexColorForBand(tone);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="5.5" fill="${color}"/></svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
@@ -40,7 +28,7 @@ function toneAnsiColor(value) {
   const tone = buildStatusTone(value);
   if (tone === "danger") return "\u001b[31m";
   if (tone === "warning") return "\u001b[33m";
-  if (tone === "caution") return "\u001b[33m";
+  if (tone === "caution") return "\u001b[93m";
   if (tone === "good") return "\u001b[32m";
   return "\u001b[37m";
 }

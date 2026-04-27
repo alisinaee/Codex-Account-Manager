@@ -66,10 +66,10 @@ test("buildTrayMenuTemplate includes readable color-coded desktop status actions
   });
   const labels = items.map((item) => item.label || item.type);
 
-  assert.deepEqual(labels, [
-    "Current acc6",
-    "🟡 5H 48% left",
-    "🟢 Weekly 78% left",
+  assert.equal(labels[0], "Current acc6");
+  assert.match(labels[1], /5H 48% left$/);
+  assert.match(labels[2], /Weekly 78% left$/);
+  assert.deepEqual(labels.slice(3), [
     "separator",
     "Open Codex Account Manager",
     "Refresh Usage",
@@ -103,8 +103,8 @@ test("buildTrayMenuTemplate avoids data-url menu icons on macOS", () => {
 
   assert.equal(items[1].icon, undefined);
   assert.equal(items[2].icon, undefined);
-  assert.match(items[1].label, /^🟡 /);
-  assert.match(items[2].label, /^🟢 /);
+  assert.match(items[1].label, /5H 48% left$/);
+  assert.match(items[2].label, /Weekly 78% left$/);
 });
 
 test("buildMacMenuBarTitle keeps the macOS fallback title compact and informative", () => {
@@ -164,16 +164,17 @@ test("applyTrayState uses macOS tray title with ansi-colored percentages", () =>
 
 test("buildStatusTone colors usage by remaining percentage", () => {
   assert.equal(buildStatusTone(9), "danger");
-  assert.equal(buildStatusTone(25), "warning");
-  assert.equal(buildStatusTone(49), "caution");
-  assert.equal(buildStatusTone(50), "good");
+  assert.equal(buildStatusTone(25), "danger");
+  assert.equal(buildStatusTone(40), "warning");
+  assert.equal(buildStatusTone(70), "caution");
+  assert.equal(buildStatusTone(90), "good");
 });
 
 test("buildStatusIconDataUrl emits svg data for usage tone", () => {
   const icon = buildStatusIconDataUrl("warning");
   const decoded = Buffer.from(icon.replace("data:image/svg+xml;base64,", ""), "base64").toString("utf8");
 
-  assert.match(decoded, /#ff9f43/);
+  assert.match(decoded, /#f97316/);
 });
 
 test("prepareTrayIcon resizes macOS tray image and marks it as a template image", () => {

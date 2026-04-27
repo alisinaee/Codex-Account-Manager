@@ -22,6 +22,24 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-27T15:13:39+03:30
+- Changed files: `electron/src/renderer/SettingsView.jsx`, `electron/src/styles/components.css`
+- Summary: Simplified the Electron settings internals so each settings group now uses a single stacked subsection lane instead of side-by-side inner grids, making the page follow the `Current account refresh` box pattern more consistently.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:2dbfb2d0af9c -->
+
+### 2026-04-27T14:48:26+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/renderer/SettingsView.jsx`, `electron/src/renderer/theme.mjs`, `electron/src/styles/components.css`, `electron/src/styles/tokens.css`, `electron/tests/e2e/electron-shell.spec.js`, `electron/tests/theme.test.js`
+- Summary: Extracted the Electron settings screen into a dedicated module, rebuilt it as a responsive card-based layout with bottom-right section actions, fixed settings-page scrolling, and completed renderer-side light/dark/auto theme application with new regression coverage.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:7c2a93f7f0f8 -->
+
+### 2026-04-27T13:11:42+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
+- Summary: Refined the Electron Settings layout into a full-width card stack, token-driven 2-to-1 responsive inner grids, aligned right-edge controls, and stabilized shared stepper sizing and Windows helper-copy rows.
+- Behavior impact: Added or refreshed 4 behavior rule(s) from user instructions.
+<!-- fingerprint:4e62bad66447 -->
+
 ### 2026-04-27T09:25:57+03:30
 - Changed files: `electron/src/renderer/App.jsx`, `docs/agent-rules.md`
 - Summary: Disabled automatic core installation on the Electron setup screen; install steps now wait for explicit user action.
@@ -130,17 +148,5 @@
 - Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
 <!-- fingerprint:6f1eb43ec81b -->
 
-### 2026-04-24T14:04:01+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `docs/agent-rules.md`
-- Summary: Made codex-account electron dependency installation transparent by printing missing Electron deps, working directory, and the exact npm install command with foreground scripts, progress, and loglevel info; verified npm logs now show registry fetch progress.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:3276ad084c46 -->
-
-### 2026-04-24T13:57:34+03:30
-- Changed files: `codex_account_manager/cli.py`, `electron/scripts/dev.js`, `electron/tests/dev-script.test.js`, `tests/test_cli_core.py`, `docs/agent-rules.md`
-- Summary: Fixed Electron --no-install missing dependency handling so it reports absent Vite/React/Electron deps before launching, and guarded the dev script against missing runtime binaries instead of throwing a Node spawn ENOENT stack trace.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:3ff869e7723c -->
-
 ## Last Updated
-- 2026-04-27T09:25:57+03:30
+- 2026-04-27T15:13:39+03:30
