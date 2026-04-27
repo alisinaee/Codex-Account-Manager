@@ -85,6 +85,10 @@
   --control-toggle-width: 36px;
   --control-toggle-height: 20px;
   --control-toggle-thumb: 16px;
+  --control-toggle-track-off: rgba(148, 163, 184, 0.28);
+  --control-toggle-track-on: #22c55e;
+  --control-toggle-thumb-off: #e2e8f0;
+  --control-toggle-thumb-on: #14532d;
   --control-status-dot: 8px;
 
   --table-row-height: 44px;
@@ -122,4 +126,8 @@
   --text-on-red: #ffffff;
   --status-inactive: rgba(100, 116, 139, 0.46);
   --bg-backdrop: rgba(15, 23, 42, 0.34);
+  --control-toggle-track-off: #cbd5e1;
+  --control-toggle-track-on: #22c55e;
+  --control-toggle-thumb-off: #475569;
+  --control-toggle-thumb-on: #166534;
 }

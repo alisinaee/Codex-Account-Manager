@@ -48,3 +48,54 @@ test("table layout helpers classify remain columns by urgency", async () => {
   assert.equal(remainToneFromResetEpochSeconds(warning, nowMs), "warning");
   assert.equal(remainToneFromResetEpochSeconds(danger, nowMs), "danger");
 });
+
+function shareFromWidth(value) {
+  const match = String(value).match(/^([0-9.]+)%$/);
+  return match ? Number(match[1]) : NaN;
+}
+
+test("profile column widths allocate only visible columns and cap actions", async () => {
+  const { buildProfileColumnWidths } = await import("../src/renderer/table-layout.mjs");
+
+  const widths = buildProfileColumnWidths(
+    ["profile", "email", "h5", "h5remain", "weekly", "weeklyremain", "actions"],
+    "size-wide",
+  );
+
+  assert.deepEqual(Object.keys(widths), ["profile", "email", "h5", "h5remain", "weekly", "weeklyremain", "actions"]);
+  assert.equal(widths.actions, "116px");
+  assert.equal(widths.id, undefined);
+  assert.equal(widths.note, undefined);
+  assert.match(widths.email, /^[0-9.]+%$/);
+});
+
+test("profile column widths redistribute flexible space by visible column weights", async () => {
+  const { buildProfileColumnWidths } = await import("../src/renderer/table-layout.mjs");
+
+  const reduced = buildProfileColumnWidths(
+    ["profile", "email", "h5", "h5remain", "weekly", "weeklyremain", "actions"],
+    "size-wide",
+  );
+  const full = buildProfileColumnWidths(
+    ["profile", "email", "h5", "h5remain", "h5reset", "weekly", "weeklyremain", "weeklyreset", "plan", "paid", "added", "actions"],
+    "size-wide",
+  );
+
+  assert.ok(shareFromWidth(reduced.email) > shareFromWidth(reduced.profile));
+  assert.ok(shareFromWidth(reduced.profile) > shareFromWidth(reduced.h5remain));
+  assert.ok(shareFromWidth(reduced.email) > shareFromWidth(full.email));
+  assert.ok(shareFromWidth(reduced.email) <= 22);
+  assert.ok(shareFromWidth(reduced.profile) <= 15);
+  assert.ok(shareFromWidth(full.email) <= 20);
+  assert.ok(shareFromWidth(full.profile) <= 12);
+});
+
+test("profile column widths use compact fixed widths for utility columns", async () => {
+  const { buildProfileColumnWidths } = await import("../src/renderer/table-layout.mjs");
+
+  const widths = buildProfileColumnWidths(["cur", "profile", "email", "h5", "weekly", "actions"], "size-compact");
+
+  assert.equal(widths.cur, "18px");
+  assert.equal(widths.actions, "80px");
+  assert.match(widths.email, /^[0-9.]+%$/);
+});

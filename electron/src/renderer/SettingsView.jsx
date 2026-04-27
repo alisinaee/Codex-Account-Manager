@@ -1,54 +1,8 @@
 import React, { useEffect, useState } from "react";
 import Button from "./components/Button.jsx";
-import ConfirmAction from "./components/ConfirmAction.jsx";
-import SectionCard from "./components/SectionCard.jsx";
+import { SettingCopy, SettingsCardShell, SettingsSubsection } from "./components/SettingsCardShell.jsx";
 import StepperInput from "./components/StepperInput.jsx";
 import ToggleSwitch from "./components/ToggleSwitch.jsx";
-import { normalizeThemeMode } from "./theme.mjs";
-
-const THEME_OPTIONS = [
-  { value: "auto", label: "Auto" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-];
-
-const THEME_COPY = {
-  auto: "Match the operating system appearance automatically.",
-  light: "Keep the desktop shell in the light theme.",
-  dark: "Keep the desktop shell in the dark theme.",
-};
-
-function SettingsCardShell({
-  title,
-  description,
-  className = "",
-  footer = null,
-  children,
-  testId,
-}) {
-  return (
-    <SectionCard
-      className={["control-card", "settings-card", "settings-card-shell", className].filter(Boolean).join(" ")}
-      data-testid={testId}
-    >
-      <div className="settings-card-header">
-        <div className="group-title">{title}</div>
-        {description ? <p className="muted settings-card-description">{description}</p> : null}
-      </div>
-      <div className="settings-card-body">{children}</div>
-      {footer ? <div className="settings-card-footer">{footer}</div> : null}
-    </SectionCard>
-  );
-}
-
-function SettingCopy({ label, helper, title = "" }) {
-  return (
-    <div className="setting-copy">
-      <span className="setting-label" title={title}>{label}</span>
-      {helper ? <p className="muted setting-copy-helper">{helper}</p> : null}
-    </div>
-  );
-}
 
 function LabelValueRow({ label, value }) {
   return (
@@ -56,52 +10,6 @@ function LabelValueRow({ label, value }) {
       <span className="kv-label">{label}</span>
       <div className="kv-value">{value}</div>
     </div>
-  );
-}
-
-function SettingsSubsection({ title, meta = "", children }) {
-  return (
-    <section className="settings-subsection">
-      <div className="settings-subsection-head">
-        <h3>{title}</h3>
-        {meta ? <span>{meta}</span> : null}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function AppearanceSettingsCard({ themeMode, onSetTheme }) {
-  return (
-    <SettingsCardShell
-      title="Appearance"
-      description="Choose how the desktop shell should render across the app."
-      className="settings-card-appearance"
-      testId="settings-card-appearance"
-      footer={(
-        <div className="settings-action-group" role="group" aria-label="Theme mode">
-          {THEME_OPTIONS.map((option) => (
-            <Button
-              key={option.value}
-              className={themeMode === option.value ? "btn-active" : ""}
-              aria-pressed={themeMode === option.value}
-              onClick={() => onSetTheme(option.value)}
-            >
-              {option.label}
-            </Button>
-          ))}
-        </div>
-      )}
-    >
-      <SettingsSubsection title="Theme mode">
-        <div className="setting-row">
-          <SettingCopy label="Active mode" helper={THEME_COPY[themeMode]} />
-          <div className="setting-control">
-            <strong className="setting-current-value">{themeMode}</strong>
-          </div>
-        </div>
-      </SettingsSubsection>
-    </SettingsCardShell>
   );
 }
 
@@ -327,67 +235,7 @@ function WindowsIntegrationSettingsCard({ ui, displayTargets, onSavePatch }) {
   );
 }
 
-function MaintenanceSettingsCard({ logsEnabled, onRestart, onKillAll, onToggleDebug }) {
-  return (
-    <SettingsCardShell
-      title="Maintenance & Recovery"
-      description="Recover the desktop shell safely when the local service needs attention."
-      className="settings-card-maintenance"
-      testId="settings-card-maintenance"
-      footer={(
-        <div className="settings-action-group">
-          <Button className={logsEnabled ? "btn-active" : ""} onClick={onToggleDebug}>
-            {logsEnabled ? "Logs on" : "Logs off"}
-          </Button>
-          <ConfirmAction
-            label="Restart"
-            confirmLabel="Confirm restart"
-            tone="primary"
-            onConfirm={onRestart}
-          />
-          <ConfirmAction
-            label="Kill all"
-            confirmLabel="Confirm kill all"
-            tone="danger"
-            onConfirm={onKillAll}
-          />
-        </div>
-      )}
-    >
-      <div className="settings-subsection-stack">
-        <SettingsSubsection title="Desktop recovery">
-          <div className="setting-row">
-            <SettingCopy
-              label="Restart behavior"
-              helper="Restart reconnects the desktop panel to the local service without changing account data."
-            />
-          </div>
-        </SettingsSubsection>
-        <SettingsSubsection title="Debug logs">
-          <div className="setting-row">
-            <SettingCopy
-              label="Current state"
-              helper="Enable verbose desktop logging for troubleshooting."
-            />
-            <div className="setting-control">
-              <strong className="setting-current-value">{logsEnabled ? "enabled" : "disabled"}</strong>
-            </div>
-          </div>
-        </SettingsSubsection>
-        <SettingsSubsection title="Managed process shutdown">
-          <div className="setting-row">
-            <SettingCopy
-              label="Kill all behavior"
-              helper="Kill all stops managed background processes. Use it only when restart cannot recover the app."
-            />
-          </div>
-        </SettingsSubsection>
-      </div>
-    </SettingsCardShell>
-  );
-}
-
-function SystemInfoSettingsCard({ platformName, ui }) {
+export function SystemInfoSettingsCard({ platformName, ui }) {
   return (
     <SettingsCardShell
       title="System info"
@@ -410,13 +258,10 @@ function SystemInfoSettingsCard({ platformName, ui }) {
   );
 }
 
-function SettingsView({ state, onRestart, onKillAll, onSetTheme, onToggleDebug, onNotify, onSavePatch }) {
+function SettingsView({ state, onNotify, onSavePatch }) {
   const ui = state?.config?.ui || {};
   const isWindows = window.codexAccountDesktop?.platform === "win32";
-  const logsEnabled = !!ui.debug_mode;
-  const themeMode = normalizeThemeMode(ui.theme);
   const [displayTargets, setDisplayTargets] = useState([]);
-  const platformName = window.codexAccountDesktop?.platform || navigator.platform || "unknown";
   const desktop = window.codexAccountDesktop;
 
   useEffect(() => {
@@ -450,17 +295,6 @@ function SettingsView({ state, onRestart, onKillAll, onSetTheme, onToggleDebug, 
           {isWindows ? (
             <WindowsIntegrationSettingsCard ui={ui} displayTargets={displayTargets} onSavePatch={onSavePatch} />
           ) : null}
-        </div>
-
-        <div className="settings-card-stack settings-card-stack-side">
-          <AppearanceSettingsCard themeMode={themeMode} onSetTheme={onSetTheme} />
-          <MaintenanceSettingsCard
-            logsEnabled={logsEnabled}
-            onRestart={onRestart}
-            onKillAll={onKillAll}
-            onToggleDebug={onToggleDebug}
-          />
-          <SystemInfoSettingsCard platformName={platformName} ui={ui} />
         </div>
       </div>
     </section>

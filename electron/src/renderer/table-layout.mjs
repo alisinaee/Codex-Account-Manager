@@ -1,6 +1,59 @@
 const ARC_CIRCUMFERENCE = 94.2;
 import { clampPercent as clampPercentShared, usageCssColorVar } from "./usage-thresholds.mjs";
 
+const PROFILE_FIXED_COLUMN_WIDTHS = {
+  cur: { compact: 18, default: 24 },
+  auto: { compact: 48, default: 48 },
+  actions: { compact: 80, default: 116 },
+};
+
+const PROFILE_FLEX_COLUMN_WEIGHTS = {
+  profile: 0.95,
+  email: 1.45,
+  h5: 1.25,
+  h5remain: 0.9,
+  h5reset: 0.85,
+  weekly: 1.25,
+  weeklyremain: 0.9,
+  weeklyreset: 0.85,
+  plan: 0.55,
+  paid: 0.55,
+  id: 0.75,
+  added: 0.7,
+  note: 0.85,
+};
+
+function formatCssNumber(value) {
+  return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function fixedWidthForColumn(key, viewportSizeClass) {
+  const width = PROFILE_FIXED_COLUMN_WIDTHS[key];
+  if (!width) return null;
+  return viewportSizeClass === "size-compact" ? width.compact : width.default;
+}
+
+export function buildProfileColumnWidths(visibleKeys, viewportSizeClass = "size-normal") {
+  const keys = Array.isArray(visibleKeys) ? visibleKeys.filter(Boolean) : [];
+  const widths = {};
+  const flexKeys = keys.filter((key) => fixedWidthForColumn(key, viewportSizeClass) === null);
+  const flexTotal = flexKeys.reduce((total, key) => total + (PROFILE_FLEX_COLUMN_WEIGHTS[key] || 1), 0);
+
+  for (const key of keys) {
+    const fixedWidth = fixedWidthForColumn(key, viewportSizeClass);
+    if (fixedWidth !== null) {
+      widths[key] = `${fixedWidth}px`;
+      continue;
+    }
+    const weight = PROFILE_FLEX_COLUMN_WEIGHTS[key] || 1;
+    const share = flexTotal > 0 ? weight / flexTotal : 1;
+    const sharePercent = formatCssNumber(share * 100);
+    widths[key] = `${sharePercent}%`;
+  }
+
+  return widths;
+}
+
 export function clampPercent(value) {
   return clampPercentShared(value);
 }

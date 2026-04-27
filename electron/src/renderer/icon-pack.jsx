@@ -132,6 +132,41 @@ export function AboutIcon() {
   );
 }
 
+export function ThemeAutoIcon(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="4" y="5" width="16" height="10" rx="2.25" />
+      <path d="M10 19h4" />
+      <path d="M12 15v4" />
+      <path d="m8 7.75.55 1.4 1.45.6-1.45.55L8 11.75l-.55-1.45L6 9.75l1.45-.6L8 7.75Z" />
+    </IconBase>
+  );
+}
+
+export function ThemeLightIcon(props) {
+  return (
+    <IconBase {...props}>
+      <circle cx="12" cy="12" r="4.25" />
+      <path d="M12 2.75v2.5" />
+      <path d="M12 18.75v2.5" />
+      <path d="m18.54 5.46-1.77 1.77" />
+      <path d="m7.23 16.77-1.77 1.77" />
+      <path d="M21.25 12h-2.5" />
+      <path d="M5.25 12h-2.5" />
+      <path d="m18.54 18.54-1.77-1.77" />
+      <path d="M7.23 7.23 5.46 5.46" />
+    </IconBase>
+  );
+}
+
+export function ThemeDarkIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M14.5 3.75a7.75 7.75 0 1 0 5.75 13.25A8.5 8.5 0 0 1 14.5 3.75Z" />
+    </IconBase>
+  );
+}
+
 export function DoorClosedIcon() {
   return (
     <IconBase>
