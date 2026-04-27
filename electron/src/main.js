@@ -1,7 +1,7 @@
 "use strict";
 
 const path = require("node:path");
-const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, screen, shell } = require("electron");
 
 const { createApiClient } = require("./api-client");
 const { ensureBackendRunning, fetchCurrentUsage, getDefaultBackendState, runServiceCommand } = require("./backend");
@@ -20,6 +20,7 @@ const {
 const { applyTrayState, createTray } = require("./tray");
 const { buildUsageSummary } = require("./usage");
 const { applyWindowsTaskbarUsage, ensureWindowsNotificationShortcut } = require("./windows-integration");
+const { usageHexColor } = require("./usage-thresholds");
 
 app.setName(APP_NAME);
 app.name = APP_NAME;
@@ -29,11 +30,14 @@ if (typeof app.setAppUserModelId === "function") {
 
 let mainWindow = null;
 let tray = null;
+let miniMeterWindow = null;
 let backendState = getDefaultBackendState();
 let apiClient = null;
 let desktopState = null;
 let latestUsagePayload = null;
 let refreshTimer = null;
+let miniMeterPersistTimer = null;
+let miniMeterSuppressMovePersist = false;
 let runtimeState = normalizeRuntimeStatus({
   phase: "checking_runtime",
   python: {},
@@ -42,6 +46,348 @@ let runtimeState = normalizeRuntimeStatus({
 });
 let runtimeProgress = [];
 let registeredIpcChannels = [];
+const MINI_METER_BASE_FONT_SIZE = 14;
+
+function windowsMiniMeterEnabled(config = {}) {
+  return Boolean(config?.ui?.windows_mini_meter_enabled);
+}
+
+function windowsMiniMeterDragEnabled(config = {}) {
+  return Boolean(config?.ui?.windows_mini_meter_drag_enabled);
+}
+
+function windowsMiniMeterFontSize(config = {}) {
+  const raw = Number(config?.ui?.windows_mini_meter_font_size);
+  if (!Number.isFinite(raw)) return 14;
+  return Math.max(10, Math.min(24, Math.round(raw)));
+}
+
+function windowsMiniMeterDisplayMode(config = {}) {
+  const raw = String(config?.ui?.windows_mini_meter_display_mode || "primary").trim().toLowerCase();
+  return raw === "primary" ? "primary" : "follow_focus";
+}
+
+function windowsMiniMeterDisplayTarget(config = {}) {
+  const rawTarget = String(config?.ui?.windows_mini_meter_display_target || "").trim().toLowerCase();
+  if (rawTarget === "primary" || rawTarget === "follow_focus") return rawTarget;
+  if (/^display:-?\d+$/.test(rawTarget)) return rawTarget;
+  return windowsMiniMeterDisplayMode(config);
+}
+
+function windowsMiniMeterSize(config = {}) {
+  const fontSize = windowsMiniMeterFontSize(config);
+  const valueColumnWidth = Math.round(fontSize * 2.85);
+  const metricColumnWidth = Math.round(fontSize * 1.85);
+  const horizontalPadding = Math.round(fontSize * 0.9);
+  const verticalPadding = Math.round(fontSize * 0.56);
+  const rowHeight = Math.round(fontSize * 1.06);
+  const rowGap = Math.round(fontSize * 0.18);
+  return {
+    width: Math.max(82, Math.min(172, valueColumnWidth + metricColumnWidth + (horizontalPadding * 2))),
+    height: Math.max(44, Math.min(96, (rowHeight * 2) + rowGap + (verticalPadding * 2))),
+  };
+}
+
+function windowsMiniMeterPosition(config = {}) {
+  const x = Number(config?.ui?.windows_mini_meter_x);
+  const y = Number(config?.ui?.windows_mini_meter_y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+function buildWindowsMiniMeterHtml() {
+  return [
+    "<!doctype html>",
+    "<html><head><meta charset=\"utf-8\" />",
+    "<style>",
+    "html, body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; font-family:'Segoe UI', Arial, sans-serif; }",
+    ".meter { box-sizing:border-box; width:100%; height:100%; padding:calc(var(--meter-font-size) * 0.28) calc(var(--meter-font-size) * 0.45); border-radius:calc(var(--meter-font-size) * 0.5); background:rgba(10,12,15,0.90); border:1px solid rgba(255,255,255,0.10); display:flex; flex-direction:column; justify-content:center; gap:calc(var(--meter-font-size) * 0.18); --meter-font-size:14px; }",
+    ".meter.draggable { -webkit-app-region: drag; cursor:move; }",
+    ".row { display:flex; align-items:center; font-size:var(--meter-font-size); line-height:1.05; font-weight:700; letter-spacing:0.1px; text-shadow:0 0 4px rgba(0,0,0,0.45); }",
+    ".five { color:#22c55e; }",
+    ".week { color:#22c55e; }",
+    ".value { min-width:calc(var(--meter-font-size) * 2.85); margin-right:calc(var(--meter-font-size) * 0.24); }",
+    "</style></head><body>",
+    "<div class=\"meter\" id=\"meter\">",
+    "<div class=\"row five\"><span class=\"value\" id=\"five\">--</span><span>5H</span></div>",
+    "<div class=\"row week\"><span class=\"value\" id=\"week\">--</span><span>W</span></div>",
+    "</div>",
+    "<script>",
+    "window.__updateMeter = (payload) => {",
+    "  const five = document.getElementById('five');",
+    "  const week = document.getElementById('week');",
+    "  const fiveValue = payload && payload.fiveHour != null ? payload.fiveHour : '--';",
+    "  const weekValue = payload && payload.weekly != null ? payload.weekly : '--';",
+    "  const fiveTone = payload && payload.fiveTone ? payload.fiveTone : '';",
+    "  const weekTone = payload && payload.weekTone ? payload.weekTone : '';",
+    "  if (five) five.textContent = String(fiveValue);",
+    "  if (week) week.textContent = String(weekValue);",
+    "  if (five) five.style.color = fiveTone || '#adaaaa';",
+    "  if (week) week.style.color = weekTone || '#adaaaa';",
+    "};",
+    "window.__setMeterOptions = (payload) => {",
+    "  const root = document.getElementById('meter');",
+    "  if (!root) return;",
+    "  const font = payload && payload.fontSize != null ? payload.fontSize : 14;",
+    "  const drag = Boolean(payload && payload.dragEnabled);",
+    "  root.style.setProperty('--meter-font-size', `${font}px`);",
+    "  root.classList.toggle('draggable', drag);",
+    "};",
+    "</script></body></html>",
+  ].join("");
+}
+
+function listDesktopDisplays() {
+  if (!screen || typeof screen.getAllDisplays !== "function") {
+    return [];
+  }
+  const displays = screen.getAllDisplays();
+  const primaryId = screen.getPrimaryDisplay?.()?.id;
+  return displays.map((display, index) => {
+    const id = Number(display?.id);
+    const bounds = display?.bounds || {};
+    const workArea = display?.workArea || {};
+    const isPrimary = id === primaryId;
+    return {
+      id,
+      index: index + 1,
+      isPrimary,
+      label: isPrimary ? `Display ${index + 1} (Primary)` : `Display ${index + 1}`,
+      bounds: {
+        x: Number(bounds.x) || 0,
+        y: Number(bounds.y) || 0,
+        width: Number(bounds.width) || 0,
+        height: Number(bounds.height) || 0,
+      },
+      workArea: {
+        x: Number(workArea.x) || 0,
+        y: Number(workArea.y) || 0,
+        width: Number(workArea.width) || 0,
+        height: Number(workArea.height) || 0,
+      },
+    };
+  }).filter((item) => Number.isFinite(item.id));
+}
+
+function resolveWindowsMiniMeterDisplay(config = {}) {
+  const saved = windowsMiniMeterPosition(config);
+  if (saved) {
+    return screen?.getDisplayNearestPoint?.(saved) || screen?.getPrimaryDisplay?.() || null;
+  }
+  const target = windowsMiniMeterDisplayTarget(config);
+  if (target === "primary") {
+    return screen?.getPrimaryDisplay?.() || null;
+  }
+  if (target.startsWith("display:")) {
+    const targetId = Number(target.split(":")[1]);
+    if (Number.isFinite(targetId) && typeof screen?.getAllDisplays === "function") {
+      const found = screen.getAllDisplays().find((display) => Number(display?.id) === targetId);
+      if (found) return found;
+    }
+    return screen?.getPrimaryDisplay?.() || null;
+  }
+  const cursor = screen?.getCursorScreenPoint?.() || { x: 0, y: 0 };
+  return screen?.getDisplayNearestPoint?.(cursor) || screen?.getPrimaryDisplay?.() || null;
+}
+
+function applyWindowsMiniMeterSize(config = {}) {
+  if (process.platform !== "win32" || !miniMeterWindow || miniMeterWindow.isDestroyed()) {
+    return;
+  }
+  const nextSize = windowsMiniMeterSize(config);
+  const bounds = miniMeterWindow.getBounds();
+  if (bounds.width === nextSize.width && bounds.height === nextSize.height) {
+    return;
+  }
+  miniMeterSuppressMovePersist = true;
+  miniMeterWindow.setBounds({ ...bounds, width: nextSize.width, height: nextSize.height });
+  miniMeterSuppressMovePersist = false;
+}
+
+function positionWindowsMiniMeter(config = {}) {
+  if (process.platform !== "win32" || !miniMeterWindow || miniMeterWindow.isDestroyed()) {
+    return;
+  }
+  const display = resolveWindowsMiniMeterDisplay(config);
+  const workArea = display?.workArea;
+  if (!workArea) {
+    return;
+  }
+  const bounds = miniMeterWindow.getBounds();
+  const saved = windowsMiniMeterPosition(config);
+  const marginRight = 12;
+  const marginBottom = 8;
+  const anchoredX = workArea.x + Math.max(0, workArea.width - bounds.width - marginRight);
+  const anchoredY = workArea.y + Math.max(0, workArea.height - bounds.height - marginBottom);
+  const minX = workArea.x;
+  const maxX = workArea.x + Math.max(0, workArea.width - bounds.width);
+  const minY = workArea.y;
+  const maxY = workArea.y + Math.max(0, workArea.height - bounds.height);
+  const x = saved ? Math.max(minX, Math.min(maxX, saved.x)) : anchoredX;
+  const y = saved ? Math.max(minY, Math.min(maxY, saved.y)) : anchoredY;
+  miniMeterSuppressMovePersist = true;
+  miniMeterWindow.setBounds({ ...bounds, x, y });
+  miniMeterSuppressMovePersist = false;
+}
+
+function updateWindowsMiniMeterOptions(config = {}) {
+  if (!miniMeterWindow || miniMeterWindow.isDestroyed()) {
+    return;
+  }
+  const dragEnabled = windowsMiniMeterDragEnabled(config);
+  const fontSize = windowsMiniMeterFontSize(config);
+  miniMeterWindow.setMovable(Boolean(dragEnabled));
+  miniMeterWindow.setFocusable(Boolean(dragEnabled));
+  miniMeterWindow.setIgnoreMouseEvents(!dragEnabled, { forward: !dragEnabled });
+  const script = `window.__setMeterOptions(${JSON.stringify({ dragEnabled, fontSize })});`;
+  miniMeterWindow.webContents.executeJavaScript(script).catch(() => {});
+}
+
+async function persistWindowsMiniMeterPosition(bounds = {}) {
+  if (!apiClient || !desktopState || !windowsMiniMeterDragEnabled(desktopState?.config || {})) {
+    return;
+  }
+  const x = Number(bounds?.x);
+  const y = Number(bounds?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return;
+  }
+  const currentX = Number(desktopState?.config?.ui?.windows_mini_meter_x);
+  const currentY = Number(desktopState?.config?.ui?.windows_mini_meter_y);
+  if (Math.round(currentX) === Math.round(x) && Math.round(currentY) === Math.round(y)) {
+    return;
+  }
+  try {
+    const nextConfig = await requestWithTokenRefresh("/api/ui-config", {
+      method: "POST",
+      body: JSON.stringify({
+        ui: {
+          windows_mini_meter_x: Math.round(x),
+          windows_mini_meter_y: Math.round(y),
+        },
+      }),
+    });
+    if (desktopState) {
+      desktopState = {
+        ...desktopState,
+        config: {
+          ...(desktopState.config || {}),
+          ...(nextConfig || {}),
+          ui: {
+            ...(desktopState.config?.ui || {}),
+            ...(nextConfig?.ui || {}),
+          },
+        },
+      };
+    }
+  } catch (_) {
+    // Ignore temporary persistence failures for drag updates.
+  }
+}
+
+function queuePersistWindowsMiniMeterPosition() {
+  if (!miniMeterWindow || miniMeterWindow.isDestroyed() || miniMeterSuppressMovePersist) {
+    return;
+  }
+  if (miniMeterPersistTimer) {
+    clearTimeout(miniMeterPersistTimer);
+  }
+  const bounds = miniMeterWindow.getBounds();
+  miniMeterPersistTimer = setTimeout(() => {
+    miniMeterPersistTimer = null;
+    persistWindowsMiniMeterPosition(bounds).catch(() => {});
+  }, 420);
+}
+
+function ensureWindowsMiniMeterWindow() {
+  if (process.platform !== "win32" || miniMeterWindow || app.isQuitting) {
+    return miniMeterWindow;
+  }
+  const html = buildWindowsMiniMeterHtml();
+  const initialSize = windowsMiniMeterSize(desktopState?.config || {});
+  miniMeterWindow = new BrowserWindow({
+    width: initialSize.width,
+    height: initialSize.height,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    fullscreenable: false,
+    maximizable: false,
+    minimizable: false,
+    resizable: false,
+    movable: true,
+    show: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    focusable: true,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  miniMeterWindow.setAlwaysOnTop(true, "pop-up-menu");
+  miniMeterWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  miniMeterWindow.setMenuBarVisibility(false);
+  miniMeterWindow.once("ready-to-show", () => {
+    applyWindowsMiniMeterSize(desktopState?.config || {});
+    positionWindowsMiniMeter(desktopState?.config || {});
+    updateWindowsMiniMeterOptions(desktopState?.config || {});
+    miniMeterWindow?.showInactive?.();
+  });
+  miniMeterWindow.on("move", () => queuePersistWindowsMiniMeterPosition());
+  miniMeterWindow.on("closed", () => {
+    miniMeterWindow = null;
+  });
+  miniMeterWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {});
+  return miniMeterWindow;
+}
+
+function destroyWindowsMiniMeterWindow() {
+  if (miniMeterPersistTimer) {
+    clearTimeout(miniMeterPersistTimer);
+    miniMeterPersistTimer = null;
+  }
+  if (!miniMeterWindow || miniMeterWindow.isDestroyed()) {
+    miniMeterWindow = null;
+    return;
+  }
+  miniMeterWindow.destroy();
+  miniMeterWindow = null;
+}
+
+function updateWindowsMiniMeterWindow(summary = {}) {
+  if (!miniMeterWindow || miniMeterWindow.isDestroyed()) {
+    return;
+  }
+  const fiveHourRaw = Number(summary?.fiveHourPercent);
+  const weeklyRaw = Number(summary?.weeklyPercent);
+  const fiveHour = Number.isFinite(fiveHourRaw) ? `${Math.round(fiveHourRaw)}%` : "--";
+  const weekly = Number.isFinite(weeklyRaw) ? `${Math.round(weeklyRaw)}%` : "--";
+  const fiveTone = Number.isFinite(fiveHourRaw) ? usageHexColor(fiveHourRaw) : "";
+  const weekTone = Number.isFinite(weeklyRaw) ? usageHexColor(weeklyRaw) : "";
+  const script = `window.__updateMeter(${JSON.stringify({ fiveHour, weekly, fiveTone, weekTone })});`;
+  miniMeterWindow.webContents.executeJavaScript(script).catch(() => {});
+}
+
+function syncWindowsMiniMeter({ summary, config }) {
+  if (process.platform !== "win32") {
+    return false;
+  }
+  if (!windowsMiniMeterEnabled(config || {})) {
+    destroyWindowsMiniMeterWindow();
+    return false;
+  }
+  ensureWindowsMiniMeterWindow();
+  applyWindowsMiniMeterSize(config || {});
+  positionWindowsMiniMeter(config || {});
+  updateWindowsMiniMeterOptions(config || {});
+  updateWindowsMiniMeterWindow(summary || {});
+  miniMeterWindow?.showInactive?.();
+  return true;
+}
 
 function emitToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -168,6 +514,7 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -218,6 +565,7 @@ async function refreshUsage() {
   if (tray) {
     applyTrayState({ tray, Menu, summary, actions: buildTrayActions(), nativeImage });
   }
+  syncWindowsMiniMeter({ summary, config: desktopState?.config });
   return summary;
 }
 
@@ -232,6 +580,7 @@ function applyTrayFromLatestUsage() {
     summary,
     config: desktopState?.config,
   });
+  syncWindowsMiniMeter({ summary, config: desktopState?.config });
   return summary;
 }
 
@@ -341,6 +690,11 @@ function createMockDesktopState() {
         all_auto_refresh_enabled: true,
         all_refresh_interval_min: 5,
         windows_taskbar_usage_enabled: false,
+        windows_mini_meter_enabled: false,
+        windows_mini_meter_drag_enabled: false,
+        windows_mini_meter_font_size: 14,
+        windows_mini_meter_display_target: "follow_focus",
+        windows_mini_meter_display_mode: "follow_focus",
       },
       notifications: { enabled: true, thresholds: { h5_warn_pct: 20, weekly_warn_pct: 20 } },
       auto_switch: { enabled: false, delay_sec: 60, ranking_mode: "balanced", thresholds: { h5_switch_pct: 20, weekly_switch_pct: 20 } },
@@ -793,11 +1147,23 @@ function registerIpcHandlers() {
     applyTrayFromLatestUsage();
     return desktopState;
   });
+  handle("desktop:list-displays", async () => {
+    if (process.platform !== "win32") {
+      return [];
+    }
+    return listDesktopDisplays();
+  });
   handle("desktop:test-notification", async () => sendTestNotification());
 }
 
 async function bootstrap() {
   registerIpcHandlers();
+  if (process.platform === "win32" && screen) {
+    const reposition = () => positionWindowsMiniMeter(desktopState?.config || {});
+    screen.on("display-metrics-changed", reposition);
+    screen.on("display-added", reposition);
+    screen.on("display-removed", reposition);
+  }
   try {
     ensureWindowsNotificationShortcut({
       shell,
@@ -842,6 +1208,10 @@ app.on("before-quit", () => {
   if (refreshTimer) {
     clearInterval(refreshTimer);
   }
+  if (miniMeterPersistTimer) {
+    clearTimeout(miniMeterPersistTimer);
+  }
+  destroyWindowsMiniMeterWindow();
 });
 
 app.on("window-all-closed", () => {

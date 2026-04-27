@@ -17,8 +17,10 @@ import {
 import {
   buildProfileRowClassName,
   createSwitchController,
+  usageTone,
 } from "./switch-state.mjs";
 import { appendSessionToken, buildAuthenticatedDownloadUrl } from "./request-paths.mjs";
+import SettingsView from "./SettingsView.jsx";
 import {
   buildProfileRows,
   buildSidebarCurrentProfile,
@@ -44,6 +46,7 @@ import {
   getCurrentRefreshIntervalMs,
   waitForServiceRestart,
 } from "./parity.mjs";
+import { watchThemePreference } from "./theme.mjs";
 import Badge from "./components/Badge.jsx";
 import Button from "./components/Button.jsx";
 import ConfirmAction from "./components/ConfirmAction.jsx";
@@ -170,14 +173,6 @@ function usagePercent(row, key) {
 
 function usageValue(row, key) {
   return clampPercent(usagePercentNumber(row, key));
-}
-
-function usageTone(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "";
-  if (numeric >= 90) return "danger";
-  if (numeric >= 70) return "warning";
-  return "success";
 }
 
 function sortRows(rows, sort) {
@@ -318,14 +313,6 @@ function isColumnVisibleForViewport(key, viewportSizeClass) {
   return true;
 }
 
-function tableUsageColor(value) {
-  const percent = clampPercent(value);
-  if (percent === null) return "var(--text-secondary)";
-  if (percent <= 10) return "var(--color-red)";
-  if (percent <= 30) return "var(--color-amber)";
-  return "var(--color-green)";
-}
-
 const WIDTH_CLASS_NAMES = ["size-compact", "size-normal", "size-wide", "size-ultrawide"];
 const HEIGHT_CLASS_NAMES = ["height-short", "height-normal", "height-tall"];
 
@@ -407,7 +394,7 @@ function formatLogLevel(level) {
 
 function UsageCell({ row, usageKey }) {
   const value = usageValue(row, usageKey);
-  const color = tableUsageColor(value);
+  const color = usageColor(value);
   const label = value === null ? "-" : `${value}%`;
 
   return (
@@ -905,7 +892,7 @@ function ProfilesView({
             </Button>
           </div>
         </div>
-        <div className={`table-wrap profiles-table-wrap scrollable scrollable-with-fade ${wideMode ? "wide-columns" : ""}`}>
+      <div className={`table-wrap profiles-table-wrap scrollable ${wideMode ? "wide-columns" : ""}`}>
           <AccountsTable
             profiles={profiles}
             switching={switching}
@@ -929,74 +916,6 @@ function ProfilesView({
         </div>
       </div>
     </section>
-  );
-}
-
-function AutoRefreshSettingsCard({ state, onSavePatch }) {
-  const ui = state?.config?.ui || {};
-
-  return (
-    <SectionCard className="control-card control-card-full settings-card settings-refresh-card">
-      <div className="group-title">Refresh rules</div>
-      <div className="auto-refresh-sections">
-        <section className="auto-refresh-section">
-          <div className="auto-refresh-title-row">
-            <h3>Current account refresh</h3>
-            <span>Unit: seconds</span>
-          </div>
-          <div className="auto-refresh-row">
-            <span className="setting-label">Enabled</span>
-            <span className="toggle auto-refresh-toggle">
-              <ToggleSwitch
-                checked={!!ui.current_auto_refresh_enabled}
-                onChange={(nextValue) => onSavePatch({ ui: { current_auto_refresh_enabled: nextValue } })}
-                ariaLabel="Enable current account refresh"
-              />
-            </span>
-          </div>
-          <div className="auto-refresh-control-surface">
-            <div className="auto-refresh-inline-controls">
-              <span className="setting-label auto-refresh-inline-label">Delay (seconds)</span>
-              <StepperInput
-                value={ui.current_refresh_interval_sec ?? 5}
-                min={1}
-                max={3600}
-                unit="sec"
-                onChange={(value) => onSavePatch({ ui: { current_refresh_interval_sec: value } })}
-              />
-            </div>
-          </div>
-        </section>
-        <section className="auto-refresh-section">
-          <div className="auto-refresh-title-row">
-            <h3>All accounts refresh</h3>
-            <span>Unit: minutes</span>
-          </div>
-          <div className="auto-refresh-row">
-            <span className="setting-label">Enabled</span>
-            <span className="toggle auto-refresh-toggle">
-              <ToggleSwitch
-                checked={!!ui.all_auto_refresh_enabled}
-                onChange={(nextValue) => onSavePatch({ ui: { all_auto_refresh_enabled: nextValue } })}
-                ariaLabel="Enable all accounts refresh"
-              />
-            </span>
-          </div>
-          <div className="auto-refresh-control-surface">
-            <div className="auto-refresh-inline-controls">
-              <span className="setting-label auto-refresh-inline-label">Delay (minutes)</span>
-              <StepperInput
-                value={ui.all_refresh_interval_min ?? 5}
-                min={1}
-                max={60}
-                unit="min"
-                onChange={(value) => onSavePatch({ ui: { all_refresh_interval_min: value } })}
-              />
-            </div>
-          </div>
-        </section>
-      </div>
-    </SectionCard>
   );
 }
 
@@ -1159,124 +1078,6 @@ function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRa
           </div>
         </div>
       </SectionCard>
-    </section>
-  );
-}
-
-function NotificationsSettingsCard({ state, onNotify, onSavePatch }) {
-  const notifications = state?.config?.notifications || {};
-
-  return (
-    <SectionCard className="control-card control-card-full notify-card settings-card">
-      <div className="group-title">Notifications</div>
-      <div className="setting-row inset-row">
-        <span className="setting-label">Enable notifications</span>
-        <span className="toggle">
-          <ToggleSwitch
-            checked={!!notifications.enabled}
-            onChange={(nextValue) => onSavePatch({ notifications: { enabled: nextValue } })}
-            ariaLabel="Enable notifications"
-          />
-        </span>
-      </div>
-      <div className="metric-pair-grid">
-        <div className="setting-row metric inset-row">
-          <span className="setting-label">Notify when 5h usage exceeds (%)</span>
-          <StepperInput
-            value={notifications.thresholds?.h5_warn_pct ?? 20}
-            min={0}
-            max={100}
-            onChange={(value) => onSavePatch({ notifications: { thresholds: { h5_warn_pct: value } } })}
-          />
-        </div>
-        <div className="setting-row metric inset-row">
-          <span className="setting-label">Notify when weekly usage exceeds (%)</span>
-          <StepperInput
-            value={notifications.thresholds?.weekly_warn_pct ?? 20}
-            min={0}
-            max={100}
-            onChange={(value) => onSavePatch({ notifications: { thresholds: { weekly_warn_pct: value } } })}
-          />
-        </div>
-      </div>
-      <div className="alarm-actions">
-        <Button className="btn-block" type="button" onClick={onNotify}>Test notification</Button>
-      </div>
-    </SectionCard>
-  );
-}
-
-function SettingsView({ state, onRestart, onKillAll, onToggleTheme, onToggleDebug, onNotify, onSavePatch }) {
-  const ui = state?.config?.ui || {};
-  const isWindows = window.codexAccountDesktop?.platform === "win32";
-  const logsEnabled = !!ui.debug_mode;
-  const themeMode = ui.theme || "auto";
-  const platformName = window.codexAccountDesktop?.platform || navigator.platform || "unknown";
-
-  return (
-    <section className="view settings-view scrollable" data-testid="settings-view">
-      <div className="settings-layout">
-        <div className="controls-grid">
-          <SectionCard className="control-card settings-card">
-            <div className="group-title">Appearance</div>
-            <div className="setting-row inset-row">
-              <span className="setting-label">Theme mode</span>
-              <strong>{themeMode}</strong>
-            </div>
-            <div className="settings-inline-actions">
-              <Button className={themeMode !== "auto" ? "btn-active" : ""} onClick={onToggleTheme}>Cycle theme</Button>
-              <Button className={logsEnabled ? "btn-active" : ""} onClick={onToggleDebug}>
-                {logsEnabled ? "Logs on" : "Logs off"}
-              </Button>
-            </div>
-          </SectionCard>
-          <SectionCard className="control-card settings-card">
-            <div className="group-title">Maintenance</div>
-            <p className="muted">Restart reconnects the desktop panel to the local service without changing account data.</p>
-            <p className="muted">Kill All stops managed Codex Account Manager background processes. Use it only when restart cannot recover the app.</p>
-            <div className="settings-inline-actions">
-              <ConfirmAction
-                label="Restart"
-                confirmLabel="Confirm restart ✓"
-                tone="primary"
-                onConfirm={onRestart}
-              />
-              <ConfirmAction
-                label="Kill all"
-                confirmLabel="Confirm kill all ✓"
-                tone="danger"
-                onConfirm={onKillAll}
-              />
-            </div>
-          </SectionCard>
-          <AutoRefreshSettingsCard state={state} onSavePatch={onSavePatch} />
-          <NotificationsSettingsCard state={state} onNotify={onNotify} onSavePatch={onSavePatch} />
-          {isWindows ? (
-            <SectionCard className="control-card settings-card">
-              <div className="group-title">Windows Integration</div>
-              <div className="setting-row inset-row">
-                <span className="setting-label" title="5H means the five-hour usage window.">Show current 5H usage on taskbar</span>
-                <span className="toggle">
-                  <ToggleSwitch
-                    checked={!!ui.windows_taskbar_usage_enabled}
-                    onChange={(nextValue) => onSavePatch({ ui: { windows_taskbar_usage_enabled: nextValue } })}
-                    ariaLabel="Show current 5H usage on taskbar"
-                  />
-                </span>
-              </div>
-              <p className="muted">Adds a compact current 5H usage badge to the Windows taskbar button.</p>
-            </SectionCard>
-          ) : null}
-        </div>
-        <SectionCard className="control-card settings-card settings-system-card">
-          <div className="group-title">System info</div>
-          <div className="settings-system-grid">
-            <LabelValueRow label="Platform" value={platformName} />
-            <LabelValueRow label="Current refresh" value={ui.current_auto_refresh_enabled ? `${ui.current_refresh_interval_sec || 5}s` : "disabled"} />
-            <LabelValueRow label="All refresh" value={ui.all_auto_refresh_enabled ? `${ui.all_refresh_interval_min || 5}m` : "disabled"} />
-          </div>
-        </SectionCard>
-      </div>
     </section>
   );
 }
@@ -2291,10 +2092,8 @@ function AppContent() {
     return executeKillAll();
   }
 
-  async function toggleTheme() {
-    const current = state?.config?.ui?.theme || "auto";
-    const next = current === "auto" ? "dark" : current === "dark" ? "light" : "auto";
-    await saveUiPatch({ ui: { theme: next } });
+  async function setThemeMode(themeMode) {
+    await saveUiPatch({ ui: { theme: themeMode } });
   }
 
   async function toggleDebug() {
@@ -2603,6 +2402,8 @@ function AppContent() {
     configRevisionRef.current = Number(state?.config?._meta?.revision || configRevisionRef.current || 1);
   }, [state?.config?._meta?.revision]);
 
+  useEffect(() => watchThemePreference(document.documentElement, state?.config?.ui?.theme || "auto"), [state?.config?.ui?.theme]);
+
   useEffect(() => {
     loadAll();
     const classList = document.body.classList;
@@ -2803,7 +2604,7 @@ function AppContent() {
             onAutoArrange={autoArrange}
           />
         )}
-        {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onToggleTheme={toggleTheme} onToggleDebug={toggleDebug} onNotify={testNotification} onSavePatch={saveUiPatch} />}
+        {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onSetTheme={setThemeMode} onToggleDebug={toggleDebug} onNotify={testNotification} onSavePatch={saveUiPatch} />}
         {activeView === "guide" && <GuideView releaseNotes={releaseNotes} onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})} />}
         {activeView === "update" && <UpdateView updateStatus={updateStatus} checking={checkingUpdateStatus || loading} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
         {activeView === "debug" && <DebugView debugLogs={debugLogs} onExport={onExportDebug} />}

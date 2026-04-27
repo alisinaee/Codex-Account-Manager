@@ -1,17 +1,12 @@
 const ARC_CIRCUMFERENCE = 94.2;
+import { clampPercent as clampPercentShared, usageCssColorVar } from "./usage-thresholds.mjs";
 
 export function clampPercent(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return null;
-  return Math.max(0, Math.min(100, Math.round(numeric)));
+  return clampPercentShared(value);
 }
 
 export function usageColor(value) {
-  const percent = clampPercent(value);
-  if (percent === null) return "var(--text-secondary)";
-  if (percent >= 90) return "var(--color-red)";
-  if (percent >= 70) return "var(--color-amber)";
-  return "var(--color-green)";
+  return usageCssColorVar(value);
 }
 
 export function arcDasharray(value) {

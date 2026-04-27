@@ -35,11 +35,11 @@ test("switch state helpers expose web panel parity classes", async () => {
   assert.equal(buildProfileRowClassName({ isCurrent: false, isPending: true, isActivated: false }), "switch-row-pending");
 });
 
-test("usageTone matches web panel low mid and good usage thresholds", async () => {
+test("usageTone maps remaining percentage to the shared four-band palette", async () => {
   const { usageTone } = await switchState;
-  assert.equal(usageTone(9), "low");
-  assert.equal(usageTone(24), "midlow");
-  assert.equal(usageTone(49), "mid");
-  assert.equal(usageTone(50), "good");
+  assert.equal(usageTone(9), "danger");
+  assert.equal(usageTone(40), "warning");
+  assert.equal(usageTone(70), "caution");
+  assert.equal(usageTone(90), "success");
   assert.equal(usageTone(null), "");
 });

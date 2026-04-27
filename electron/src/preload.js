@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
   refresh: () => ipcRenderer.invoke("desktop:refresh"),
   switchProfile: (name) => ipcRenderer.invoke("desktop:switch-profile", name),
   saveConfig: (patch) => ipcRenderer.invoke("desktop:save-config", patch),
+  listDisplays: () => ipcRenderer.invoke("desktop:list-displays"),
   request: (path, options) => ipcRenderer.invoke("desktop:request", path, options),
   testNotification: () => ipcRenderer.invoke("desktop:test-notification"),
   navigate: (view) => ipcRenderer.send("desktop:navigate", view),

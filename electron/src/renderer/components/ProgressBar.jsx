@@ -1,15 +1,12 @@
 import React from "react";
+import { clampPercent, usageProgressTone } from "../usage-thresholds.mjs";
 
 function toneFromValue(value) {
-  if (!Number.isFinite(value)) return "success";
-  if (value >= 90) return "danger";
-  if (value >= 70) return "warning";
-  return "success";
+  return usageProgressTone(value) || "success";
 }
 
 function ProgressBar({ value, className = "", labelClassName = "" }) {
-  const numeric = Number(value);
-  const resolved = Number.isFinite(numeric) ? Math.max(0, Math.min(100, Math.round(numeric))) : null;
+  const resolved = clampPercent(value);
   const tone = toneFromValue(resolved);
   const label = resolved === null ? "-" : `${resolved}%`;
   const widthClass = resolved === null ? "progress-width-0" : `progress-width-${resolved}`;
