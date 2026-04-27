@@ -22,6 +22,24 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-27T09:25:57+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `docs/agent-rules.md`
+- Summary: Disabled automatic core installation on the Electron setup screen; install steps now wait for explicit user action.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:69791133204e -->
+
+### 2026-04-27T09:22:24+03:30
+- Changed files: `docs/agent-rules.md`
+- Summary: Recorded that Electron prerequisite install flow must work generally across Windows systems, not only the local machine.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:8acfc423dee7 -->
+
+### 2026-04-27T09:05:43+03:30
+- Changed files: `electron/src/main.js`, `electron/src/preload.js`, `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
+- Summary: Fixed Windows Electron setup IPC registration so shortcut setup failures cannot leave runtime install handlers unregistered; added IPC diagnostics and compact runtime layout spacing tweaks.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:86431e977a6e -->
+
 ### 2026-04-26T23:24:39+03:30
 - Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`, `electron/tests/e2e/electron-shell.spec.js`, `electron/tests/runtime.test.js`
 - Summary: Implemented space-first Electron desktop layouts with explicit scroll containers, per-page flex fill behavior, Auto Switch stats fill area, Update guidance details, E2E layout regression coverage, and refreshed stale runtime/E2E assertions.
@@ -124,17 +142,5 @@
 - Behavior impact: Recorded code-level deltas for future AI context.
 <!-- fingerprint:3ff869e7723c -->
 
-### 2026-04-24T13:52:02+03:30
-- Changed files: `README.md`, `codex_account_manager/cli.py`, `docs/architecture.md`, `docs/development.md`, `electron/package.json`, `electron/index.html`, `electron/vite.config.js`, `electron/scripts/dev.js`, +13 more
-- Summary: Implemented Electron Desktop V2 foundations with separate React/Vite renderer, safe no_restart switch flow, service token parsing, app menu/lifecycle helpers, notification icon support, and Electron switch smoke coverage; npm registry access blocked dependency installation/build locally.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:90ba5d103901 -->
-
-### 2026-04-24T13:50:29+03:30
-- Changed files: `README.md`, `codex_account_manager/cli.py`, `docs/architecture.md`, `docs/development.md`, `electron/package.json`, `electron/index.html`, `electron/vite.config.js`, `electron/scripts/dev.js`, +12 more
-- Summary: Implemented Electron Desktop V2 foundations: separate React/Vite renderer, safe no_restart desktop switch API client, service token parsing, app menu/lifecycle helpers, tray-stay behavior, notification icon support, docs updates, and regression tests while leaving the web panel unchanged.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:e7d5b2d9840e -->
-
 ## Last Updated
-- 2026-04-26T23:24:39+03:30
+- 2026-04-27T09:25:57+03:30

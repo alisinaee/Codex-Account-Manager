@@ -1548,7 +1548,6 @@ function RuntimeSetupView({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [copyState, setCopyState] = useState("");
   const autoResumeKeyRef = useRef("");
-  const autoInstallCoreKeyRef = useRef("");
   const heading = phase === "python_missing" ? "Install Python"
     : phase === "service_starting" ? "Starting local service"
       : phase === "error" && runtimeStatus?.reason === "core_update_required" ? "Update Python Core"
@@ -1594,31 +1593,6 @@ function RuntimeSetupView({
     runtimeStatus?.core?.commandPath,
     runtimeStatus?.reason,
     runtimeStatus?.uiService?.baseUrl,
-  ]);
-
-  useEffect(() => {
-    const shouldAutoInstallCore = !busy && phase === "core_missing" && hasPython && !hasCore;
-    if (!shouldAutoInstallCore) {
-      autoInstallCoreKeyRef.current = "";
-      return undefined;
-    }
-    const signature = `${phase}:${runtimeStatus?.reason || ""}:${runtimeStatus?.python?.version || ""}`;
-    if (autoInstallCoreKeyRef.current === signature) {
-      return undefined;
-    }
-    autoInstallCoreKeyRef.current = signature;
-    const timer = window.setTimeout(() => {
-      onInstallCore?.();
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [
-    busy,
-    hasCore,
-    hasPython,
-    onInstallCore,
-    phase,
-    runtimeStatus?.python?.version,
-    runtimeStatus?.reason,
   ]);
 
   const activeStep = !hasPython ? 0 : !hasCore ? 1 : !hasBackend ? 2 : 2;
@@ -1776,10 +1750,6 @@ function RuntimeSetupView({
                   >
                     {primaryAction.label}
                   </Button>
-                  {showRetry ? <Button onClick={onRetry} disabled={busy}>Retry</Button> : null}
-                </div>
-
-                <div className="runtime-utility-row">
                   <Button
                     type="button"
                     className="runtime-text-button btn-ghost"
@@ -1789,6 +1759,7 @@ function RuntimeSetupView({
                   >
                     {detailsOpen ? "Hide details" : "Show details"}
                   </Button>
+                  {showRetry ? <Button onClick={onRetry} disabled={busy}>Retry</Button> : null}
                   {copyState ? <span className="runtime-copy-state" role="status" aria-live="polite">{copyState}</span> : null}
                 </div>
               </div>
@@ -2109,7 +2080,16 @@ function AppContent() {
         await loadAll();
       }
     } catch (err) {
-      setError(err?.message || String(err));
+      let detail = err?.message || String(err);
+      if (/No handler registered/i.test(detail) && typeof desktop.debugIpc === "function") {
+        try {
+          const debug = await desktop.debugIpc();
+          detail = `${detail}\nIPC debug: ${JSON.stringify(debug)}`;
+        } catch (debugErr) {
+          detail = `${detail}\nIPC debug failed: ${debugErr?.message || String(debugErr)}`;
+        }
+      }
+      setError(detail);
     } finally {
       setRuntimeBusy(false);
     }
