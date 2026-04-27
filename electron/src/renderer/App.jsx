@@ -12,6 +12,9 @@ import {
   PanelLeftOpenIcon,
   ProfilesIcon,
   SettingsIcon,
+  ThemeAutoIcon,
+  ThemeDarkIcon,
+  ThemeLightIcon,
   UpdateIcon,
 } from "./icon-pack.jsx";
 import {
@@ -20,7 +23,7 @@ import {
   usageTone,
 } from "./switch-state.mjs";
 import { appendSessionToken, buildAuthenticatedDownloadUrl } from "./request-paths.mjs";
-import SettingsView from "./SettingsView.jsx";
+import SettingsView, { SystemInfoSettingsCard } from "./SettingsView.jsx";
 import {
   buildProfileRows,
   buildSidebarCurrentProfile,
@@ -29,6 +32,7 @@ import {
 import {
   arcDasharray,
   clampPercent,
+  buildProfileColumnWidths,
   formatFullDateFromSeconds,
   formatFullDateFromValue,
   formatShortDateFromSeconds,
@@ -46,12 +50,13 @@ import {
   getCurrentRefreshIntervalMs,
   waitForServiceRestart,
 } from "./parity.mjs";
-import { watchThemePreference } from "./theme.mjs";
+import { getNextThemeMode, normalizeThemeMode, watchThemePreference } from "./theme.mjs";
 import Badge from "./components/Badge.jsx";
 import Button from "./components/Button.jsx";
 import ConfirmAction from "./components/ConfirmAction.jsx";
 import DataTable from "./components/DataTable.jsx";
 import Dialog from "./components/Dialog.jsx";
+import { SettingCopy, SettingsCardShell, SettingsSubsection } from "./components/SettingsCardShell.jsx";
 import SectionCard from "./components/SectionCard.jsx";
 import StatusDot from "./components/StatusDot.jsx";
 import StepperInput from "./components/StepperInput.jsx";
@@ -173,6 +178,69 @@ function usagePercent(row, key) {
 
 function usageValue(row, key) {
   return clampPercent(usagePercentNumber(row, key));
+}
+
+function formatPctValue(value) {
+  const percent = clampPercent(value);
+  return percent === null ? "-" : `${percent}%`;
+}
+
+function progressToneClass(value) {
+  const tone = usageTone(value);
+  return tone ? `progress-tone-${tone}` : "";
+}
+
+function normalizeChainNames(list) {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  const names = [];
+  const seen = new Set();
+  for (const item of list) {
+    const name = String(item || "").trim();
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+function normalizeChainPayload(payload) {
+  const chain = normalizeChainNames(payload?.chain);
+  const manualChain = normalizeChainNames(payload?.manual_chain);
+  const items = [];
+  const seenItems = new Set();
+  for (const item of (Array.isArray(payload?.items) ? payload.items : [])) {
+    const name = String(item?.name || "").trim();
+    if (!name || seenItems.has(name)) {
+      continue;
+    }
+    seenItems.add(name);
+    items.push({
+      name,
+      remaining_5h: clampPercent(item?.remaining_5h),
+      remaining_weekly: clampPercent(item?.remaining_weekly),
+    });
+  }
+  const chainText = String(payload?.chain_text || "").trim() || (chain.length ? chain.join(" -> ") : "-");
+  return {
+    chain,
+    manual_chain: manualChain,
+    items,
+    chain_text: chainText,
+  };
+}
+
+function ensureLockedChainOrder(list, lockedName = "") {
+  const names = normalizeChainNames(list);
+  const locked = String(lockedName || "").trim();
+  if (!locked) {
+    return names;
+  }
+  const rest = names.filter((name) => name !== locked);
+  return [locked, ...rest];
 }
 
 function sortRows(rows, sort) {
@@ -433,15 +501,17 @@ function UsageStrip({ label, value, compact = false }) {
     <div className="sidebar-usage-row">
       <div className="sidebar-usage-head">
         <span className="sidebar-usage-label" title={label === "5h" ? "5h means the five-hour usage window." : undefined}>{label}</span>
-        <span className={value === null ? "loading-text" : "sidebar-usage-pct"} style={value === null ? undefined : { color }}>
+      </div>
+      <div className="sidebar-usage-main">
+        <div className="sidebar-usage-track" aria-hidden="true">
+          <div
+            className="sidebar-usage-fill"
+            style={value === null ? { width: "0%" } : { width: `${value}%`, background: color }}
+          />
+        </div>
+        <span className={value === null ? "loading-text sidebar-usage-pct" : "sidebar-usage-pct"} style={value === null ? undefined : { color }}>
           {labelValue}
         </span>
-      </div>
-      <div className="sidebar-usage-track" aria-hidden="true">
-        <div
-          className="sidebar-usage-fill"
-          style={value === null ? { width: "0%" } : { width: `${value}%`, background: color }}
-        />
       </div>
     </div>
   );
@@ -608,7 +678,27 @@ function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate,
   );
 }
 
-function TopBar({ activeTitle, updateStatus, loading, onRefresh, onRestart }) {
+const THEME_MODE_LABELS = {
+  auto: "Auto",
+  light: "Light",
+  dark: "Dark",
+};
+
+function CurrentThemeIcon({ themeMode }) {
+  switch (normalizeThemeMode(themeMode)) {
+    case "light":
+      return <ThemeLightIcon data-testid="theme-icon-light" />;
+    case "dark":
+      return <ThemeDarkIcon data-testid="theme-icon-dark" />;
+    default:
+      return <ThemeAutoIcon data-testid="theme-icon-auto" />;
+  }
+}
+
+function TopBar({ activeTitle, updateStatus, loading, themeMode, onCycleTheme, onRefresh, onRestart }) {
+  const currentThemeMode = normalizeThemeMode(themeMode);
+  const nextThemeMode = getNextThemeMode(currentThemeMode);
+
   return (
     <header className="topbar desktop-topbar">
       <div className="topbar-meta">
@@ -625,6 +715,16 @@ function TopBar({ activeTitle, updateStatus, loading, onRefresh, onRestart }) {
         />
         <Button variant="primary" className="topbar-compact-btn" loading={loading} onClick={onRefresh} disabled={loading}>
           {loading ? "Refreshing" : "Refresh"}
+        </Button>
+        <Button
+          variant="icon"
+          className="topbar-theme-btn"
+          data-testid="topbar-theme-button"
+          aria-label={`Theme mode ${THEME_MODE_LABELS[currentThemeMode]}. Switch to ${THEME_MODE_LABELS[nextThemeMode]}`}
+          title={`Theme mode: ${THEME_MODE_LABELS[currentThemeMode]}. Click to switch to ${THEME_MODE_LABELS[nextThemeMode]}.`}
+          onClick={onCycleTheme}
+        >
+          <CurrentThemeIcon themeMode={currentThemeMode} />
         </Button>
       </div>
     </header>
@@ -653,14 +753,16 @@ function AccountsTable({
     weeklyremain: "W means weekly window. Remaining time until weekly reset.",
     weeklyreset: "Absolute time when weekly usage resets.",
   };
-  const columns = columnDefs
-    .filter((column) => visibleColumns[column.key] && isColumnVisibleForViewport(column.key, viewportSizeClass))
+  const visibleColumnDefs = columnDefs
+    .filter((column) => visibleColumns[column.key] && isColumnVisibleForViewport(column.key, viewportSizeClass));
+  const profileColumnWidths = buildProfileColumnWidths(visibleColumnDefs.map((column) => column.key), viewportSizeClass);
+  const columns = visibleColumnDefs
     .map((column) => ({
       key: column.key,
       label: column.label,
       title: columnTitleByKey[column.key],
       colClassName: tableColumnLayout[column.key]?.colClassName || "",
-      width: tableColumnLayout[column.key]?.width,
+      width: profileColumnWidths[column.key] || tableColumnLayout[column.key]?.width,
       className: ["email", "id", "added", "note", "h5remain", "h5reset", "weeklyremain", "weeklyreset"].includes(column.key)
         ? `${column.key === "email" ? "email-cell" : ""} ${column.key === "id" ? "id-cell" : ""} ${column.key === "added" ? "added-cell" : ""} ${column.key === "note" ? "note-cell" : ""} ${column.key === "h5remain" || column.key === "h5reset" || column.key === "weeklyremain" || column.key === "weeklyreset" ? "reset-cell" : ""}`.trim()
         : "",
@@ -691,7 +793,7 @@ function AccountsTable({
           case "weeklyremain":
             return (
               <span className="remain-value" title={fmtResetFull(profile.usage_weekly?.resets_at)}>
-                {fmtRemain(profile.usage_weekly?.resets_at, true)}
+                {fmtRemain(profile.usage_weekly?.resets_at)}
               </span>
             );
           case "weeklyreset":
@@ -930,154 +1032,186 @@ function useCountdownText(dueAtText, dueAt) {
   return formatAutoSwitchCountdown(dueAtText, dueAt, now);
 }
 
-function AutoSwitchView({ state, onSavePatch, onOpenChainEdit, onRunSwitch, onRapidTest, onStopTests, onTestAutoSwitch, onAutoArrange }) {
+function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunSwitch, onRapidTest, onStopTests, onTestAutoSwitch, onAutoArrange }) {
   const autoState = state?.autoSwitch || {};
   const autoConfig = state?.config?.auto_switch || {};
   const countdownText = useCountdownText(autoState.pending_switch_due_at_text, autoState.pending_switch_due_at);
-  const chainOrder = Array.isArray(state?.list?.profiles) ? state.list.profiles.map((row) => row.name) : [];
-  const chainRows = sortRows(buildProfileRows(state), { key: "profile", dir: "asc" }).filter((row) => chainOrder.includes(row.name));
+  const chainPayload = normalizeChainPayload(autoChain);
+  const profileRows = buildProfileRows(state);
+  const profileRowsByName = new Map(profileRows.map((row) => [row.name, row]));
+  const chainItemsByName = new Map(chainPayload.items.map((item) => [item.name, item]));
+  const chainNames = normalizeChainNames([
+    ...chainPayload.chain,
+    ...chainPayload.manual_chain,
+    ...chainPayload.items.map((item) => item.name),
+  ]);
+  const orderedChainNames = chainNames.length ? chainNames : normalizeChainNames(profileRows.map((row) => row.name));
+  const chainRows = orderedChainNames.map((name) => {
+    const profileRow = profileRowsByName.get(name);
+    const chainItem = chainItemsByName.get(name);
+    const usage5 = clampPercent(chainItem?.remaining_5h);
+    const usageWeekly = clampPercent(chainItem?.remaining_weekly);
+    return {
+      name,
+      usage_5h: usage5 === null ? usageValue(profileRow, "usage_5h") : usage5,
+      usage_weekly: usageWeekly === null ? usageValue(profileRow, "usage_weekly") : usageWeekly,
+    };
+  });
+  const chainCount = chainRows.length;
   const pendingSwitch = Boolean(autoState.pending_switch_due_at);
-  const usageAverage = (key) => {
-    const values = chainRows
-      .map((row) => usageValue(row, key))
-      .filter((value) => Number.isFinite(value));
-    if (!values.length) return "-";
-    return `${Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)}%`;
-  };
 
   return (
     <section className="view autoswitch-view" data-testid="autoswitch-view">
-      <SectionCard className={`card auto-switch-card ${pendingSwitch ? "armed" : ""}`}>
-        <div className="auto-switch-head">
-          <div className="k">Auto-switch rules</div>
-          <div className={`auto-switch-countdown ${pendingSwitch ? "active pending" : "active idle"}`}>{countdownText}</div>
-        </div>
-        <div className="rules-grid">
-          <div className="rules-col settings-card">
-            <div className="rules-title">Execution</div>
-            <div className="setting-row">
-              <span className="setting-label">Enabled</span>
-              <span className="toggle">
-                <ToggleSwitch
-                  checked={!!autoConfig.enabled}
-                  onChange={(nextValue) => onSavePatch({ auto_switch: { enabled: nextValue } })}
-                  ariaLabel="Enable auto switch"
-                />
-              </span>
-            </div>
-            <div className="setting-row metric inset-row">
-              <span className="setting-label">Delay (seconds)</span>
-              <StepperInput
-                value={autoConfig.delay_sec ?? 60}
-                min={0}
-                max={3600}
-                onChange={(value) => onSavePatch({ auto_switch: { delay_sec: value } })}
-              />
-            </div>
-            <div className="status-row">
-              <div>
-                <div className="k">Switch in flight</div>
-                <div className="v">{autoState.switch_in_flight ? autoState.switch_target || "Running" : "No"}</div>
-              </div>
-              <div>
-                <div className="k">Pending switch</div>
-                <div className={`v ${pendingSwitch ? "pending" : ""}`}>{countdownText}</div>
-              </div>
-            </div>
-            <div className="exec-actions exec-actions-split">
-              <div className="exec-actions-primary">
+      <div className="settings-layout autoswitch-layout">
+        <div className="settings-card-stack settings-card-stack-main autoswitch-card-stack">
+          <SettingsCardShell
+            title="Auto-switch rules"
+            description="Configure execution timing and run controls for automatic profile switching."
+            className={`autoswitch-card-execution auto-switch-card ${pendingSwitch ? "armed" : ""}`}
+            testId="autoswitch-card-execution"
+            footer={(
+              <div className="settings-action-group autoswitch-action-group">
                 <ConfirmAction
                   label="Run switch"
                   confirmLabel="Confirm run switch ✓"
                   tone="primary"
                   onConfirm={onRunSwitch}
                 />
-              </div>
-              <div className="exec-actions-divider" aria-hidden="true" />
-              <div className="exec-actions-secondary">
                 <Button onClick={onRapidTest}>Rapid test</Button>
                 <Button variant="dangerOutline" onClick={onStopTests}>Stop tests</Button>
                 <Button onClick={onTestAutoSwitch}>Test auto switch</Button>
               </div>
+            )}
+          >
+            <div className="auto-switch-head">
+              <div className="k">Pending switch</div>
+              <div className={`auto-switch-countdown ${pendingSwitch ? "active pending" : "active idle"}`}>{countdownText}</div>
             </div>
-          </div>
-          <div className="rules-col settings-card">
-            <div className="rules-title">Selection Policy</div>
-            <div className="setting-field">
-              <div className="selection-head">
-                <span className="setting-label">Ranking</span>
-                <Button
-                  variant="ghost"
-                  onClick={onAutoArrange}
-                  title="Automatically reorder the switch chain based on current ranking policy."
-                >
-                  Auto Arrange
-                </Button>
+
+            <div className="settings-subsection-stack">
+              <div className="rules-grid autoswitch-rules-grid">
+                <SettingsSubsection title="Execution">
+                  <div className="setting-row">
+                    <SettingCopy label="Enabled" title="Turn automatic account switching on or off." />
+                    <div className="setting-control">
+                      <ToggleSwitch
+                        checked={!!autoConfig.enabled}
+                        onChange={(nextValue) => onSavePatch({ auto_switch: { enabled: nextValue } })}
+                        ariaLabel="Enable auto switch"
+                      />
+                    </div>
+                  </div>
+                  <div className="setting-row">
+                    <SettingCopy label="Delay (seconds)" title="Wait before executing the next switch operation." />
+                    <div className="setting-control">
+                      <StepperInput
+                        value={autoConfig.delay_sec ?? 60}
+                        min={0}
+                        max={3600}
+                        onChange={(value) => onSavePatch({ auto_switch: { delay_sec: value } })}
+                      />
+                    </div>
+                  </div>
+                  <div className="setting-row">
+                    <SettingCopy label="Switch in flight" title="Shows the target account when a switch job is running." />
+                    <div className="setting-current-value">{autoState.switch_in_flight ? autoState.switch_target || "Running" : "No"}</div>
+                  </div>
+                  <div className="setting-row">
+                    <SettingCopy label="Pending switch" title="Live countdown until the next queued switch." />
+                    <div className={`setting-current-value ${pendingSwitch ? "pending" : ""}`}>{countdownText}</div>
+                  </div>
+                </SettingsSubsection>
+
+                <SettingsSubsection title="Selection policy">
+                  <div className="setting-row setting-row-top">
+                    <SettingCopy label="Ranking mode" title="Define how accounts are ranked for the next switch." />
+                    <div className="setting-control settings-select-control">
+                      <select value={autoConfig.ranking_mode || "balanced"} onChange={(event) => onSavePatch({ auto_switch: { ranking_mode: event.target.value } })}>
+                        <option value="balanced">balanced</option>
+                        <option value="max_5h">max_5h</option>
+                        <option value="max_weekly">max_weekly</option>
+                        <option value="manual">manual</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="settings-inline-actions">
+                    <Button
+                      variant="ghost"
+                      onClick={onAutoArrange}
+                      title="Automatically reorder the switch chain based on current ranking policy."
+                    >
+                      Auto Arrange
+                    </Button>
+                  </div>
+                  <div className="metric-pair-grid">
+                    <div className="setting-row">
+                      <SettingCopy label="5h switch (%)" title="Switch when five-hour usage reaches this threshold." />
+                      <div className="setting-control">
+                        <StepperInput
+                          value={autoConfig.thresholds?.h5_switch_pct ?? 20}
+                          min={0}
+                          max={100}
+                          onChange={(value) => onSavePatch({ auto_switch: { thresholds: { h5_switch_pct: value } } })}
+                        />
+                      </div>
+                    </div>
+                    <div className="setting-row">
+                      <SettingCopy label="Weekly switch (%)" title="Switch when weekly usage reaches this threshold." />
+                      <div className="setting-control">
+                        <StepperInput
+                          value={autoConfig.thresholds?.weekly_switch_pct ?? 20}
+                          min={0}
+                          max={100}
+                          onChange={(value) => onSavePatch({ auto_switch: { thresholds: { weekly_switch_pct: value } } })}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </SettingsSubsection>
               </div>
-              <select value={autoConfig.ranking_mode || "balanced"} onChange={(event) => onSavePatch({ auto_switch: { ranking_mode: event.target.value } })}>
-                <option value="balanced">balanced</option>
-                <option value="max_5h">max_5h</option>
-                <option value="max_weekly">max_weekly</option>
-                <option value="manual">manual</option>
-              </select>
             </div>
-            <div className="metric-pair-grid">
-              <div className="setting-row metric inset-row">
-                <span className="setting-label">5h switch (%)</span>
-                <StepperInput
-                  value={autoConfig.thresholds?.h5_switch_pct ?? 20}
-                  min={0}
-                  max={100}
-                  onChange={(value) => onSavePatch({ auto_switch: { thresholds: { h5_switch_pct: value } } })}
-                />
-              </div>
-              <div className="setting-row metric inset-row">
-                <span className="setting-label">Weekly switch (%)</span>
-                <StepperInput
-                  value={autoConfig.thresholds?.weekly_switch_pct ?? 20}
-                  min={0}
-                  max={100}
-                  onChange={(value) => onSavePatch({ auto_switch: { thresholds: { weekly_switch_pct: value } } })}
-                />
-              </div>
+          </SettingsCardShell>
+
+          <SettingsCardShell
+            title="Switch chain"
+            description="Inspect the current chain order used by the auto-switch engine."
+            className="autoswitch-card-chain auto-switch-card"
+            testId="autoswitch-card-chain"
+          >
+            <div className="settings-subsection-stack">
+              <SettingsSubsection
+                title="Chain preview"
+                meta={`${chainCount} account${chainCount === 1 ? "" : "s"}`}
+                action={<Button onClick={onOpenChainEdit}>Edit</Button>}
+              >
+                <div className="chain-track-wrap">
+                  <div className="chain-track">
+                    {chainRows.length ? chainRows.map((row, index) => (
+                      <React.Fragment key={row.name}>
+                        <span className="chain-node">
+                          <span className="chain-name">{row.name}</span>
+                          <span className={["chain-metric", progressToneClass(row.usage_5h)].filter(Boolean).join(" ")} title="5-hour usage">
+                            5H {formatPctValue(row.usage_5h)}
+                          </span>
+                          <span className={["chain-metric", progressToneClass(row.usage_weekly)].filter(Boolean).join(" ")} title="Weekly usage">
+                            W {formatPctValue(row.usage_weekly)}
+                          </span>
+                        </span>
+                        {index < chainRows.length - 1 ? <span className="chain-arrow" aria-hidden="true">-&gt;</span> : null}
+                      </React.Fragment>
+                    )) : <span className="muted">No profiles available.</span>}
+                  </div>
+                </div>
+                <div className="chain-key">
+                  <span title="5H means five-hour usage window">5H = 5-hour usage</span>
+                  {" · "}
+                  <span title="W means weekly usage window">W = weekly usage</span>
+                </div>
+              </SettingsSubsection>
             </div>
-          </div>
+          </SettingsCardShell>
         </div>
-        <div className="chain-panel">
-          <div className="chain-head">
-            <div className="chain-title">Switch Chain Preview</div>
-            <Button onClick={onOpenChainEdit}>Edit</Button>
-          </div>
-          <div className="chain-track-wrap scrollable">
-            <div className="chain-track">
-              {chainRows.length ? chainRows.map((row) => (
-                <span key={row.name} className="chain-node">
-                  <span className="chain-name">{row.name}</span>
-                  <span className={`chain-metric progress-tone-${usageTone(usageValue(row, "usage_5h"))}`} title="5-hour usage">
-                    5H {usagePercent(row, "usage_5h")}
-                  </span>
-                  <span className={`chain-metric progress-tone-${usageTone(usageValue(row, "usage_weekly"))}`} title="Weekly usage">
-                    W {usagePercent(row, "usage_weekly")}
-                  </span>
-                </span>
-              )) : <span className="muted">No profiles available.</span>}
-            </div>
-          </div>
-          <div className="chain-key">
-            <span title="5H means five-hour usage window">5H = 5-hour usage</span>
-            {" · "}
-            <span title="W means weekly usage window">W = weekly usage</span>
-          </div>
-        </div>
-        <div className="autoswitch-hint-zone">
-          <span>Accounts switch in chain order when a threshold is reached.</span>
-          <div className="autoswitch-mini-stats" aria-label="Switch chain summary">
-            <LabelValueRow label="Total accounts" value={chainRows.length || "-"} />
-            <LabelValueRow label="Average 5H usage" value={usageAverage("usage_5h")} />
-            <LabelValueRow label="Average weekly usage" value={usageAverage("usage_weekly")} />
-          </div>
-        </div>
-      </SectionCard>
+      </div>
     </section>
   );
 }
@@ -1280,8 +1414,10 @@ function DebugView({ debugLogs, onExport }) {
   );
 }
 
-function AboutView({ backendState, version, onOpenExternal }) {
+function AboutView({ backendState, state, version, onOpenExternal }) {
   const backendUrl = String(backendState?.baseUrl || "http://127.0.0.1:4673/").trim();
+  const ui = state?.config?.ui || {};
+  const platformName = window.codexAccountDesktop?.platform || navigator.platform || "unknown";
 
   return (
     <section className="view about-view">
@@ -1316,6 +1452,8 @@ function AboutView({ backendState, version, onOpenExternal }) {
             )}
           />
         </SectionCard>
+
+        <SystemInfoSettingsCard platformName={platformName} ui={ui} />
 
         <SectionCard className="settings-card sparse-bottom-fill">
           <div className="group-title">Built with</div>
@@ -1631,7 +1769,7 @@ function AppContent() {
   const switchControllerRef = useRef(null);
   const fileInputRef = useRef(null);
   const exportSelectionRef = useRef([]);
-  const [chainOrder, setChainOrder] = useState([]);
+  const [autoChain, setAutoChain] = useState(() => normalizeChainPayload({}));
   const stateRef = useRef(null);
   const backendStateRef = useRef(null);
   const configRevisionRef = useRef(null);
@@ -1651,6 +1789,31 @@ function AppContent() {
   const visibleColumns = useMemo(() => normalizeColumns(columnPrefs), [columnPrefs]);
   const compactMode = viewportSizeClass === "size-compact";
   const effectiveSidebarMode = compactMode ? "minimal" : sidebarMode;
+  const chainMetricsByName = useMemo(() => {
+    const metrics = new Map();
+    for (const item of autoChain.items) {
+      const name = String(item?.name || "").trim();
+      if (!name) {
+        continue;
+      }
+      metrics.set(name, {
+        usage5: clampPercent(item?.remaining_5h),
+        usageWeekly: clampPercent(item?.remaining_weekly),
+      });
+    }
+    for (const row of buildProfileRows(state)) {
+      const name = String(row?.name || "").trim();
+      if (!name) {
+        continue;
+      }
+      const existing = metrics.get(name) || {};
+      metrics.set(name, {
+        usage5: existing.usage5 === null || existing.usage5 === undefined ? usageValue(row, "usage_5h") : existing.usage5,
+        usageWeekly: existing.usageWeekly === null || existing.usageWeekly === undefined ? usageValue(row, "usage_weekly") : existing.usageWeekly,
+      });
+    }
+    return metrics;
+  }, [autoChain, state]);
 
   function notifySuccess(title, description = "") {
     showToast({ tone: "success", title, description });
@@ -1681,7 +1844,7 @@ function AppContent() {
       backendStateRef.current = backend;
     }
     if (chain !== undefined) {
-      setChainOrder(Array.isArray(chain?.chain) ? chain.chain : []);
+      setAutoChain(normalizeChainPayload(chain));
     }
     if (nextState?.config?.ui?.column_prefs) {
       setColumnPrefs(normalizeColumns(nextState.config.ui.column_prefs));
@@ -1845,7 +2008,7 @@ function AppContent() {
       applyAutoSwitchState(autoSwitch);
       if (activeView === "autoswitch") {
         const chain = await request("/api/auto-switch/chain", {});
-        setChainOrder(Array.isArray(chain?.chain) ? chain.chain : []);
+        setAutoChain(normalizeChainPayload(chain));
       }
     } catch (_) {
       // Ignore polling errors; the next cycle will retry.
@@ -2096,6 +2259,10 @@ function AppContent() {
     await saveUiPatch({ ui: { theme: themeMode } });
   }
 
+  function cycleThemeMode() {
+    return setThemeMode(getNextThemeMode(state?.config?.ui?.theme));
+  }
+
   async function toggleDebug() {
     const current = !!state?.config?.ui?.debug_mode;
     await saveUiPatch({ ui: { debug_mode: !current } });
@@ -2193,8 +2360,30 @@ function AppContent() {
     setModal({ type: "import", file: null, analysis: null });
   }
 
+  function getChainEditSourceNames() {
+    const names = normalizeChainNames([
+      ...autoChain.chain,
+      ...autoChain.manual_chain,
+    ]);
+    if (names.length) {
+      return names;
+    }
+    return normalizeChainNames(buildProfileRows(state).map((row) => row.name));
+  }
+
+  function getActiveChainName() {
+    const first = String(autoChain.chain[0] || "").trim();
+    if (first) {
+      return first;
+    }
+    const currentName = String(state?.usage?.current_profile || state?.current?.profile_name || "").trim();
+    return currentName || "";
+  }
+
   async function openChainEditor() {
-    setModal({ type: "chain-edit", chain: Array.isArray(chainOrder) ? [...chainOrder] : [] });
+    const lockedName = getActiveChainName();
+    const chain = ensureLockedChainOrder(getChainEditSourceNames(), lockedName);
+    setModal({ type: "chain-edit", chain, lockedName });
   }
 
   async function toggleEligibility(name, eligible) {
@@ -2277,7 +2466,7 @@ function AppContent() {
   async function autoArrange() {
     try {
       const next = await request("/api/auto-switch/auto-arrange", { method: "POST", body: JSON.stringify({}) });
-      setChainOrder(Array.isArray(next?.chain) ? next.chain : []);
+      setAutoChain(normalizeChainPayload(next));
       refreshAutoSwitchState().catch(() => {});
       notifySuccess("Chain reordered");
     } catch (err) {
@@ -2569,6 +2758,8 @@ function AppContent() {
           activeTitle={activeTitle}
           updateStatus={updateStatus}
           loading={loading}
+          themeMode={state?.config?.ui?.theme}
+          onCycleTheme={cycleThemeMode}
           onRefresh={refreshState}
           onRestart={restartUiService}
         />
@@ -2595,6 +2786,7 @@ function AppContent() {
         {activeView === "autoswitch" && (
           <AutoSwitchView
             state={state}
+            autoChain={autoChain}
             onSavePatch={saveUiPatch}
             onOpenChainEdit={openChainEditor}
             onRunSwitch={runAutoSwitch}
@@ -2604,11 +2796,11 @@ function AppContent() {
             onAutoArrange={autoArrange}
           />
         )}
-        {activeView === "settings" && <SettingsView state={state} onRestart={restartUiService} onKillAll={killAll} onSetTheme={setThemeMode} onToggleDebug={toggleDebug} onNotify={testNotification} onSavePatch={saveUiPatch} />}
+        {activeView === "settings" && <SettingsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
         {activeView === "guide" && <GuideView releaseNotes={releaseNotes} onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})} />}
         {activeView === "update" && <UpdateView updateStatus={updateStatus} checking={checkingUpdateStatus || loading} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
         {activeView === "debug" && <DebugView debugLogs={debugLogs} onExport={onExportDebug} />}
-        {activeView === "about" && <AboutView backendState={backendState} version={updateStatus?.current_version} onOpenExternal={(url) => desktop.openExternal(url)} />}
+        {activeView === "about" && <AboutView backendState={backendState} state={state} version={updateStatus?.current_version} onOpenExternal={(url) => desktop.openExternal(url)} />}
         {error ? <div className="workspace-error" role="alert">{error}</div> : null}
       </div>
 
@@ -2791,27 +2983,98 @@ function AppContent() {
           title="Edit switch chain"
           size="lg"
           onClose={() => setModal(null)}
-          footer={<Button variant="primary" onClick={() => { request("/api/auto-switch/chain", { method: "POST", body: JSON.stringify({ chain: modal.chain || [] }) }).then(() => loadAll()).catch((e) => setError(e?.message || String(e))); setModal(null); }}>Save</Button>}
+          footer={(
+            <Button
+              variant="primary"
+              onClick={() => {
+                const payloadChain = ensureLockedChainOrder(modal.chain || [], modal.lockedName || "");
+                request("/api/auto-switch/chain", {
+                  method: "POST",
+                  body: JSON.stringify({ chain: payloadChain }),
+                })
+                  .then((nextChain) => {
+                    setAutoChain(normalizeChainPayload(nextChain));
+                    return loadAll();
+                  })
+                  .catch((e) => setError(e?.message || String(e)));
+                setModal(null);
+              }}
+            >
+              Save
+            </Button>
+          )}
         >
-          <p>Drag order is simplified to up/down controls in the desktop shell.</p>
-          <div className="chain-list">
-            {(modal.chain || []).map((name, index) => (
-              <div key={name} className="chain-row">
-                <strong>{name}</strong>
-                <div className="settings-inline-actions">
-                  <Button disabled={index === 0} onClick={() => setModal((current) => {
-                    const next = [...current.chain];
-                    [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                    return { ...current, chain: next };
-                  })}>Up</Button>
-                  <Button disabled={index === (modal.chain || []).length - 1} onClick={() => setModal((current) => {
-                    const next = [...current.chain];
-                    [next[index + 1], next[index]] = [next[index], next[index + 1]];
-                    return { ...current, chain: next };
-                  })}>Down</Button>
-                </div>
-              </div>
-            ))}
+          <div className="chain-edit-hint">Drag rows to set switch order. Active account stays locked at the top.</div>
+          <div className="chain-edit-list" data-testid="chain-edit-list">
+            {(modal.chain || []).length ? (modal.chain || []).map((name, index) => {
+              const isLocked = !!modal.lockedName && name === modal.lockedName;
+              const metrics = chainMetricsByName.get(name) || { usage5: null, usageWeekly: null };
+              return (
+                <React.Fragment key={name}>
+                  <div
+                    className={`chain-edit-item ${isLocked ? "locked" : ""}`}
+                    draggable={!isLocked}
+                    onDragStart={(event) => {
+                      if (isLocked) {
+                        event.preventDefault();
+                        return;
+                      }
+                      if (event.dataTransfer) {
+                        event.dataTransfer.setData("text/plain", String(index));
+                        event.dataTransfer.effectAllowed = "move";
+                      }
+                      event.currentTarget.classList.add("dragging");
+                    }}
+                    onDragEnd={(event) => {
+                      event.currentTarget.classList.remove("dragging");
+                    }}
+                    onDragOver={(event) => {
+                      if (isLocked) {
+                        return;
+                      }
+                      event.preventDefault();
+                      if (event.dataTransfer) {
+                        event.dataTransfer.dropEffect = "move";
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const from = Number(event.dataTransfer?.getData("text/plain"));
+                      const to = index;
+                      if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) {
+                        return;
+                      }
+                      if (from === 0 || to === 0) {
+                        return;
+                      }
+                      setModal((current) => {
+                        if (!current || current.type !== "chain-edit") {
+                          return current;
+                        }
+                        const next = [...(current.chain || [])];
+                        const [moved] = next.splice(from, 1);
+                        next.splice(to, 0, moved);
+                        return {
+                          ...current,
+                          chain: ensureLockedChainOrder(next, current.lockedName || ""),
+                        };
+                      });
+                    }}
+                  >
+                    <div className="chain-edit-main">
+                      <div className="chain-edit-name">{name}</div>
+                      <div className="chain-edit-meta">{isLocked ? "Active account (fixed)" : `Position ${index + 1}`}</div>
+                      <div className="chain-edit-metrics">
+                        <span className={["chain-edit-metric", progressToneClass(metrics.usage5)].filter(Boolean).join(" ")}>5H {formatPctValue(metrics.usage5)}</span>
+                        <span className={["chain-edit-metric", progressToneClass(metrics.usageWeekly)].filter(Boolean).join(" ")}>W {formatPctValue(metrics.usageWeekly)}</span>
+                      </div>
+                    </div>
+                    <div className="chain-edit-handle">{isLocked ? "Locked" : "Drag"}</div>
+                  </div>
+                  {index < (modal.chain || []).length - 1 ? <div className="chain-edit-arrow" aria-hidden="true">↓</div> : null}
+                </React.Fragment>
+              );
+            }) : <div className="chain-edit-empty">No profiles available.</div>}
           </div>
         </Dialog>
       )}

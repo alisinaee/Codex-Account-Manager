@@ -335,6 +335,80 @@ test("electron renderer exposes the web panel parity surfaces", async () => {
   await quitApp(app);
 });
 
+test("profile table redistributes width when optional columns are disabled", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_SKIP_BACKEND: "1",
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+    },
+  });
+
+  const window = await app.firstWindow();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible({ timeout: 10000 });
+  await window.setViewportSize({ width: 1600, height: 900 });
+  await expect(window.getByTestId("profiles-view")).toBeVisible();
+
+  await window.getByRole("button", { name: /Columns/i }).click();
+  for (const label of ["Status", "Plan", "Paid", "Id", "Added", "Note", "Auto"]) {
+    await window.getByLabel(label, { exact: true }).uncheck();
+  }
+  await window.getByRole("button", { name: "Done" }).click();
+  await expect(window.getByRole("button", { name: /Columns/i })).toContainText("9/16");
+  await expect(window.locator("td[data-col='h5remain']").first()).toHaveText(/\d+s$/);
+  await expect(window.locator("td[data-col='weeklyremain']").first()).not.toHaveText(/\d+s$/);
+
+  for (const viewport of [
+    { width: 1280, height: 860, sizeClass: "size-normal", expectedColumns: ["profile", "email", "h5", "h5remain", "weekly", "weeklyremain", "actions"] },
+    { width: 1600, height: 900, sizeClass: "size-wide", expectedColumns: ["profile", "email", "h5", "h5remain", "h5reset", "weekly", "weeklyremain", "weeklyreset", "actions"] },
+    { width: 2200, height: 1000, sizeClass: "size-ultrawide", expectedColumns: ["profile", "email", "h5", "h5remain", "h5reset", "weekly", "weeklyremain", "weeklyreset", "actions"] },
+  ]) {
+    await window.setViewportSize(viewport);
+    await expect.poll(() => window.evaluate(() => document.body.className)).toContain(viewport.sizeClass);
+    await expect(window.locator("th[data-col='actions']")).toBeVisible();
+
+    const layout = await window.locator(".profiles-table-wrap").evaluate((wrap) => {
+      const rectOf = (selector) => {
+        const rect = wrap.querySelector(selector)?.getBoundingClientRect();
+        return rect ? { left: rect.left, right: rect.right, width: rect.width } : null;
+      };
+      const visibleHeaderKeys = Array.from(wrap.querySelectorAll("th[data-col]"))
+        .filter((node) => node.getBoundingClientRect().width > 0)
+        .map((node) => node.getAttribute("data-col"));
+      const actionsCell = rectOf("td[data-col='actions']");
+      const actionsGroup = rectOf("td[data-col='actions'] .actions-cell");
+      const emailCell = rectOf("td[data-col='email']");
+      const profileCell = rectOf("td[data-col='profile']");
+      const h5Cell = rectOf("td[data-col='h5']");
+      const h5RemainCell = rectOf("td[data-col='h5remain']");
+
+      return {
+        scrollFits: wrap.scrollWidth <= wrap.clientWidth + 1,
+        visibleHeaderKeys,
+        actionsWidth: actionsCell?.width || 0,
+        actionsTrailingGap: actionsCell && actionsGroup ? Math.round(actionsCell.right - actionsGroup.right) : 999,
+        emailWidth: emailCell?.width || 0,
+        profileWidth: profileCell?.width || 0,
+        h5Width: h5Cell?.width || 0,
+        h5RemainWidth: h5RemainCell?.width || 0,
+      };
+    });
+
+    expect(layout.scrollFits, `${viewport.width}px table overflow`).toBe(true);
+    expect(layout.visibleHeaderKeys, `${viewport.width}px visible columns`).toEqual(viewport.expectedColumns);
+    expect(layout.actionsWidth, `${viewport.width}px actions width`).toBeLessThanOrEqual(120);
+    expect(layout.actionsTrailingGap, `${viewport.width}px actions trailing gap`).toBeLessThanOrEqual(8);
+    expect(layout.emailWidth, `${viewport.width}px email width`).toBeGreaterThan(layout.profileWidth);
+    expect(layout.emailWidth, `${viewport.width}px email width balance`).toBeLessThan(layout.profileWidth * 1.6);
+    expect(layout.profileWidth, `${viewport.width}px profile width balance`).toBeLessThan(layout.h5Width);
+    expect(layout.profileWidth, `${viewport.width}px profile width`).toBeGreaterThan(layout.h5RemainWidth);
+  }
+
+  await quitApp(app);
+});
+
 test("settings page keeps scrolling, footer actions, and compact ordering stable", async () => {
   const app = await electron.launch({
     args: ["."],
@@ -347,6 +421,7 @@ test("settings page keeps scrolling, footer actions, and compact ordering stable
   });
 
   const window = await app.firstWindow();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible();
   await window.getByRole("button", { name: "Settings" }).click();
   await expect(window.getByTestId("settings-view")).toBeVisible();
 
@@ -355,7 +430,8 @@ test("settings page keeps scrolling, footer actions, and compact ordering stable
     node.style.scrollBehavior = "auto";
     const overflows = node.scrollHeight > node.clientHeight + 1;
     node.scrollTop = node.scrollHeight;
-    const lastCard = node.querySelector('[data-testid="settings-card-system"]');
+    const cards = Array.from(node.querySelectorAll(".settings-card-shell"));
+    const lastCard = cards.at(-1);
     const viewRect = node.getBoundingClientRect();
     const lastRect = lastCard?.getBoundingClientRect();
     return {
@@ -370,18 +446,17 @@ test("settings page keeps scrolling, footer actions, and compact ordering stable
   expect(scrollState.widthFits).toBe(true);
   expect(scrollState.lastCardVisible).toBe(true);
 
-  await window.setViewportSize({ width: 820, height: 720 });
+  await window.setViewportSize({ width: 620, height: 720 });
   const compactLayout = await window.getByTestId("settings-view").evaluate((node) => {
     const ids = [
-      "settings-card-appearance",
       "settings-card-refresh",
       "settings-card-notifications",
-      "settings-card-maintenance",
-      "settings-card-system",
     ];
-    const topById = Object.fromEntries(ids.map((id) => {
+    const rectById = Object.fromEntries(ids.map((id) => {
       const card = node.querySelector(`[data-testid="${id}"]`);
-      return [id, card ? card.getBoundingClientRect().top : null];
+      if (!card) return [id, null];
+      const rect = card.getBoundingClientRect();
+      return [id, { top: rect.top, bottom: rect.bottom, height: rect.height }];
     }));
     const footersStayInside = Array.from(node.querySelectorAll(".settings-card-footer")).every((footer) => {
       const footerRect = footer.getBoundingClientRect();
@@ -393,22 +468,20 @@ test("settings page keeps scrolling, footer actions, and compact ordering stable
     });
     return {
       widthFits: node.scrollWidth <= node.clientWidth + 1,
-      topById,
+      rectById,
       footersStayInside,
     };
   });
 
   expect(compactLayout.widthFits).toBe(true);
-  expect(compactLayout.topById["settings-card-appearance"]).toBeLessThan(compactLayout.topById["settings-card-refresh"]);
-  expect(compactLayout.topById["settings-card-refresh"]).toBeLessThan(compactLayout.topById["settings-card-notifications"]);
-  expect(compactLayout.topById["settings-card-notifications"]).toBeLessThan(compactLayout.topById["settings-card-maintenance"]);
-  expect(compactLayout.topById["settings-card-maintenance"]).toBeLessThan(compactLayout.topById["settings-card-system"]);
+  expect(compactLayout.rectById["settings-card-refresh"].top).toBeLessThan(compactLayout.rectById["settings-card-notifications"].top);
+  expect(compactLayout.rectById["settings-card-refresh"].bottom).toBeLessThanOrEqual(compactLayout.rectById["settings-card-notifications"].top);
   expect(compactLayout.footersStayInside).toBe(true);
 
   await quitApp(app);
 });
 
-test("settings theme buttons apply explicit and auto theme modes", async () => {
+test("settings cards use two columns at short height when width is non-compact", async () => {
   const app = await electron.launch({
     args: ["."],
     cwd: process.cwd(),
@@ -420,22 +493,118 @@ test("settings theme buttons apply explicit and auto theme modes", async () => {
   });
 
   const window = await app.firstWindow();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible();
   await window.getByRole("button", { name: "Settings" }).click();
-  await expect(window.getByTestId("settings-card-appearance")).toBeVisible();
+  await expect(window.getByTestId("settings-view")).toBeVisible();
 
-  await window.getByTestId("settings-card-appearance").getByRole("button", { name: "Dark" }).click();
-  await expect.poll(() => window.evaluate(() => ({
-    theme: document.documentElement.dataset.theme,
-    mode: document.documentElement.dataset.themeMode,
-  }))).toEqual({ theme: "dark", mode: "dark" });
+  const shortHeightLayout = await window.getByTestId("settings-view").evaluate((node) => {
+    document.body.classList.remove("height-tall", "height-normal", "height-short");
+    document.body.classList.add("height-short");
+    const ids = [
+      "settings-card-refresh",
+      "settings-card-notifications",
+    ];
+    const rectById = Object.fromEntries(ids.map((id) => {
+      const card = node.querySelector(`[data-testid="${id}"]`);
+      if (!card) return [id, null];
+      const rect = card.getBoundingClientRect();
+      return [id, {
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+      }];
+    }));
+    return {
+      bodyClassName: document.body.className,
+      widthFits: node.scrollWidth <= node.clientWidth + 1,
+      rectById,
+    };
+  });
 
-  await window.getByTestId("settings-card-appearance").getByRole("button", { name: "Light" }).click();
+  expect(shortHeightLayout.bodyClassName).not.toContain("size-compact");
+  expect(shortHeightLayout.bodyClassName).toContain("height-short");
+  expect(shortHeightLayout.widthFits).toBe(true);
+  expect(Math.abs(shortHeightLayout.rectById["settings-card-refresh"].top - shortHeightLayout.rectById["settings-card-notifications"].top)).toBeLessThanOrEqual(4);
+  expect(shortHeightLayout.rectById["settings-card-refresh"].right).toBeLessThan(shortHeightLayout.rectById["settings-card-notifications"].left);
+
+  await quitApp(app);
+});
+
+test("system info lives in about and maintenance is removed from settings", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_SKIP_BACKEND: "1",
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+    },
+  });
+
+  const window = await app.firstWindow();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible();
+  await window.getByRole("button", { name: "Settings" }).click();
+  await expect(window.getByTestId("settings-view")).toBeVisible();
+  await expect(window.getByText("Maintenance & Recovery")).toHaveCount(0);
+  await expect(window.getByText("System info")).toHaveCount(0);
+
+  await window.getByRole("button", { name: "About" }).click();
+  await expect(window.locator(".about-view")).toBeVisible();
+  await expect(window.getByText("System info")).toBeVisible();
+  await expect(window.getByText("Platform")).toBeVisible();
+
+  await quitApp(app);
+});
+
+test("header theme button cycles modes and settings no longer shows appearance controls", async () => {
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CAM_ELECTRON_SKIP_BACKEND: "1",
+      CAM_ELECTRON_DISABLE_TRAY: "1",
+    },
+  });
+
+  const window = await app.firstWindow();
+  await expect(window.getByTestId("electron-renderer")).toBeVisible();
+  await expect(window.getByRole("button", { name: "Refresh" })).toBeVisible();
+  const topActionOrder = await window.locator(".top-actions > *").evaluateAll((nodes) => (
+    nodes.map((node) => {
+      const button = node.matches("button") ? node : node.querySelector("button");
+      return button?.dataset.testid || button?.getAttribute("aria-label") || button?.textContent?.trim() || "";
+    })
+  ));
+  expect(topActionOrder).toEqual(["Restart", "Refresh", "topbar-theme-button"]);
+
+  const themeButton = window.getByTestId("topbar-theme-button");
+  await expect(themeButton).toBeVisible();
+  await expect.poll(() => window.evaluate(() => document.documentElement.dataset.themeMode)).toBe("auto");
+  await expect(window.getByTestId("theme-icon-auto")).toBeVisible();
+  await expect(window.getByTestId("theme-icon-light")).toHaveCount(0);
+  await expect(window.getByTestId("theme-icon-dark")).toHaveCount(0);
+
+  await themeButton.click();
   await expect.poll(() => window.evaluate(() => ({
     theme: document.documentElement.dataset.theme,
     mode: document.documentElement.dataset.themeMode,
   }))).toEqual({ theme: "light", mode: "light" });
+  await expect(window.getByTestId("theme-icon-auto")).toHaveCount(0);
+  await expect(window.getByTestId("theme-icon-light")).toBeVisible();
+  await expect(window.getByTestId("theme-icon-dark")).toHaveCount(0);
 
-  await window.getByTestId("settings-card-appearance").getByRole("button", { name: "Auto" }).click();
+  await themeButton.click();
+  await expect.poll(() => window.evaluate(() => ({
+    theme: document.documentElement.dataset.theme,
+    mode: document.documentElement.dataset.themeMode,
+  }))).toEqual({ theme: "dark", mode: "dark" });
+  await expect(window.getByTestId("theme-icon-auto")).toHaveCount(0);
+  await expect(window.getByTestId("theme-icon-light")).toHaveCount(0);
+  await expect(window.getByTestId("theme-icon-dark")).toBeVisible();
+
+  await themeButton.click();
   await expect.poll(() => window.evaluate(() => document.documentElement.dataset.themeMode)).toBe("auto");
   const autoTheme = await window.evaluate(() => ({
     theme: document.documentElement.dataset.theme,
@@ -443,11 +612,18 @@ test("settings theme buttons apply explicit and auto theme modes", async () => {
   }));
   expect(["dark", "light"]).toContain(autoTheme.theme);
   expect(autoTheme.mode).toBe("auto");
+  await expect(window.getByTestId("theme-icon-auto")).toBeVisible();
+  await expect(window.getByTestId("theme-icon-light")).toHaveCount(0);
+  await expect(window.getByTestId("theme-icon-dark")).toHaveCount(0);
+
+  await window.getByRole("button", { name: "Settings" }).click();
+  await expect(window.getByTestId("settings-view")).toBeVisible();
+  await expect(window.getByTestId("settings-card-appearance")).toHaveCount(0);
 
   await quitApp(app);
 });
 
-test("auto switch controls stay within the selection policy card", async () => {
+test("auto switch uses parity chain layout and editor behavior", async () => {
   const app = await electron.launch({
     args: ["."],
     cwd: process.cwd(),
@@ -462,17 +638,50 @@ test("auto switch controls stay within the selection policy card", async () => {
   await window.setViewportSize({ width: 1280, height: 860 });
   await window.getByRole("button", { name: "Auto Switch" }).click();
   await expect(window.getByTestId("autoswitch-view")).toBeVisible();
+  await expect(window.getByTestId("autoswitch-card-summary")).toHaveCount(0);
+  await expect(window.getByTestId("autoswitch-card-chain").getByRole("button", { name: "Edit" })).toBeVisible();
+  await expect(window.locator(".chain-track .chain-arrow")).toHaveCount(1);
 
-  const layout = await window.locator(".metric-pair-grid").first().evaluate((grid) => {
+  const selectionLayout = await window.locator(".metric-pair-grid").first().evaluate((grid) => {
     const gridRect = grid.getBoundingClientRect();
     const rowRects = Array.from(grid.children, (child) => child.getBoundingClientRect());
     const overflowsGrid = grid.scrollWidth > grid.clientWidth + 1;
     const rowBleeds = rowRects.some((rect) => rect.left < gridRect.left - 1 || rect.right > gridRect.right + 1);
-    return { overflowsGrid, rowBleeds };
+    const stacked = rowRects.length > 1 ? rowRects[1].top >= rowRects[0].bottom - 1 : true;
+    return { overflowsGrid, rowBleeds, stacked };
   });
 
-  expect(layout.overflowsGrid).toBe(false);
-  expect(layout.rowBleeds).toBe(false);
+  expect(selectionLayout.overflowsGrid).toBe(false);
+  expect(selectionLayout.rowBleeds).toBe(false);
+  expect(selectionLayout.stacked).toBe(true);
+
+  const chainLayout = await window.getByTestId("autoswitch-view").evaluate((view) => {
+    const executionCard = view.querySelector('[data-testid="autoswitch-card-execution"]');
+    const chainCard = view.querySelector('[data-testid="autoswitch-card-chain"]');
+    const preview = chainCard?.querySelector(".chain-track");
+    const executionRect = executionCard?.getBoundingClientRect();
+    const chainRect = chainCard?.getBoundingClientRect();
+    const previewStyle = preview ? getComputedStyle(preview) : null;
+    return {
+      hasChainFooter: !!chainCard?.querySelector(".settings-card-footer"),
+      fullWidthAligned: !!executionRect && !!chainRect
+        && Math.abs(executionRect.left - chainRect.left) <= 2
+        && Math.abs(executionRect.right - chainRect.right) <= 2,
+      previewWraps: previewStyle?.flexWrap === "wrap",
+      previewFitsWidth: preview ? preview.scrollWidth <= preview.clientWidth + 1 : false,
+    };
+  });
+
+  expect(chainLayout.hasChainFooter).toBe(false);
+  expect(chainLayout.fullWidthAligned).toBe(true);
+  expect(chainLayout.previewWraps).toBe(true);
+  expect(chainLayout.previewFitsWidth).toBe(true);
+
+  await window.getByTestId("autoswitch-card-chain").getByRole("button", { name: "Edit" }).click();
+  await expect(window.getByRole("heading", { name: "Edit switch chain" })).toBeVisible();
+  await expect(window.locator(".chain-edit-list .chain-edit-item.locked")).toHaveCount(1);
+  await expect(window.locator(".chain-edit-list .chain-edit-metric").first()).toContainText(/5H|W/);
+  await expect(window.locator(".chain-edit-list .chain-edit-arrow")).toHaveCount(1);
 
   await quitApp(app);
 });

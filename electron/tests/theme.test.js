@@ -1,7 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const themeModule = import("../src/renderer/theme.mjs");
+const tokensCss = fs.readFileSync(path.join(__dirname, "../src/styles/tokens.css"), "utf8");
 
 test("normalizeThemeMode keeps theme values inside the supported auto-light-dark set", async () => {
   const { normalizeThemeMode } = await themeModule;
@@ -19,6 +22,15 @@ test("resolveThemeMode respects explicit modes and resolves auto from system pre
   assert.equal(resolveThemeMode("light", "dark"), "light");
   assert.equal(resolveThemeMode("auto", "light"), "light");
   assert.equal(resolveThemeMode("auto", "dark"), "dark");
+});
+
+test("getNextThemeMode cycles auto light and dark in order", async () => {
+  const { getNextThemeMode } = await themeModule;
+
+  assert.equal(getNextThemeMode("auto"), "light");
+  assert.equal(getNextThemeMode("light"), "dark");
+  assert.equal(getNextThemeMode("dark"), "auto");
+  assert.equal(getNextThemeMode("sepia"), "light");
 });
 
 test("watchThemePreference applies explicit theme modes without needing system listeners", async () => {
@@ -61,4 +73,18 @@ test("watchThemePreference tracks system changes while auto mode is active", asy
 
   cleanup();
   assert.equal(listeners.size, 0);
+});
+
+test("toggle palette tokens are defined for base and light themes", () => {
+  assert.match(tokensCss, /--control-toggle-track-off:/);
+  assert.match(tokensCss, /--control-toggle-track-on:/);
+  assert.match(tokensCss, /--control-toggle-thumb-off:/);
+  assert.match(tokensCss, /--control-toggle-thumb-on:/);
+
+  const lightThemeBlock = tokensCss.match(/:root\[data-theme="light"\]\s*\{([\s\S]*?)\n\}/);
+  assert.ok(lightThemeBlock, "light theme block should exist");
+  assert.match(lightThemeBlock[1], /--control-toggle-track-off:/);
+  assert.match(lightThemeBlock[1], /--control-toggle-track-on:/);
+  assert.match(lightThemeBlock[1], /--control-toggle-thumb-off:/);
+  assert.match(lightThemeBlock[1], /--control-toggle-thumb-on:/);
 });
