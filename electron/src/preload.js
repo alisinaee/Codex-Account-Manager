@@ -5,13 +5,23 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("codexAccountDesktop", {
   platform: process.platform,
   shell: "electron",
+  debugIpc: () => ipcRenderer.invoke("desktop:debug-ipc"),
   getState: () => ipcRenderer.invoke("desktop:get-state"),
   getBackendState: () => ipcRenderer.invoke("desktop:get-backend-state"),
   getRuntimeStatus: () => ipcRenderer.invoke("desktop:get-runtime-status"),
   copyRuntimeDiagnostics: () => ipcRenderer.invoke("desktop:copy-runtime-diagnostics"),
   retryRuntimeCheck: () => ipcRenderer.invoke("desktop:retry-runtime-check"),
   installPythonRuntime: () => ipcRenderer.invoke("desktop:install-python-runtime"),
-  installPythonCore: () => ipcRenderer.invoke("desktop:install-python-core"),
+  installPythonCore: async () => {
+    try {
+      return await ipcRenderer.invoke("desktop:install-python-core");
+    } catch (error) {
+      if (!/No handler registered/i.test(String(error?.message || error))) {
+        throw error;
+      }
+      return ipcRenderer.invoke("desktop:install-core");
+    }
+  },
   startBackendService: () => ipcRenderer.invoke("desktop:start-backend-service"),
   stopBackendService: () => ipcRenderer.invoke("desktop:stop-backend-service"),
   openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),

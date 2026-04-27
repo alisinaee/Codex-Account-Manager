@@ -41,6 +41,7 @@ let runtimeState = normalizeRuntimeStatus({
   uiService: getDefaultBackendState(),
 });
 let runtimeProgress = [];
+let registeredIpcChannels = [];
 
 function emitToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -612,15 +613,29 @@ async function checkRuntime({ activateBackend = true } = {}) {
 }
 
 function registerIpcHandlers() {
-  ipcMain.handle("desktop:get-runtime-status", async () => runtimeState);
-  ipcMain.handle("desktop:copy-runtime-diagnostics", async () => {
+  const handle = (channel, listener) => {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, listener);
+    registeredIpcChannels.push(channel);
+  };
+
+  registeredIpcChannels = [];
+  handle("desktop:debug-ipc", async () => ({
+    appPath: app.getAppPath(),
+    cwd: process.cwd(),
+    pid: process.pid,
+    channels: registeredIpcChannels,
+    mainFile: __filename,
+  }));
+  handle("desktop:get-runtime-status", async () => runtimeState);
+  handle("desktop:copy-runtime-diagnostics", async () => {
     const payload = await collectRuntimeDiagnostics();
     const text = formatRuntimeDiagnostics(payload);
     clipboard.writeText(text);
     return { copied: true, text };
   });
-  ipcMain.handle("desktop:retry-runtime-check", async () => checkRuntime({ activateBackend: true }));
-  ipcMain.handle("desktop:install-python-core", async () => {
+  handle("desktop:retry-runtime-check", async () => checkRuntime({ activateBackend: true }));
+  const installCoreHandler = async () => {
     if (!runtimeState.python.available || !runtimeState.python.supported) {
       throw new Error("Python 3.11+ must be installed before the core can be bootstrapped.");
     }
@@ -641,8 +656,10 @@ function registerIpcHandlers() {
       });
       throw error;
     }
-  });
-  ipcMain.handle("desktop:install-python-runtime", async () => {
+  };
+  handle("desktop:install-python-core", installCoreHandler);
+  handle("desktop:install-core", installCoreHandler);
+  handle("desktop:install-python-runtime", async () => {
     try {
       pushRuntimeProgress({ type: "run", status: "starting", label: "Install Python runtime" });
       await installPythonRuntime(runtimeState, {
@@ -661,8 +678,8 @@ function registerIpcHandlers() {
       throw error;
     }
   });
-  ipcMain.handle("desktop:start-backend-service", async () => checkRuntime({ activateBackend: true }));
-  ipcMain.handle("desktop:stop-backend-service", async () => {
+  handle("desktop:start-backend-service", async () => checkRuntime({ activateBackend: true }));
+  handle("desktop:stop-backend-service", async () => {
     if (runtimeState.core.commandPath) {
       runServiceCommand("stop", { command: runtimeState.core.commandPath });
     }
@@ -677,8 +694,8 @@ function registerIpcHandlers() {
     });
     return runtimeState;
   });
-  ipcMain.handle("desktop:open-external", async (_event, url) => shell.openExternal(String(url || "")));
-  ipcMain.handle("desktop:get-state", async () => {
+  handle("desktop:open-external", async (_event, url) => shell.openExternal(String(url || "")));
+  handle("desktop:get-state", async () => {
     if (!apiClient) {
       throw new Error(runtimeState.message || "Python core is not ready.");
     }
@@ -695,11 +712,11 @@ function registerIpcHandlers() {
     }
     return desktopState;
   });
-  ipcMain.handle("desktop:get-backend-state", async () => ({
+  handle("desktop:get-backend-state", async () => ({
     ...backendState,
     running: Boolean(apiClient && (desktopState || backendState)),
   }));
-  ipcMain.handle("desktop:request", async (_event, path, options = {}) => {
+  handle("desktop:request", async (_event, path, options = {}) => {
     if (!apiClient) {
       throw new Error(runtimeState.message || "desktop request API is unavailable");
     }
@@ -723,7 +740,7 @@ function registerIpcHandlers() {
     }
     throw new Error("desktop request API is unavailable");
   });
-  ipcMain.handle("desktop:refresh", async () => {
+  handle("desktop:refresh", async () => {
     if (!apiClient) {
       throw new Error(runtimeState.message || "Python core is not ready.");
     }
@@ -740,7 +757,7 @@ function registerIpcHandlers() {
     await refreshUsage();
     return desktopState;
   });
-  ipcMain.handle("desktop:switch-profile", async (_event, name) => {
+  handle("desktop:switch-profile", async (_event, name) => {
     if (!apiClient) {
       throw new Error(runtimeState.message || "Python core is not ready.");
     }
@@ -759,7 +776,7 @@ function registerIpcHandlers() {
     notifySwitchIfEnabled(desktopState, previousProfileName);
     return desktopState;
   });
-  ipcMain.handle("desktop:save-config", async (_event, patch) => {
+  handle("desktop:save-config", async (_event, patch) => {
     if (!apiClient) {
       throw new Error(runtimeState.message || "Python core is not ready.");
     }
@@ -776,18 +793,22 @@ function registerIpcHandlers() {
     applyTrayFromLatestUsage();
     return desktopState;
   });
-  ipcMain.handle("desktop:test-notification", async () => sendTestNotification());
+  handle("desktop:test-notification", async () => sendTestNotification());
 }
 
 async function bootstrap() {
-  ensureWindowsNotificationShortcut({
-    shell,
-    app,
-    appId: APP_ID,
-    appName: APP_NAME,
-    iconPath: getIconPath(),
-  });
   registerIpcHandlers();
+  try {
+    ensureWindowsNotificationShortcut({
+      shell,
+      app,
+      appId: APP_ID,
+      appName: APP_NAME,
+      iconPath: getIconPath(),
+    });
+  } catch (error) {
+    console.warn(`Windows notification shortcut setup failed: ${String(error?.message || error)}`);
+  }
   installApplicationMenu();
   createMainWindow();
   await checkRuntime({ activateBackend: true });
