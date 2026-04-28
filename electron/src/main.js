@@ -47,6 +47,9 @@ let runtimeState = normalizeRuntimeStatus({
 let runtimeProgress = [];
 let registeredIpcChannels = [];
 const MINI_METER_BASE_FONT_SIZE = 14;
+const ZOOM_FACTOR_MIN = 0.5;
+const ZOOM_FACTOR_MAX = 3.0;
+const ZOOM_FACTOR_STEP = 0.1;
 
 function windowsMiniMeterEnabled(config = {}) {
   return Boolean(config?.ui?.windows_mini_meter_enabled);
@@ -499,6 +502,90 @@ function toggleRendererSidebar() {
   }
 }
 
+function clampZoomFactor(value) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(ZOOM_FACTOR_MAX, Math.max(ZOOM_FACTOR_MIN, value));
+}
+
+function setMainWindowZoomFactor(nextFactor) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const clamped = clampZoomFactor(nextFactor);
+  const rounded = Math.round(clamped * 100) / 100;
+  mainWindow.webContents.setZoomFactor(rounded);
+}
+
+function adjustMainWindowZoom(delta) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const current = Number(mainWindow.webContents.getZoomFactor() || 1);
+  setMainWindowZoomFactor(current + delta);
+}
+
+function getInputModifierSet(input = {}) {
+  const modifiers = Array.isArray(input.modifiers) ? input.modifiers : [];
+  return new Set(modifiers.map((value) => String(value || "").toLowerCase()));
+}
+
+function hasPrimaryModifier(input = {}) {
+  const modifierSet = getInputModifierSet(input);
+  if (process.platform === "darwin") {
+    return Boolean(input.meta || modifierSet.has("meta") || modifierSet.has("command") || modifierSet.has("cmd"));
+  }
+  return Boolean(input.control || modifierSet.has("control") || modifierSet.has("ctrl"));
+}
+
+function hasAltModifier(input = {}) {
+  const modifierSet = getInputModifierSet(input);
+  return Boolean(input.alt || modifierSet.has("alt"));
+}
+
+function getInputType(input = {}) {
+  return String(input.type || "").toLowerCase();
+}
+
+function getWheelDeltaY(input = {}) {
+  const deltaY = Number(input.deltaY);
+  if (Number.isFinite(deltaY) && deltaY !== 0) return deltaY;
+  const wheelDelta = Number(input.wheelDelta);
+  if (Number.isFinite(wheelDelta) && wheelDelta !== 0) return -wheelDelta;
+  return 0;
+}
+
+function isZoomInShortcutInput(input = {}) {
+  const key = String(input.key || "").toLowerCase();
+  const code = String(input.code || "");
+  const keyCode = Number(input.keyCode);
+  return key === "+"
+    || key === "="
+    || key === "plus"
+    || key === "add"
+    || code === "Equal"
+    || code === "NumpadAdd"
+    || keyCode === 187
+    || keyCode === 107
+    || keyCode === 61
+    || keyCode === 171;
+}
+
+function isZoomOutShortcutInput(input = {}) {
+  const key = String(input.key || "").toLowerCase();
+  const code = String(input.code || "");
+  const keyCode = Number(input.keyCode);
+  return key === "-"
+    || key === "_"
+    || key === "subtract"
+    || code === "Minus"
+    || code === "NumpadSubtract"
+    || keyCode === 189
+    || keyCode === 109;
+}
+
+function isZoomResetShortcutInput(input = {}) {
+  const key = String(input.key || "");
+  const code = String(input.code || "");
+  const keyCode = Number(input.keyCode);
+  return key === "0" || code === "Digit0" || code === "Numpad0" || keyCode === 48 || keyCode === 96;
+}
+
 function createMainWindow() {
   const iconPath = getIconPath();
   mainWindow = new BrowserWindow({
@@ -524,6 +611,40 @@ function createMainWindow() {
       return { action: "allow" };
     }
     return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    const inputType = getInputType(input);
+    if ((inputType === "mousewheel" || inputType === "wheel") && hasPrimaryModifier(input) && !hasAltModifier(input)) {
+      event.preventDefault();
+      const deltaY = getWheelDeltaY(input);
+      if (deltaY < 0) {
+        adjustMainWindowZoom(ZOOM_FACTOR_STEP);
+      } else if (deltaY > 0) {
+        adjustMainWindowZoom(-ZOOM_FACTOR_STEP);
+      }
+      return;
+    }
+    if (!["keydown", "rawkeydown"].includes(inputType)) {
+      return;
+    }
+    if (!hasPrimaryModifier(input) || hasAltModifier(input)) {
+      return;
+    }
+    if (isZoomInShortcutInput(input)) {
+      event.preventDefault();
+      adjustMainWindowZoom(ZOOM_FACTOR_STEP);
+      return;
+    }
+    if (isZoomOutShortcutInput(input)) {
+      event.preventDefault();
+      adjustMainWindowZoom(-ZOOM_FACTOR_STEP);
+      return;
+    }
+    if (isZoomResetShortcutInput(input)) {
+      event.preventDefault();
+      setMainWindowZoomFactor(1);
+    }
   });
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
@@ -749,6 +870,7 @@ function createMockApiClient() {
     if (method === "GET" && path === "/api/list") return state.list;
     if (method === "GET" && (path === "/api/usage-local" || path.startsWith("/api/usage-local?"))) return state.usage;
     if (method === "GET" && path.startsWith("/api/usage-local/current")) return state.usage;
+    if (method === "GET" && path.startsWith("/api/usage-local/profile")) return state.usage;
     if (method === "GET" && path.startsWith("/api/health")) return { ok: true, version: "mock-ui-version" };
     if (method === "GET" && path === "/api/ui-config") return state.config;
     if (method === "GET" && path === "/api/auto-switch/state") return state.autoSwitch;
@@ -1077,12 +1199,26 @@ function registerIpcHandlers() {
     if (typeof apiClient.request === "function") {
       const result = await requestWithTokenRefresh(path, options);
       const method = String(options?.method || "GET").toUpperCase();
-      if (method === "GET" && (path === "/api/usage-local" || path.startsWith("/api/usage-local?") || path.startsWith("/api/usage-local/current"))) {
+      if (method === "GET" && (
+        path === "/api/usage-local"
+        || path.startsWith("/api/usage-local?")
+        || path.startsWith("/api/usage-local/current")
+        || path.startsWith("/api/usage-local/profile")
+      )) {
         latestUsagePayload = result;
         if (desktopState) {
           desktopState = { ...desktopState, usage: result };
         }
         applyTrayFromLatestUsage();
+      }
+      if (method === "GET" && path === "/api/current" && desktopState) {
+        desktopState = { ...desktopState, current: result };
+      }
+      if (method === "GET" && path === "/api/list" && desktopState) {
+        desktopState = { ...desktopState, list: result };
+      }
+      if (method === "GET" && path === "/api/auto-switch/state" && desktopState) {
+        desktopState = { ...desktopState, autoSwitch: result };
       }
       if ((method === "GET" || method === "POST") && path === "/api/ui-config") {
         if (desktopState) {

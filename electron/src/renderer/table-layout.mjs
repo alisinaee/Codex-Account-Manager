@@ -8,8 +8,8 @@ const PROFILE_FIXED_COLUMN_WIDTHS = {
 };
 
 const PROFILE_FLEX_COLUMN_WEIGHTS = {
-  profile: 0.95,
-  email: 1.45,
+  profile: 0.75,
+  email: 1.05,
   h5: 1.25,
   h5remain: 0.9,
   h5reset: 0.85,

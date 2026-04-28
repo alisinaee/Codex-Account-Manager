@@ -7,10 +7,13 @@ function DataTable({
   rows,
   rowKey,
   rowClassName,
+  onRowClick,
+  rowAriaLabel,
   emptyState,
   className = "",
 }) {
   const hasRows = Array.isArray(rows) && rows.length > 0;
+  const rowClickable = typeof onRowClick === "function";
 
   return (
     <table className={className}>
@@ -49,7 +52,34 @@ function DataTable({
       </thead>
       <tbody>
         {hasRows ? rows.map((row) => (
-          <tr key={rowKey(row)} className={rowClassName?.(row)}>
+          <tr
+            key={rowKey(row)}
+            className={[
+              rowClassName?.(row) || "",
+              rowClickable ? "table-row-clickable" : "",
+            ].filter(Boolean).join(" ")}
+            onClick={(event) => {
+              if (!rowClickable) return;
+              if (event.target instanceof Element && event.target.closest("button, a, input, select, textarea, label, [data-no-row-open='true']")) {
+                return;
+              }
+              onRowClick(row, event);
+            }}
+            onKeyDown={(event) => {
+              if (!rowClickable) return;
+              if (event.target instanceof Element && event.target.closest("button, a, input, select, textarea, label, [data-no-row-open='true']") && event.target !== event.currentTarget) {
+                return;
+              }
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              onRowClick(row, event);
+            }}
+            tabIndex={rowClickable ? 0 : undefined}
+            role={rowClickable ? "button" : undefined}
+            aria-label={rowClickable
+              ? (typeof rowAriaLabel === "function" ? rowAriaLabel(row) : rowAriaLabel || "Open details")
+              : undefined}
+          >
             {columns.map((column) => (
               <td
                 key={`${rowKey(row)}-${column.key}`}

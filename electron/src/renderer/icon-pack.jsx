@@ -72,6 +72,24 @@ export function AutoSwitchIcon() {
   );
 }
 
+export function ArrowRightIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M5 12h14" />
+      <path d="m13 7 5 5-5 5" />
+    </IconBase>
+  );
+}
+
+export function DialogCloseIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="m7 7 10 10" />
+      <path d="m17 7-10 10" />
+    </IconBase>
+  );
+}
+
 export function NotificationsIcon() {
   return (
     <IconBase>
