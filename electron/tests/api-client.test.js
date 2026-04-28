@@ -71,7 +71,7 @@ test("switchProfile sends no_restart true and refreshes desktop state", async ()
     [
       "http://127.0.0.1:4673/api/current",
       "http://127.0.0.1:4673/api/list",
-      "http://127.0.0.1:4673/api/usage-local/current?timeout=7",
+      "http://127.0.0.1:4673/api/usage-local?timeout=8&force=true",
       "http://127.0.0.1:4673/api/ui-config",
       "http://127.0.0.1:4673/api/auto-switch/state",
     ],
@@ -98,4 +98,69 @@ test("generic request attaches X-Codex-Token to POST requests", async () => {
 
   assert.equal(calls[0].options.headers["X-Codex-Token"], "session-token");
   assert.equal(calls[0].options.headers["Content-Type"], "application/json");
+});
+
+test("getDesktopState falls back when usage endpoint fails", async () => {
+  const client = createApiClient({
+    state: { baseUrl: "http://127.0.0.1:4673/", token: "session-token" },
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/usage-local/current?timeout=7")) {
+        return {
+          ok: false,
+          json: async () => ({ ok: false, error: { message: "http 401" } }),
+        };
+      }
+      if (url.endsWith("/api/current")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { ok: true, account_hint: "a@example.com | id:1", account_id: "1" } }),
+        };
+      }
+      if (url.endsWith("/api/list")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { profiles: [{ name: "acc-a", account_hint: "a@example.com | id:1", is_current: true }] } }),
+        };
+      }
+      if (url.endsWith("/api/ui-config")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { ui: {} } }),
+        };
+      }
+      if (url.endsWith("/api/auto-switch/state")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { enabled: false } }),
+        };
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+
+  const state = await client.getDesktopState();
+
+  assert.equal(Array.isArray(state.usage?.profiles), true);
+  assert.equal(state.usage.profiles.length, 1);
+  assert.equal(state.usage.profiles[0].name, "acc-a");
+  assert.equal(state.usage.profiles[0].error, "usage unavailable");
+});
+
+test("request times out when backend hangs", async () => {
+  const client = createApiClient({
+    state: { baseUrl: "http://127.0.0.1:4673/", token: "session-token", requestTimeoutMs: 25 },
+    fetchImpl: (_url, options = {}) => new Promise((_resolve, reject) => {
+      const onAbort = () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      };
+      options.signal?.addEventListener?.("abort", onAbort, { once: true });
+    }),
+  });
+
+  await assert.rejects(
+    () => client.request("/api/current", {}),
+    /request timeout after/i,
+  );
 });

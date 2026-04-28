@@ -4,6 +4,7 @@ import iconUrl from "../../assets/codex-account-manager.svg";
 import "./styles.css";
 import {
   AboutIcon,
+  ArrowRightIcon,
   AutoSwitchIcon,
   DebugIcon,
   DoorClosedIcon,
@@ -167,6 +168,22 @@ function saveStoredColumns(prefs) {
   } catch (_) {}
 }
 
+const WINDOWS_SWITCH_RESTART_DIALOG_PREF_KEY = "codex_windows_switch_restart_dialog_suppressed";
+
+function loadWindowsSwitchRestartDialogPreference() {
+  try {
+    return localStorage.getItem(WINDOWS_SWITCH_RESTART_DIALOG_PREF_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function saveWindowsSwitchRestartDialogPreference(suppressed) {
+  try {
+    localStorage.setItem(WINDOWS_SWITCH_RESTART_DIALOG_PREF_KEY, suppressed ? "1" : "0");
+  } catch (_) {}
+}
+
 function isInvalidSessionTokenMessage(error) {
   return /invalid session token/i.test(String(error?.message || error || ""));
 }
@@ -178,6 +195,142 @@ function usagePercent(row, key) {
 
 function usageValue(row, key) {
   return clampPercent(usagePercentNumber(row, key));
+}
+
+function usagePercentNumberFromUsage(usage) {
+  const n = Number(usage?.remaining_percent);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function usageErrorLabel(rowError) {
+  const msg = String(rowError || "").trim();
+  if (!msg) return "";
+  const lower = msg.toLowerCase();
+  if (lower === "http 401") return "auth expired";
+  if (lower === "http 403") return "access denied";
+  if (lower.startsWith("http ")) return msg;
+  if (lower.includes("timed out")) return "timeout";
+  if (lower.includes("missing access_token/account_id")) return "missing auth";
+  return msg;
+}
+
+function isUsageLoadingState(usage, rowError, rowLoading) {
+  if (rowLoading) return true;
+  const pct = usagePercentNumberFromUsage(usage);
+  if (!rowError) return false;
+  const msg = String(rowError || "").toLowerCase();
+  let transient = msg.includes("request failed") || msg.includes("timed out");
+  if (!transient && msg.startsWith("http ")) {
+    const code = Number.parseInt(msg.slice(5).trim(), 10);
+    if (Number.isFinite(code)) {
+      transient = code >= 500 || code === 408 || code === 429;
+    }
+  }
+  if (!transient) return false;
+  if (!Number.isFinite(pct)) return true;
+  const resetTs = Number(usage?.resets_at || 0);
+  return !(Number.isFinite(resetTs) && resetTs > 0);
+}
+
+function formatRemainCell(ts, withSeconds, loading, rowError) {
+  if (loading) {
+    return ts ? fmtRemain(ts, withSeconds) : "loading...";
+  }
+  const label = usageErrorLabel(rowError);
+  if (label) return label;
+  return fmtRemain(ts, withSeconds);
+}
+
+function extractEmailFromHint(hint) {
+  const left = String(hint || "").split("|")[0].trim();
+  return left.includes("@") ? left : "";
+}
+
+function buildUsageLoadingSnapshot(prevUsage, listPayload, currentPayload, errorMsg, loadingMode = false) {
+  const prevProfiles = Array.isArray(prevUsage?.profiles) ? prevUsage.profiles : [];
+  const listProfiles = Array.isArray(listPayload?.profiles) ? listPayload.profiles : [];
+  const sourceProfiles = prevProfiles.length ? prevProfiles : listProfiles.map((profile) => ({
+    name: profile?.name || "",
+    email: extractEmailFromHint(profile?.account_hint),
+    account_id: profile?.account_id || "-",
+    usage_5h: { remaining_percent: null, resets_at: null, text: "-" },
+    usage_weekly: { remaining_percent: null, resets_at: null, text: "-" },
+    plan_type: null,
+    is_paid: null,
+    is_current: false,
+    same_principal: !!profile?.same_principal,
+    error: errorMsg || "request failed",
+    saved_at: profile?.saved_at || null,
+    auto_switch_eligible: !!profile?.auto_switch_eligible,
+  }));
+
+  const currentEmail = currentPayload && !currentPayload.__error
+    ? extractEmailFromHint(currentPayload.account_hint)
+    : "";
+
+  const profiles = sourceProfiles.map((profile) => {
+    const sameCurrent = !!profile.is_current;
+    const matchesCurrent = currentEmail
+      ? String(profile.email || "").toLowerCase() === currentEmail.toLowerCase()
+      : sameCurrent;
+    return {
+      ...profile,
+      usage_5h: { remaining_percent: null, resets_at: null, text: "-" },
+      usage_weekly: { remaining_percent: null, resets_at: null, text: "-" },
+      plan_type: profile.plan_type ?? null,
+      is_paid: typeof profile.is_paid === "boolean" ? profile.is_paid : null,
+      is_current: !!matchesCurrent,
+      error: errorMsg || profile.error || "request failed",
+      loading_usage: !!loadingMode,
+    };
+  });
+  const currentProfile = profiles.find((profile) => profile.is_current)?.name || null;
+  return { refreshed_at: new Date().toISOString(), current_profile: currentProfile, profiles };
+}
+
+function usageMetricSignature(usage) {
+  const pct = usagePercentNumberFromUsage(usage);
+  const resetTs = Number(usage?.resets_at || 0);
+  const text = String(usage?.text || "");
+  return `${Number.isFinite(pct) ? pct : "na"}|${Number.isFinite(resetTs) ? resetTs : "na"}|${text}`;
+}
+
+function markUsageFlashUpdates(prevUsage, nextUsage, usageFlashUntilRef) {
+  if (!prevUsage || !nextUsage || !usageFlashUntilRef) return;
+  const prevRows = Array.isArray(prevUsage?.profiles) ? prevUsage.profiles : [];
+  const nextRows = Array.isArray(nextUsage?.profiles) ? nextUsage.profiles : [];
+  if (!prevRows.length || !nextRows.length) return;
+  const until = Date.now() + 1400;
+  const prevByName = new Map();
+  prevRows.forEach((row) => {
+    const name = String(row?.name || "").trim();
+    if (name) prevByName.set(name, row);
+  });
+  nextRows.forEach((row) => {
+    const name = String(row?.name || "").trim();
+    if (!name) return;
+    const prev = prevByName.get(name);
+    if (!prev) return;
+    if (usageMetricSignature(prev.usage_5h) !== usageMetricSignature(row.usage_5h)) {
+      usageFlashUntilRef[`${name}|h5`] = until;
+    }
+    if (usageMetricSignature(prev.usage_weekly) !== usageMetricSignature(row.usage_weekly)) {
+      usageFlashUntilRef[`${name}|weekly`] = until;
+    }
+  });
+}
+
+function shouldFlashUsage(usageFlashUntilRef, name, metric, loading) {
+  if (loading) return false;
+  const key = `${String(name || "").trim()}|${metric}`;
+  const until = Number(usageFlashUntilRef?.[key] || 0);
+  if (!Number.isFinite(until) || until <= 0) return false;
+  if (until < Date.now()) {
+    delete usageFlashUntilRef[key];
+    return false;
+  }
+  return true;
 }
 
 function formatPctValue(value) {
@@ -334,6 +487,18 @@ function fmtPaid(value) {
   return "-";
 }
 
+function formatAccountDetailValue(value) {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  const text = String(value).trim();
+  return text || "-";
+}
+
+function isInteractiveEventTarget(target) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("button, a, input, select, textarea, label, [data-no-row-open='true']"));
+}
+
 function remainToneClass(ts) {
   const tone = remainToneFromResetEpochSeconds(ts);
   if (tone === "danger") return "remain-danger";
@@ -343,8 +508,8 @@ function remainToneClass(ts) {
 
 const tableColumnLayout = {
   cur: { colClassName: "col-status", width: "24px" },
-  profile: { colClassName: "col-profile", width: "7%" },
-  email: { colClassName: "col-email", width: "12%" },
+  profile: { colClassName: "col-profile", width: "5.5%" },
+  email: { colClassName: "col-email", width: "9.5%" },
   h5: { colClassName: "col-5h", width: "7%" },
   h5remain: { colClassName: "col-5h-rem", width: "6%" },
   h5reset: { colClassName: "col-5h-reset", width: "7%" },
@@ -412,6 +577,61 @@ function fileToBase64(file) {
   });
 }
 
+const IMPORT_PLAN_ACTIONS = ["import", "skip", "rename", "overwrite"];
+
+function normalizeImportPlanAction(row) {
+  const current = String(row?.action || "").trim().toLowerCase();
+  if (IMPORT_PLAN_ACTIONS.includes(current)) {
+    return current;
+  }
+  return String(row?.status || "").trim().toLowerCase() === "ready" ? "import" : "skip";
+}
+
+function cloneImportPlanRows(rows) {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  return rows.map((row) => ({
+    ...row,
+    action: normalizeImportPlanAction(row),
+    rename_to: String(row?.rename_to || ""),
+  }));
+}
+
+function importStatusVariant(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "ready") return "success";
+  if (normalized.includes("conflict")) return "warning";
+  return "danger";
+}
+
+function buildImportPlanSummary(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const selectedCount = list.filter((row) => normalizeImportPlanAction(row) !== "skip").length;
+  const overwriteCount = list.filter((row) => normalizeImportPlanAction(row) === "overwrite").length;
+  const invalidRenameCount = list.filter((row) => (
+    normalizeImportPlanAction(row) === "rename" && !String(row?.rename_to || "").trim()
+  )).length;
+  return {
+    total: list.length,
+    selectedCount,
+    overwriteCount,
+    invalidRenameCount,
+  };
+}
+
+function ensureUniqueNames(list) {
+  const names = [];
+  const seen = new Set();
+  for (const item of (Array.isArray(list) ? list : [])) {
+    const name = String(item || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
 function isRuntimeOperational(status) {
   if (status?.phase === "ready") {
     return true;
@@ -427,6 +647,15 @@ function waitMs(delay) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, delay);
   });
+}
+
+async function readResponseErrorMessage(response, fallbackMessage) {
+  try {
+    const payload = await response.json();
+    const message = String(payload?.error?.message || payload?.message || "").trim();
+    if (message) return message;
+  } catch (_) {}
+  return fallbackMessage;
 }
 
 function joinBaseUrl(baseUrl, path) {
@@ -460,22 +689,45 @@ function formatLogLevel(level) {
   return "Info";
 }
 
-function UsageCell({ row, usageKey }) {
+function RemainLoadingIndicator() {
+  return <span className="remain-loading-spinner" role="status" aria-label="Loading" />;
+}
+
+function UsageCell({ row, usageKey, flash = false, authExpiredAsUnknown = false }) {
+  const usage = row?.[usageKey];
+  const loading = isUsageLoadingState(usage, row?.error, row?.loading_usage);
+  const errorLabel = usageErrorLabel(row?.error);
   const value = usageValue(row, usageKey);
   const color = usageColor(value);
-  const label = value === null ? "-" : `${value}%`;
+  const showUnknown = authExpiredAsUnknown && errorLabel === "auth expired";
 
-  return (
-    <div className={`usage-cell ${value === null ? "usage-cell-loading" : ""}`} title={value === null ? "Usage unavailable" : `${value}% remaining`}>
-      <div className="usage-top">
-        <span className={`usage-pct ${value === null ? "loading-text" : ""}`} style={value === null ? undefined : { color }}>
-          {label}
-        </span>
+  if (!loading && errorLabel) {
+    return (
+      <div className="usage-cell" title={showUnknown ? "unknown" : errorLabel}>
+        <div className="usage-top">
+          <span className="usage-pct usage-low">{showUnknown ? "?" : errorLabel}</span>
+        </div>
+        <div className="usage-bar-track" aria-hidden="true">
+          <div className="usage-bar-fill usage-bar-error" style={{ width: "100%" }} />
+        </div>
       </div>
-      <div className="usage-bar-track" aria-hidden="true">
+    );
+  }
+
+  const label = loading ? "" : value === null ? "-" : `${value}%`;
+  return (
+    <div className={`usage-cell ${loading ? "usage-cell-loading" : ""} ${flash ? "usage-cell-updated" : ""}`.trim()} title={loading ? "Usage loading" : value === null ? "Usage unavailable" : `${value}% remaining`}>
+      <div className="usage-top">
+        {loading ? <span className="usage-pct loading-placeholder" aria-hidden="true" /> : (
+          <span className={`usage-pct ${value === null ? "loading-text" : ""}`} style={value === null ? undefined : { color }}>
+            {label}
+          </span>
+        )}
+      </div>
+      <div className={`usage-bar-track ${loading ? "loading" : ""}`} aria-hidden="true">
         <div
-          className="usage-bar-fill"
-          style={value === null ? { width: "0%" } : { width: `${value}%`, background: color }}
+          className={`usage-bar-fill ${flash ? "usage-bar-blink" : ""}`.trim()}
+          style={loading || value === null ? { width: "0%" } : { width: `${value}%`, background: color }}
         />
       </div>
     </div>
@@ -740,10 +992,12 @@ function AccountsTable({
   onSort,
   onSwitch,
   onOpenRowActions,
+  onOpenAccountDetails,
   onToggleEligibility,
   wideMode,
   compactMode,
   viewportSizeClass,
+  shouldFlashUsageFn,
 }) {
   const columnTitleByKey = {
     cur: "Status. Active = green dot, Inactive = gray dot.",
@@ -771,6 +1025,11 @@ function AccountsTable({
         const quotaBlocked = (usageValue(profile, "usage_5h") ?? 1) <= 0 || (usageValue(profile, "usage_weekly") ?? 1) <= 0;
         const disableSwitch = profile.is_current || Boolean(switching);
         const noteText = String(profile.note || (profile.same_principal ? "same-principal" : "")).trim();
+        const h5Loading = isUsageLoadingState(profile.usage_5h, profile.error, profile.loading_usage);
+        const wLoading = isUsageLoadingState(profile.usage_weekly, profile.error, profile.loading_usage);
+        const rowErrorLabel = usageErrorLabel(profile.error);
+        const h5Flash = shouldFlashUsageFn?.(profile.name, "h5", h5Loading) || false;
+        const wFlash = shouldFlashUsageFn?.(profile.name, "weekly", wLoading) || false;
         switch (column.key) {
           case "cur":
             return <StatusDot active={profile.is_current} />;
@@ -778,24 +1037,30 @@ function AccountsTable({
             return <strong className="profile-name">{profile.name}</strong>;
           case "email":
             return <span className="muted" title={profile.email_display}>{profile.email_display}</span>;
-          case "h5":
-            return <UsageCell row={profile} usageKey="usage_5h" />;
+            case "h5":
+            return <UsageCell row={profile} usageKey="usage_5h" flash={h5Flash} authExpiredAsUnknown />;
           case "h5remain":
+            if (h5Loading) {
+              return <RemainLoadingIndicator />;
+            }
             return (
-              <span className="remain-value" title={fmtResetFull(profile.usage_5h?.resets_at)}>
-                {fmtRemain(profile.usage_5h?.resets_at, true)}
+              <span className={`remain-value ${rowErrorLabel ? "loading-text" : ""}`.trim()} title={fmtResetFull(profile.usage_5h?.resets_at)}>
+                {formatRemainCell(profile.usage_5h?.resets_at, true, false, profile.error)}
               </span>
             );
           case "h5reset":
             return <span className="muted" title={fmtResetFull(profile.usage_5h?.resets_at)}>{fmtReset(profile.usage_5h?.resets_at)}</span>;
-          case "weekly":
-            return <UsageCell row={profile} usageKey="usage_weekly" />;
-          case "weeklyremain":
-            return (
-              <span className="remain-value" title={fmtResetFull(profile.usage_weekly?.resets_at)}>
-                {fmtRemain(profile.usage_weekly?.resets_at)}
+            case "weekly":
+            return <UsageCell row={profile} usageKey="usage_weekly" flash={wFlash} authExpiredAsUnknown />;
+            case "weeklyremain":
+              if (wLoading) {
+                return <RemainLoadingIndicator />;
+              }
+              return (
+              <span className={`remain-value ${rowErrorLabel ? "loading-text" : ""}`.trim()} title={fmtResetFull(profile.usage_weekly?.resets_at)}>
+                {formatRemainCell(profile.usage_weekly?.resets_at, false, false, profile.error)}
               </span>
-            );
+              );
           case "weeklyreset":
             return <span className="muted" title={fmtResetFull(profile.usage_weekly?.resets_at)}>{fmtReset(profile.usage_weekly?.resets_at)}</span>;
           case "plan":
@@ -895,12 +1160,14 @@ function AccountsTable({
         isPending: switching === profile.name,
         isActivated: activatedProfile === profile.name,
       })}
+      onRowClick={onOpenAccountDetails}
+      rowAriaLabel={(profile) => `Open full details for ${profile?.name || "account"}`}
       emptyState="No profiles available."
     />
   );
 }
 
-function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions }) {
+function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions, onOpenAccountDetails }) {
   return (
     <div className="mobile-list" data-testid="profiles-mobile-list">
       {profiles.map((profile) => {
@@ -912,7 +1179,22 @@ function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions })
         const weeklyTone = usageTone(weeklyValue);
 
         return (
-          <div key={profile.name} className="mobile-row">
+          <div
+            key={profile.name}
+            className="mobile-row row-clickable"
+            role="button"
+            tabIndex={0}
+            aria-label={`Open full details for ${profile.name || "account"}`}
+            onClick={(event) => {
+              if (isInteractiveEventTarget(event.target)) return;
+              onOpenAccountDetails(profile);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              onOpenAccountDetails(profile);
+            }}
+          >
             <div className="mobile-head">
               <div className="mobile-left">
                 <StatusDot active={profile.is_current} />
@@ -956,12 +1238,14 @@ function ProfilesView({
   onRemoveAll,
   onOpenColumns,
   onOpenRowActions,
+  onOpenAccountDetails,
   onToggleEligibility,
   visibleColumns,
   sort,
   onSort,
   compactMode,
   viewportSizeClass,
+  shouldFlashUsageFn,
 }) {
   const profiles = sortRows(buildProfileRows(state), sort);
   const visibleColumnCount = Object.values(visibleColumns || {}).filter(Boolean).length;
@@ -973,13 +1257,14 @@ function ProfilesView({
     <section className="view profiles-view" data-testid="profiles-view">
       <div className="profiles-view-shell">
         <div className="accounts-toolbar">
-          <div className="spacer" />
-          <div className="accounts-actions">
-            <Button variant="primary" onClick={onAddAccount}>Add Account</Button>
+          <div className="accounts-actions accounts-actions-left">
             <Button onClick={onImportProfiles}>Import</Button>
             <Button className="profiles-export-btn" onClick={onExportProfiles}>
               <span className="btn-label">Export</span>
             </Button>
+          </div>
+          <div className="accounts-actions">
+            <Button variant="primary" onClick={onAddAccount}>Add Account</Button>
             <ConfirmAction
               label="Remove all"
               confirmLabel="Confirm remove all ✓"
@@ -1003,10 +1288,12 @@ function ProfilesView({
             wideMode={wideMode}
             compactMode={compactMode}
             viewportSizeClass={viewportSizeClass}
+            shouldFlashUsageFn={shouldFlashUsageFn}
             sort={sort}
             onSort={onSort}
             onSwitch={onSwitch}
             onOpenRowActions={onOpenRowActions}
+            onOpenAccountDetails={onOpenAccountDetails}
             onToggleEligibility={onToggleEligibility}
           />
           <AccountsMobileList
@@ -1014,6 +1301,7 @@ function ProfilesView({
             switching={switching}
             onSwitch={onSwitch}
             onOpenRowActions={onOpenRowActions}
+            onOpenAccountDetails={onOpenAccountDetails}
           />
         </div>
       </div>
@@ -1197,7 +1485,11 @@ function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunS
                             W {formatPctValue(row.usage_weekly)}
                           </span>
                         </span>
-                        {index < chainRows.length - 1 ? <span className="chain-arrow" aria-hidden="true">-&gt;</span> : null}
+                        {index < chainRows.length - 1 ? (
+                          <span className="chain-arrow" aria-hidden="true">
+                            <ArrowRightIcon />
+                          </span>
+                        ) : null}
                       </React.Fragment>
                     )) : <span className="muted">No profiles available.</span>}
                   </div>
@@ -1325,7 +1617,7 @@ function UpdateView({ updateStatus, checking, onCheck, onRunUpdate }) {
   );
 }
 
-function DebugView({ debugLogs, onExport }) {
+function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, onClear, onExport }) {
   const [levelFilter, setLevelFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [showJump, setShowJump] = useState(false);
@@ -1367,7 +1659,14 @@ function DebugView({ debugLogs, onExport }) {
 
   return (
     <section className="view debug-view">
-      <div className="settings-inline-actions debug-actions">
+      <div className="settings-inline-actions debug-actions debug-actions-right">
+        <Button
+          variant={captureEnabled ? "danger" : "primary"}
+          onClick={captureEnabled ? onStopCapture : onStartCapture}
+        >
+          {captureEnabled ? "Stop logs" : "Start logs"}
+        </Button>
+        <Button onClick={onClear}>Clear logs</Button>
         <Button onClick={onExport}>Export debug logs</Button>
       </div>
       <div className="debug-toolbar">
@@ -1399,9 +1698,9 @@ function DebugView({ debugLogs, onExport }) {
       <div ref={panelRef} className="debug-log-panel scrollable scrollable-with-fade" onScroll={onPanelScroll}>
         {filteredLogs.length ? filteredLogs.map((row, index) => (
           <div key={`${row.ts || index}-${index}`} className={`debug-line log-${String(row.level || "info").toLowerCase()}`}>
-            <span>{row.ts || "-"}</span>
-            <strong>{formatLogLevel(row.level)}</strong>
-            <span>{row.message || ""}</span>
+            <span className="debug-ts">{row.ts || "-"}</span>
+            <strong className="debug-level">{formatLogLevel(row.level)}</strong>
+            <span className="debug-message">{row.message || ""}</span>
           </div>
         )) : <div className="muted">No logs yet.</div>}
         {showJump ? (
@@ -1420,50 +1719,70 @@ function AboutView({ backendState, state, version, onOpenExternal }) {
   const platformName = window.codexAccountDesktop?.platform || navigator.platform || "unknown";
 
   return (
-    <section className="view about-view">
-      <div className="sparse-page-layout">
-        <SectionCard className="settings-card about-panel">
-          <header className="about-identity">
-            <img src={iconUrl} alt="" />
-            <div>
-              <h2>Codex Account Manager</h2>
-              <p>Desktop account switching and usage monitoring for Codex profiles.</p>
-              <span>Version {version || "unknown"}</span>
+    <section className="view about-view" data-testid="about-view">
+      <div className="settings-layout about-layout">
+        <div className="settings-card-stack settings-card-stack-main about-card-stack">
+          <SettingsCardShell
+            title="About"
+            description="Desktop account switching and usage monitoring for Codex profiles."
+            className="about-merged-card"
+            testId="about-merged-card"
+          >
+            <div className="about-merged-content">
+              <header className="about-identity">
+                <img src={iconUrl} alt="" />
+                <div>
+                  <h2>Codex Account Manager</h2>
+                  <p>Electron desktop shell with Python API backend.</p>
+                  <span>Version {version || "unknown"}</span>
+                </div>
+              </header>
+
+              <div className="about-details-grid">
+                <div className="about-detail-item">
+                  <span className="about-detail-label">Desktop shell</span>
+                  <strong className="about-detail-value">Electron renderer with Python backend</strong>
+                </div>
+                <div className="about-detail-item">
+                  <span className="about-detail-label">Platform</span>
+                  <strong className="about-detail-value">{platformName}</strong>
+                </div>
+                <div className="about-detail-item">
+                  <span className="about-detail-label">Current refresh</span>
+                  <strong className="about-detail-value">{ui.current_auto_refresh_enabled ? `${ui.current_refresh_interval_sec || 5}s` : "disabled"}</strong>
+                </div>
+                <div className="about-detail-item">
+                  <span className="about-detail-label">All refresh</span>
+                  <strong className="about-detail-value">{ui.all_auto_refresh_enabled ? `${ui.all_refresh_interval_min || 5}m` : "disabled"}</strong>
+                </div>
+                <div className="about-detail-item">
+                  <span className="about-detail-label">Stable web panel</span>
+                  <strong className="about-detail-value">Available through `codex-account ui`</strong>
+                </div>
+                <div className="about-detail-item">
+                  <span className="about-detail-label">Backend</span>
+                  <a
+                    className="about-backend-link about-detail-value"
+                    href={backendUrl}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onOpenExternal(backendUrl);
+                    }}
+                  >
+                    {backendUrl}
+                  </a>
+                </div>
+              </div>
+
+              <div className="tech-pill-row">
+                <span className="chip chip-neutral">Electron</span>
+                <span className="chip chip-neutral">React</span>
+                <span className="chip chip-neutral">Python API</span>
+                <span className="chip chip-neutral">Playwright Tests</span>
+              </div>
             </div>
-          </header>
-        </SectionCard>
-
-        <SectionCard className="settings-card about-panel">
-          <LabelValueRow label="Desktop shell" value="Electron renderer with Python backend" />
-          <LabelValueRow label="Stable web panel" value="Still available through codex-account ui" />
-          <LabelValueRow
-            label="Backend"
-            value={(
-              <a
-                className="about-backend-link"
-                href={backendUrl}
-                onClick={(event) => {
-                  event.preventDefault();
-                  onOpenExternal(backendUrl);
-                }}
-              >
-                {backendUrl}
-              </a>
-            )}
-          />
-        </SectionCard>
-
-        <SystemInfoSettingsCard platformName={platformName} ui={ui} />
-
-        <SectionCard className="settings-card sparse-bottom-fill">
-          <div className="group-title">Built with</div>
-          <div className="tech-pill-row">
-            <span className="chip chip-neutral">Electron</span>
-            <span className="chip chip-neutral">React</span>
-            <span className="chip chip-neutral">Python API</span>
-            <span className="chip chip-neutral">Playwright Tests</span>
-          </div>
-        </SectionCard>
+          </SettingsCardShell>
+        </div>
       </div>
     </section>
   );
@@ -1746,6 +2065,7 @@ function RuntimeSetupView({
 
 function AppContent() {
   const desktop = window.codexAccountDesktop;
+  const isWindowsDesktop = String(desktop?.platform || "").toLowerCase() === "win32";
   const { showToast } = useToast();
   const [activeView, setActiveView] = useState("profiles");
   const [viewportSizeClass, setViewportSizeClass] = useState(() => classifyWidth(window.innerWidth));
@@ -1756,11 +2076,13 @@ function AppContent() {
   const [updateStatus, setUpdateStatus] = useState(null);
   const [checkingUpdateStatus, setCheckingUpdateStatus] = useState(false);
   const [debugLogs, setDebugLogs] = useState([]);
+  const [debugCaptureEnabled, setDebugCaptureEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState("");
   const [activatedProfile, setActivatedProfile] = useState("");
   const [error, setError] = useState("");
   const [columnPrefs, setColumnPrefs] = useState(loadStoredColumns());
+  const [windowsSwitchRestartDialogSuppressed, setWindowsSwitchRestartDialogSuppressed] = useState(loadWindowsSwitchRestartDialogPreference());
   const [sort, setSort] = useState({ key: "profile", dir: "asc" });
   const [modal, setModal] = useState(null);
   const [runtimeStatus, setRuntimeStatus] = useState({ phase: "checking_runtime", python: {}, core: {}, uiService: {}, errors: [] });
@@ -1775,13 +2097,17 @@ function AppContent() {
   const configRevisionRef = useRef(null);
   const configSaveQueueRef = useRef(Promise.resolve());
   const pendingConfigSavesRef = useRef(0);
+  const refreshRunningRef = useRef(false);
   const currentRefreshRunningRef = useRef(false);
   const allRefreshRunningRef = useRef(false);
   const autoSwitchRefreshRunningRef = useRef(false);
+  const sessionUsageCacheRef = useRef(null);
+  const usageFlashUntilRef = useRef({});
   const restartInFlightRef = useRef(false);
   const currentRefreshTimerRef = useRef(null);
   const allRefreshTimerRef = useRef(null);
   const autoSwitchStateTimerRef = useRef(null);
+  const debugCaptureTimerRef = useRef(null);
   const [, setClockTick] = useState(Date.now());
 
   const activeTitle = useMemo(() => views.find((view) => view.id === activeView)?.label || "Profiles", [activeView]);
@@ -1868,7 +2194,19 @@ function AppContent() {
     }
   }
 
-  function applyUsageState(nextUsage) {
+  function applyUsageState(nextUsage, { showLoading = false } = {}) {
+    const prevUsageForFlash = (!showLoading
+      && sessionUsageCacheRef.current
+      && Array.isArray(sessionUsageCacheRef.current.profiles)
+      && sessionUsageCacheRef.current.profiles.length)
+      ? sessionUsageCacheRef.current
+      : null;
+    if (nextUsage && !nextUsage.__error) {
+      if (!showLoading && prevUsageForFlash) {
+        markUsageFlashUpdates(prevUsageForFlash, nextUsage, usageFlashUntilRef.current);
+      }
+      sessionUsageCacheRef.current = nextUsage;
+    }
     setState((current) => {
       if (!current) {
         return current;
@@ -1877,6 +2215,63 @@ function AppContent() {
       stateRef.current = nextState;
       return nextState;
     });
+  }
+
+  function maybeShowWindowsSwitchRestartDialog() {
+    if (!isWindowsDesktop || windowsSwitchRestartDialogSuppressed) {
+      return;
+    }
+    setModal({ type: "switch-restart-warning", dontShowAgain: false });
+  }
+
+  function closeWindowsSwitchRestartDialog(dontShowAgain) {
+    if (dontShowAgain) {
+      setWindowsSwitchRestartDialogSuppressed(true);
+      saveWindowsSwitchRestartDialogPreference(true);
+    }
+    setModal((current) => (current?.type === "switch-restart-warning" ? null : current));
+  }
+
+  function commitUsagePayload(payload, opts = {}) {
+    if (!payload || payload.__error) return false;
+    applyUsageState(payload, { showLoading: !!opts.showLoading });
+    return true;
+  }
+
+  function setProfileLoadingState(name, loading, errorMsg = null) {
+    const target = String(name || "").trim();
+    if (!target) return false;
+    let changed = false;
+    setState((current) => {
+      const usage = current?.usage;
+      if (!usage || !Array.isArray(usage.profiles) || !usage.profiles.length) {
+        return current;
+      }
+      const nextProfiles = usage.profiles.map((profile) => {
+        if (String(profile?.name || "").trim() !== target) {
+          return profile;
+        }
+        changed = true;
+        return {
+          ...profile,
+          loading_usage: !!loading,
+          error: loading ? null : (errorMsg || profile.error || null),
+        };
+      });
+      if (!changed) {
+        return current;
+      }
+      const nextState = {
+        ...current,
+        usage: {
+          ...usage,
+          profiles: nextProfiles,
+        },
+      };
+      stateRef.current = nextState;
+      return nextState;
+    });
+    return changed;
   }
 
   function applyAutoSwitchState(nextAutoSwitch) {
@@ -1927,10 +2322,32 @@ function AppContent() {
     }
   }
 
-  async function loadAll() {
+  async function loadAll(opts = {}) {
+    const runOpts = opts || {};
+    const showLoading = !!runOpts.showLoading;
+    const clearUsageCache = !!runOpts.clearUsageCache;
+    refreshRunningRef.current = true;
     setLoading(true);
     setError("");
     try {
+      if (clearUsageCache) {
+        sessionUsageCacheRef.current = null;
+        usageFlashUntilRef.current = {};
+      }
+      const usageSeed = clearUsageCache ? null : stateRef.current?.usage;
+      const loadingSnapshot = buildUsageLoadingSnapshot(
+        usageSeed,
+        stateRef.current?.list,
+        stateRef.current?.current,
+        "request pending",
+        true,
+      );
+      const hasLiveUsage = Array.isArray(stateRef.current?.usage?.profiles) && stateRef.current.usage.profiles.length;
+      if (Array.isArray(loadingSnapshot?.profiles) && loadingSnapshot.profiles.length) {
+        if (showLoading || !hasLiveUsage) {
+          applyUsageState(loadingSnapshot, { showLoading: true });
+        }
+      }
       if (pendingConfigSavesRef.current > 0) {
         try {
           await configSaveQueueRef.current;
@@ -1954,28 +2371,37 @@ function AppContent() {
         request("/api/auto-switch/chain", {}),
       ]);
       applyDesktopState(core, { backend, chain });
+      if (core?.usage && !core.usage.__error) {
+        sessionUsageCacheRef.current = core.usage;
+      }
       setUpdateStatus(update);
       setReleaseNotes(notes);
       setDebugLogs(Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : []);
     } catch (err) {
+      if (sessionUsageCacheRef.current) {
+        applyUsageState(sessionUsageCacheRef.current, { showLoading: false });
+      }
       setError(err?.message || String(err));
     } finally {
+      refreshRunningRef.current = false;
       setLoading(false);
     }
   }
 
   async function refreshState() {
-    await loadAll();
+    await loadAll({ showLoading: true, clearUsageCache: true });
   }
 
   async function refreshCurrentUsage({ timeoutSec = 6 } = {}) {
-    if (currentRefreshRunningRef.current || !isRuntimeOperational(runtimeStatus)) {
+    if (refreshRunningRef.current || currentRefreshRunningRef.current || !isRuntimeOperational(runtimeStatus)) {
       return;
     }
     currentRefreshRunningRef.current = true;
     try {
       const usage = await request(`/api/usage-local/current?timeout=${encodeURIComponent(String(Math.max(1, timeoutSec)))}`, {});
-      applyUsageState(usage);
+      if (!commitUsagePayload(usage, { showLoading: false })) {
+        throw new Error("request failed");
+      }
     } catch (err) {
       setError((current) => current || `current usage: ${err?.message || String(err)}`);
     } finally {
@@ -1983,14 +2409,53 @@ function AppContent() {
     }
   }
 
+  async function refreshProfileUsage(name, { timeoutSec = 7 } = {}) {
+    const target = String(name || "").trim();
+    if (!target) return;
+    setProfileLoadingState(target, true, null);
+    try {
+      const usage = await request(
+        `/api/usage-local/profile?name=${encodeURIComponent(target)}&timeout=${encodeURIComponent(String(Math.max(1, timeoutSec)))}`,
+        {},
+      );
+      if (!commitUsagePayload(usage, { showLoading: false })) {
+        throw new Error("request failed");
+      }
+    } catch (err) {
+      setProfileLoadingState(target, false, err?.message || "request failed");
+      setError((current) => current || `usage(${target}): ${err?.message || String(err)}`);
+    }
+  }
+
   async function refreshAllAccountsUsage({ timeoutSec = 7 } = {}) {
-    if (allRefreshRunningRef.current || !isRuntimeOperational(runtimeStatus)) {
+    if (refreshRunningRef.current || allRefreshRunningRef.current || !isRuntimeOperational(runtimeStatus)) {
       return;
     }
     allRefreshRunningRef.current = true;
     try {
-      const usage = await request(`/api/usage-local?timeout=${encodeURIComponent(String(Math.max(1, timeoutSec)))}&force=true`, {});
-      applyUsageState(usage);
+      const listProfiles = Array.isArray(stateRef.current?.list?.profiles) ? stateRef.current.list.profiles : [];
+      const cachedProfiles = Array.isArray(stateRef.current?.usage?.profiles) ? stateRef.current.usage.profiles : [];
+      const currentName = String(
+        stateRef.current?.usage?.current_profile
+        || cachedProfiles.find((profile) => profile?.is_current)?.name
+        || "",
+      ).trim();
+      const orderedNames = [];
+      listProfiles.forEach((profile) => {
+        const name = String(profile?.name || "").trim();
+        if (name && !orderedNames.includes(name)) orderedNames.push(name);
+      });
+      if (!orderedNames.length) {
+        cachedProfiles.forEach((profile) => {
+          const name = String(profile?.name || "").trim();
+          if (name && !orderedNames.includes(name)) orderedNames.push(name);
+        });
+      }
+      for (const name of orderedNames) {
+        if (refreshRunningRef.current) break;
+        if (currentName && name === currentName) continue;
+        await refreshProfileUsage(name, { timeoutSec });
+      }
     } catch (err) {
       setError((current) => current || `all usage: ${err?.message || String(err)}`);
     } finally {
@@ -2171,8 +2636,10 @@ function AppContent() {
     try {
       const next = await switchControllerRef.current.switchProfile(target);
       applyDesktopState(next);
+      loadAll({ showLoading: false, clearUsageCache: true }).catch(() => {});
       setActivatedProfile(target);
       notifySuccess("Profile switched", `Current profile: ${target}`);
+      maybeShowWindowsSwitchRestartDialog();
       setTimeout(() => setActivatedProfile((current) => (current === target ? "" : current)), 1100);
     } catch (err) {
       loadAll().catch(() => {});
@@ -2333,6 +2800,14 @@ function AppContent() {
     });
   }
 
+  async function openAccountDetails(profile) {
+    if (!profile?.name) return;
+    setModal({
+      type: "account-details",
+      profile: { ...profile },
+    });
+  }
+
   async function copyToClipboard(label, value) {
     const text = String(value || "").trim();
     if (!text) {
@@ -2352,12 +2827,19 @@ function AppContent() {
   }
 
   async function openExportProfiles() {
-    exportSelectionRef.current = buildProfileRows(state).map((row) => row.name);
-    setModal({ type: "export", filename: "profiles", selected: exportSelectionRef.current });
+    const rows = buildProfileRows(state)
+      .map((row) => ({
+        name: String(row?.name || "").trim(),
+        email: String(row?.email_display || row?.email || "").trim() || "-",
+      }))
+      .filter((row) => row.name);
+    const allNames = ensureUniqueNames(rows.map((row) => row.name));
+    exportSelectionRef.current = allNames;
+    setModal({ type: "export", filename: "profiles", rows, allNames, selected: allNames, exporting: false });
   }
 
   async function openImportProfiles() {
-    setModal({ type: "import", file: null, analysis: null });
+    setModal({ type: "import-warning-choose" });
   }
 
   function getChainEditSourceNames() {
@@ -2489,20 +2971,79 @@ function AppContent() {
     }
   }
 
-  async function importAnalyze(file) {
-    if (!file) return;
-    const content_b64 = await fileToBase64(file);
-    const payload = await request("/api/local/import/analyze", {
-      method: "POST",
-      body: JSON.stringify({ filename: file.name, content_b64 }),
-    });
-    setModal({ type: "import-review", file, analysis: payload, selections: payload?.profiles || [] });
+  function triggerImportArchivePicker() {
+    const input = fileInputRef.current;
+    if (!input) return;
+    window.setTimeout(() => input.click(), 0);
   }
 
-  async function applyImport(analysis, selections) {
+  function openImportAnalyzeStep(file) {
+    if (!file) return;
+    setModal({ type: "import-warning-analyze", file, busy: false });
+  }
+
+  function updateImportPlanRow(name, patch) {
+    const target = String(name || "").trim();
+    if (!target) return;
+    setModal((current) => {
+      if (!current || (current.type !== "import-review" && current.type !== "import-review-confirm")) {
+        return current;
+      }
+      const nextRows = (current.profiles || []).map((row) => {
+        if (String(row?.name || "").trim() !== target) {
+          return row;
+        }
+        return { ...row, ...patch };
+      });
+      return { ...current, profiles: nextRows };
+    });
+  }
+
+  async function importAnalyze(file) {
+    if (!file) return;
+    setModal((current) => {
+      if (!current || current.type !== "import-warning-analyze") return current;
+      return { ...current, busy: true };
+    });
+    try {
+      const content_b64 = await fileToBase64(file);
+      const payload = await request("/api/local/import/analyze", {
+        method: "POST",
+        body: JSON.stringify({ filename: file.name, content_b64 }),
+      });
+      setModal({
+        type: "import-review",
+        file,
+        analysis: payload,
+        profiles: cloneImportPlanRows(payload?.profiles || []),
+      });
+    } catch (err) {
+      setModal({ type: "import-warning-analyze", file, busy: false });
+      throw err;
+    }
+  }
+
+  async function applyImport(analysis, profiles, { skipRiskConfirm = false } = {}) {
+    const rows = cloneImportPlanRows(profiles);
+    const summary = buildImportPlanSummary(rows);
+    if (summary.invalidRenameCount > 0) {
+      throw new Error("Set a new profile name for each Rename action before applying import.");
+    }
+    if (!summary.selectedCount) {
+      throw new Error("Select at least one profile action other than Skip.");
+    }
+    if (summary.overwriteCount > 0 && !skipRiskConfirm) {
+      setModal((current) => {
+        if (!current || current.type !== "import-review") {
+          return current;
+        }
+        return { ...current, type: "import-review-confirm" };
+      });
+      return;
+    }
     await request("/api/local/import/apply", {
       method: "POST",
-      body: JSON.stringify({ analysis_id: analysis?.analysis_id, profiles: selections }),
+      body: JSON.stringify({ analysis_id: analysis?.analysis_id, profiles: rows }),
     });
     setModal(null);
     await loadAll();
@@ -2543,6 +3084,9 @@ function AppContent() {
   }
 
   async function handleExportProfiles(names, filename) {
+    if (!Array.isArray(names) || names.length < 1) {
+      throw new Error("Select at least one profile to export.");
+    }
     const payload = await request("/api/local/export/prepare", {
       method: "POST",
       body: JSON.stringify({ scope: "selected", names, filename }),
@@ -2555,7 +3099,10 @@ function AppContent() {
         { id: payload.export_id },
       );
       const res = await fetch(href, { method: "GET", cache: "no-store", credentials: "same-origin" });
-      if (!res.ok) throw new Error(`download failed (${res.status})`);
+      if (!res.ok) {
+        const detail = await readResponseErrorMessage(res, `download failed (${res.status})`);
+        throw new Error(detail);
+      }
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -2577,6 +3124,19 @@ function AppContent() {
   async function loadDebugLogs() {
     const logs = await request(appendSessionToken("/api/debug/logs?tail=240", backendState?.token), {});
     setDebugLogs(Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : []);
+  }
+
+  function startDebugCapture() {
+    setDebugCaptureEnabled(true);
+    loadDebugLogs().catch((err) => setError(err?.message || String(err)));
+  }
+
+  function stopDebugCapture() {
+    setDebugCaptureEnabled(false);
+  }
+
+  function clearDebugLogs() {
+    setDebugLogs([]);
   }
 
   useEffect(() => {
@@ -2725,6 +3285,25 @@ function AppContent() {
     if (activeView === "update") loadAll().catch(() => {});
   }, [activeView]);
 
+  useEffect(() => {
+    if (debugCaptureTimerRef.current) {
+      window.clearInterval(debugCaptureTimerRef.current);
+      debugCaptureTimerRef.current = null;
+    }
+    if (activeView !== "debug" || !debugCaptureEnabled) {
+      return undefined;
+    }
+    debugCaptureTimerRef.current = window.setInterval(() => {
+      loadDebugLogs().catch(() => {});
+    }, 1200);
+    return () => {
+      if (debugCaptureTimerRef.current) {
+        window.clearInterval(debugCaptureTimerRef.current);
+        debugCaptureTimerRef.current = null;
+      }
+    };
+  }, [activeView, debugCaptureEnabled, backendState?.token]);
+
   if (!isRuntimeOperational(runtimeStatus)) {
     return (
       <RuntimeSetupView
@@ -2775,11 +3354,13 @@ function AppContent() {
             onRemoveAll={handleRemoveAll}
             onOpenColumns={openColumnsModal}
             onOpenRowActions={openRowActions}
+            onOpenAccountDetails={openAccountDetails}
             onToggleEligibility={toggleEligibility}
             visibleColumns={visibleColumns}
             sort={sort}
             compactMode={compactMode}
             viewportSizeClass={viewportSizeClass}
+            shouldFlashUsageFn={(name, metric, loadingState) => shouldFlashUsage(usageFlashUntilRef.current, name, metric, loadingState)}
             onSort={(key) => setSort((current) => ({ key, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" }))}
           />
         )}
@@ -2799,7 +3380,16 @@ function AppContent() {
         {activeView === "settings" && <SettingsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
         {activeView === "guide" && <GuideView releaseNotes={releaseNotes} onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})} />}
         {activeView === "update" && <UpdateView updateStatus={updateStatus} checking={checkingUpdateStatus || loading} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
-        {activeView === "debug" && <DebugView debugLogs={debugLogs} onExport={onExportDebug} />}
+        {activeView === "debug" && (
+          <DebugView
+            debugLogs={debugLogs}
+            captureEnabled={debugCaptureEnabled}
+            onStartCapture={startDebugCapture}
+            onStopCapture={stopDebugCapture}
+            onClear={clearDebugLogs}
+            onExport={onExportDebug}
+          />
+        )}
         {activeView === "about" && <AboutView backendState={backendState} state={state} version={updateStatus?.current_version} onOpenExternal={(url) => desktop.openExternal(url)} />}
         {error ? <div className="workspace-error" role="alert">{error}</div> : null}
       </div>
@@ -2826,6 +3416,29 @@ function AppContent() {
           )}
         >
           <p>{modal.body || "Are you sure you want to continue?"}</p>
+        </Dialog>
+      )}
+
+      {modal?.type === "switch-restart-warning" && (
+        <Dialog
+          title="Restart Codex to apply Windows changes"
+          size="sm"
+          onClose={() => closeWindowsSwitchRestartDialog(!!modal.dontShowAgain)}
+          footer={<Button variant="primary" onClick={() => closeWindowsSwitchRestartDialog(!!modal.dontShowAgain)}>OK</Button>}
+        >
+          <p>On Windows, close and reopen the Codex app after switching accounts so all changes apply correctly.</p>
+          <label className="modal-check">
+            <input
+              type="checkbox"
+              checked={!!modal.dontShowAgain}
+              onChange={(event) => setModal((current) => (
+                current?.type === "switch-restart-warning"
+                  ? { ...current, dontShowAgain: event.target.checked }
+                  : current
+              ))}
+            />
+            <span>Do not show this again</span>
+          </label>
         </Dialog>
       )}
 
@@ -2864,7 +3477,7 @@ function AppContent() {
       {modal?.type === "row-actions" && (
         <Dialog title="Row actions" size="sm" onClose={() => setModal(null)} footer={<Button onClick={() => setModal(null)}>Done</Button>}>
           <LabelValueRow label="Profile" value={modal.profile?.name || "-"} />
-          <div className="settings-inline-actions">
+          <div className="settings-inline-actions row-actions-grid">
             <Button onClick={() => { setModal(null); handleRename(modal.profile?.name).catch((e) => setError(e?.message || String(e))); }}>Edit</Button>
             <Button onClick={() => copyToClipboard("Email", modal.profile?.email)}>Copy email</Button>
             <Button onClick={() => copyToClipboard("ID", modal.profile?.accountId)}>Copy ID</Button>
@@ -2872,6 +3485,87 @@ function AppContent() {
           </div>
         </Dialog>
       )}
+
+      {modal?.type === "account-details" && (() => {
+        const profile = modal.profile || {};
+        const h5Loading = isUsageLoadingState(profile.usage_5h, profile.error, profile.loading_usage);
+        const weeklyLoading = isUsageLoadingState(profile.usage_weekly, profile.error, profile.loading_usage);
+        const rawJson = JSON.stringify(profile, null, 2);
+        return (
+          <Dialog
+            title={`Account details - ${profile.name || "profile"}`}
+            size="lg"
+            onClose={() => setModal(null)}
+            footer={(
+              <>
+                <Button onClick={() => copyToClipboard("Account JSON", rawJson)}>Copy JSON</Button>
+                <Button variant="primary" onClick={() => setModal(null)}>Done</Button>
+              </>
+            )}
+          >
+            <div className="account-details-layout">
+              <section className="account-details-hero">
+                <div className="account-details-primary">
+                  <div className="account-details-title-row">
+                    <StatusDot active={!!profile.is_current} />
+                    <strong>{profile.name || "-"}</strong>
+                    {profile.is_current ? <Badge variant="success">Current</Badge> : <Badge variant="neutral">Saved</Badge>}
+                    <Badge variant={planBadgeVariant(profile.plan_type)}>{String(profile.plan_type || "free")}</Badge>
+                    <Badge variant={profile.is_paid ? "success" : "neutral"}>Paid: {fmtPaid(profile.is_paid)}</Badge>
+                  </div>
+                  <div className="account-details-email">{profile.email_display || profile.email || "-"}</div>
+                </div>
+                <div className="account-details-quick-metrics">
+                  <div>
+                    <span>5h usage</span>
+                    <strong>{usagePercent(profile, "usage_5h")}</strong>
+                  </div>
+                  <div>
+                    <span>Weekly usage</span>
+                    <strong>{usagePercent(profile, "usage_weekly")}</strong>
+                  </div>
+                </div>
+              </section>
+
+              <div className="account-details-grid">
+                <section className="account-details-card">
+                  <h4>Identity</h4>
+                  <LabelValueRow label="Profile" value={formatAccountDetailValue(profile.name)} />
+                  <LabelValueRow label="Email" value={formatAccountDetailValue(profile.email_display || profile.email)} />
+                  <LabelValueRow label="Account ID" value={formatAccountDetailValue(profile.account_id)} />
+                  <LabelValueRow label="Added" value={formatAccountDetailValue(fmtSavedAtFull(profile.saved_at))} />
+                  <LabelValueRow label="Note" value={formatAccountDetailValue(profile.note)} />
+                </section>
+
+                <section className="account-details-card">
+                  <h4>Usage Windows</h4>
+                  <LabelValueRow label="5h usage" value={usagePercent(profile, "usage_5h")} />
+                  <LabelValueRow label="5h remain" value={formatRemainCell(profile.usage_5h?.resets_at, true, h5Loading, profile.error)} />
+                  <LabelValueRow label="5h reset at" value={formatAccountDetailValue(fmtResetFull(profile.usage_5h?.resets_at))} />
+                  <LabelValueRow label="Weekly usage" value={usagePercent(profile, "usage_weekly")} />
+                  <LabelValueRow label="Weekly remain" value={formatRemainCell(profile.usage_weekly?.resets_at, false, weeklyLoading, profile.error)} />
+                  <LabelValueRow label="Weekly reset at" value={formatAccountDetailValue(fmtResetFull(profile.usage_weekly?.resets_at))} />
+                </section>
+
+                <section className="account-details-card">
+                  <h4>Flags & Status</h4>
+                  <LabelValueRow label="Current profile" value={formatAccountDetailValue(profile.is_current)} />
+                  <LabelValueRow label="Auto-switch eligible" value={formatAccountDetailValue(profile.auto_switch_eligible)} />
+                  <LabelValueRow label="Same principal" value={formatAccountDetailValue(profile.same_principal)} />
+                  <LabelValueRow label="Plan type" value={formatAccountDetailValue(profile.plan_type || "free")} />
+                  <LabelValueRow label="Paid account" value={formatAccountDetailValue(profile.is_paid)} />
+                  <LabelValueRow label="Last error" value={formatAccountDetailValue(profile.error)} />
+                </section>
+              </div>
+
+              <section className="account-details-card account-details-raw">
+                <h4>Raw account payload</h4>
+                <pre>{rawJson}</pre>
+              </section>
+            </div>
+          </Dialog>
+        );
+      })()}
 
       {modal?.type === "add-account" && (
         <Dialog title="Add account" size="md" onClose={() => setModal(null)} footer={<Button onClick={() => setModal(null)}>Close</Button>}>
@@ -2897,84 +3591,254 @@ function AppContent() {
         </Dialog>
       )}
 
-      {modal?.type === "export" && (
-        <Dialog
-          title="Export profiles"
-          size="lg"
-          onClose={() => setModal(null)}
-          footer={<Button variant="primary" onClick={() => handleExportProfiles(modal.selected || [], modal.filename || "profiles").catch((e) => setError(e?.message || String(e)))}>Export selected</Button>}
-        >
-          <div className="modal-form">
-            <label>Archive name</label>
-            <input value={modal.filename} onChange={(event) => setModal((current) => ({ ...current, filename: event.target.value }))} />
-            <div className="columns-grid">
-              {buildProfileRows(state).map((row) => (
-                <label key={row.name} className="modal-check">
+      <input
+        ref={fileInputRef}
+        className="hidden-file-input"
+        type="file"
+        accept=".camzip,application/zip"
+        onChange={(event) => {
+          const file = event.target.files?.[0] || null;
+          if (file) {
+            openImportAnalyzeStep(file);
+          }
+          event.target.value = "";
+        }}
+      />
+
+      {modal?.type === "export" && (() => {
+        const fallbackRows = buildProfileRows(state).map((row) => ({
+          name: String(row?.name || "").trim(),
+          email: String(row?.email_display || row?.email || "").trim() || "-",
+        }));
+        const sourceRows = Array.isArray(modal.rows) && modal.rows.length ? modal.rows : fallbackRows;
+        const rowMap = new Map();
+        sourceRows.forEach((row) => {
+          const name = String(row?.name || "").trim();
+          if (!name || rowMap.has(name)) return;
+          rowMap.set(name, {
+            name,
+            email: String(row?.email || row?.email_display || "").trim() || "-",
+          });
+        });
+        const availableRows = Array.from(rowMap.values());
+        const availableNames = availableRows.map((row) => row.name);
+        const selectedNames = ensureUniqueNames(modal.selected || []).filter((name) => availableNames.includes(name));
+        const allSelected = availableNames.length > 0 && selectedNames.length === availableNames.length;
+        const exporting = !!modal.exporting;
+        return (
+          <Dialog
+            title="Export profiles"
+            size="lg"
+            onClose={() => setModal(null)}
+            footer={(
+              <Button
+                variant="primary"
+                loading={exporting}
+                disabled={selectedNames.length < 1 || exporting}
+                disabledReason="Select at least one profile to export."
+                onClick={() => {
+                  setModal((current) => {
+                    if (!current || current.type !== "export") return current;
+                    return { ...current, exporting: true };
+                  });
+                  handleExportProfiles(selectedNames, modal.filename || "profiles")
+                    .catch((e) => {
+                      setModal((current) => {
+                        if (!current || current.type !== "export") return current;
+                        return { ...current, exporting: false };
+                      });
+                      setError(e?.message || String(e));
+                    });
+                }}
+              >
+                Export selected
+              </Button>
+            )}
+          >
+            <div className="modal-form">
+              <label>Archive name</label>
+              <input value={modal.filename} onChange={(event) => setModal((current) => ({ ...current, filename: event.target.value }))} />
+              <div className="modal-selection-toolbar">
+                <label className="modal-check modal-check-inline">
                   <input
                     type="checkbox"
-                    checked={(modal.selected || []).includes(row.name)}
+                    checked={allSelected}
                     onChange={(event) => setModal((current) => {
-                      const next = new Set(current.selected || []);
-                      if (event.target.checked) next.add(row.name);
-                      else next.delete(row.name);
-                      return { ...current, selected: Array.from(next) };
+                      if (!current || current.type !== "export") return current;
+                      return { ...current, selected: event.target.checked ? [...availableNames] : [] };
                     })}
                   />
-                  <span>{row.name}</span>
+                  <span>Select all</span>
                 </label>
-              ))}
+                <div className="settings-inline-actions">
+                  <Button onClick={() => setModal((current) => (current && current.type === "export" ? { ...current, selected: [...availableNames] } : current))}>Select all</Button>
+                  <Button onClick={() => setModal((current) => (current && current.type === "export" ? { ...current, selected: [] } : current))}>Unselect all</Button>
+                </div>
+              </div>
+              <p className="modal-summary-text">{selectedNames.length} of {availableNames.length} selected</p>
+              <div className="modal-check-list export-profile-grid">
+                {availableRows.map((row) => (
+                  <label key={row.name} className="export-profile-card">
+                    <input
+                      type="checkbox"
+                      checked={selectedNames.includes(row.name)}
+                      onChange={(event) => setModal((current) => {
+                        if (!current || current.type !== "export") return current;
+                        const next = new Set(current.selected || []);
+                        if (event.target.checked) next.add(row.name);
+                        else next.delete(row.name);
+                        return { ...current, selected: Array.from(next) };
+                      })}
+                    />
+                    <span className="export-profile-meta">
+                      <strong className="export-profile-name">{row.name}</strong>
+                      <span className="export-profile-email">{row.email}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
-          </div>
-        </Dialog>
-      )}
+          </Dialog>
+        );
+      })()}
 
-      {modal?.type === "import" && (
+      {modal?.type === "import-warning-choose" && (
         <Dialog
           title="Import profiles"
           size="sm"
           onClose={() => setModal(null)}
           footer={(
             <>
-              <input
-                ref={fileInputRef}
-                className="hidden-file-input"
-                type="file"
-                accept=".camzip,application/zip"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) importAnalyze(file).catch((err) => setError(err?.message || String(err)));
-                  event.target.value = "";
+              <Button onClick={() => setModal(null)}>Cancel</Button>
+              <Button
+                variant="warning"
+                onClick={() => {
+                  setModal(null);
+                  triggerImportArchivePicker();
                 }}
-              />
-              <Button onClick={() => fileInputRef.current?.click()}>Choose archive</Button>
+              >
+                Choose archive
+              </Button>
             </>
           )}
         >
-          <p>Imported data may grant account access. Keep exported files private.</p>
-          <Button variant="primary" onClick={() => fileInputRef.current?.click()}>Analyze import</Button>
+          <p>Imported data may grant account access and should only come from a trusted source. Keep exported files private, do not share them with other people, and use this feature at your own risk.</p>
         </Dialog>
       )}
 
-      {modal?.type === "import-review" && (
-        <Dialog title="Import review" size="lg" onClose={() => setModal(null)} footer={<Button variant="primary" onClick={() => applyImport(modal.analysis, modal.selections || []).catch((e) => setError(e?.message || String(e)))}>Apply import</Button>}>
-          <LabelValueRow label="Archive" value={modal.file?.name || "uploaded file"} />
-          <div className="columns-grid">
-            {(modal.analysis?.profiles || []).map((row) => (
-              <label key={row.name} className="modal-check">
-                <input
-                  type="checkbox"
-                  checked={(modal.selections || []).some((item) => item.name === row.name)}
-                  onChange={(event) => setModal((current) => {
-                    const next = [...(current.selections || [])];
-                    if (event.target.checked) next.push(row);
-                    else next.splice(next.findIndex((item) => item.name === row.name), 1);
-                    return { ...current, selections: next };
-                  })}
-                />
-                <span>{row.name}</span>
-              </label>
-            ))}
-          </div>
+      {modal?.type === "import-warning-analyze" && (
+        <Dialog
+          title="Import profiles"
+          size="sm"
+          onClose={() => setModal(null)}
+          footer={(
+            <>
+              <Button onClick={() => setModal(null)}>Cancel</Button>
+              <Button
+                variant="warning"
+                loading={!!modal.busy}
+                onClick={() => importAnalyze(modal.file).catch((err) => setError(err?.message || String(err)))}
+              >
+                Analyze import
+              </Button>
+            </>
+          )}
+        >
+          <p>Selected file: <strong>{modal.file?.name || "archive"}</strong></p>
+          <p>Imported data may grant account access and should only come from a trusted source. Continue and analyze this archive?</p>
+        </Dialog>
+      )}
+
+      {modal?.type === "import-review" && (() => {
+        const rows = cloneImportPlanRows(modal.profiles || []);
+        const summary = buildImportPlanSummary(rows);
+        const applyDisabledReason = summary.invalidRenameCount > 0
+          ? "Set a new profile name for each Rename action."
+          : summary.selectedCount < 1
+            ? "Select at least one profile action other than Skip."
+            : "";
+        return (
+          <Dialog
+            title="Import review"
+            size="lg"
+            onClose={() => setModal(null)}
+            footer={(
+              <Button
+                variant="primary"
+                disabled={!!applyDisabledReason}
+                disabledReason={applyDisabledReason}
+                onClick={() => applyImport(modal.analysis, rows).catch((e) => setError(e?.message || String(e)))}
+              >
+                Apply import
+              </Button>
+            )}
+          >
+            <div className="modal-form">
+              <LabelValueRow label="Archive" value={modal.file?.name || "uploaded file"} />
+              <p className="modal-summary-text">Profiles in archive: {summary.total}. Selected for apply: {summary.selectedCount}. Overwrite actions: {summary.overwriteCount}.</p>
+              <div className="import-review-list">
+                {rows.map((row) => {
+                  const actionValue = normalizeImportPlanAction(row);
+                  return (
+                    <div key={row.name} className="import-review-item">
+                      <div className="import-review-head">
+                        <div className="import-review-name-wrap">
+                          <strong>{row.name || "-"}</strong>
+                          <span className="muted">{row.account_hint || "-"}</span>
+                        </div>
+                        <Badge variant={importStatusVariant(row.status)}>{String(row.status || "unknown").replaceAll("_", " ")}</Badge>
+                      </div>
+                      {Array.isArray(row.problems) && row.problems.length ? (
+                        <ul className="import-review-problems">
+                          {row.problems.map((problem, index) => <li key={`${row.name}-p-${index}`}>{problem}</li>)}
+                        </ul>
+                      ) : null}
+                      <div className="import-review-actions">
+                        <select
+                          value={actionValue}
+                          onChange={(event) => updateImportPlanRow(row.name, { action: event.target.value })}
+                        >
+                          <option value="import">Import</option>
+                          <option value="skip">Skip</option>
+                          <option value="rename">Rename</option>
+                          <option value="overwrite" disabled={!row.existing_name}>Overwrite</option>
+                        </select>
+                        {actionValue === "rename" ? (
+                          <input
+                            value={String(row.rename_to || "")}
+                            placeholder="new profile name"
+                            onChange={(event) => updateImportPlanRow(row.name, { rename_to: event.target.value })}
+                          />
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </Dialog>
+        );
+      })()}
+
+      {modal?.type === "import-review-confirm" && (
+        <Dialog
+          title="Confirm import apply"
+          size="sm"
+          onClose={() => setModal({ ...modal, type: "import-review" })}
+          footer={(
+            <>
+              <Button onClick={() => setModal({ ...modal, type: "import-review" })}>Back</Button>
+              <Button
+                variant="danger"
+                onClick={() => applyImport(modal.analysis, modal.profiles || [], { skipRiskConfirm: true }).catch((e) => setError(e?.message || String(e)))}
+              >
+                Apply import
+              </Button>
+            </>
+          )}
+        >
+          <p>One or more profiles will overwrite existing saved profiles. Keep exported data private and only import from a trusted source.</p>
+          <p>Apply this import now?</p>
         </Dialog>
       )}
 

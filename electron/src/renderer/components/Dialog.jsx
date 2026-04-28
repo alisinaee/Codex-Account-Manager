@@ -1,4 +1,5 @@
 import React, { useEffect, useId } from "react";
+import { DialogCloseIcon } from "../icon-pack.jsx";
 
 function Dialog({ title, children, footer, onClose, size = "md" }) {
   const titleId = useId();
@@ -32,7 +33,7 @@ function Dialog({ title, children, footer, onClose, size = "md" }) {
         <header className="dialog-header">
           <h3 id={titleId} className="dialog-title">{title}</h3>
           <button type="button" className="dialog-close" onClick={onClose} aria-label="Close dialog">
-            <span aria-hidden="true">&times;</span>
+            <DialogCloseIcon />
           </button>
         </header>
         <div className="dialog-content">{children}</div>
