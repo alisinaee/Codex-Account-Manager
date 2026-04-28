@@ -3,6 +3,10 @@
 const fs = require("node:fs");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 12000;
+const EXTENDED_REQUEST_TIMEOUT_MS = 30000;
+const EXTENDED_TIMEOUT_PATHS = new Set([
+  "/api/auto-switch/chain",
+]);
 
 function joinUrl(baseUrl, path) {
   return `${String(baseUrl || "").replace(/\/+$/, "")}${path}`;
@@ -54,6 +58,17 @@ function unwrapApiPayload(payload) {
   return payload;
 }
 
+function resolveRequestTimeoutMs(path, options = {}, state = {}) {
+  if (options && Object.prototype.hasOwnProperty.call(options, "timeoutMs")) {
+    return Math.max(1000, Number(options.timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS));
+  }
+  const baseTimeout = Math.max(1000, Number(state?.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS));
+  if (EXTENDED_TIMEOUT_PATHS.has(String(path || ""))) {
+    return Math.max(baseTimeout, EXTENDED_REQUEST_TIMEOUT_MS);
+  }
+  return baseTimeout;
+}
+
 function fallbackUsagePayload({ list, current, previousUsage } = {}) {
   const profileRows = Array.isArray(list?.profiles) ? list.profiles : [];
   const previousRows = Array.isArray(previousUsage?.profiles) ? previousUsage.profiles : [];
@@ -88,7 +103,7 @@ function createApiClient({ state, fetchImpl = fetch }) {
   let lastDesktopState = null;
 
   async function request(path, options = {}) {
-    const timeoutMs = Math.max(1000, Number(options?.timeoutMs || state?.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS));
+    const timeoutMs = resolveRequestTimeoutMs(path, options, state);
     const headers = {
       ...buildApiHeaders(state),
       ...(options.headers || {}),
@@ -164,11 +179,23 @@ function createApiClient({ state, fetchImpl = fetch }) {
     });
   }
 
-  async function switchProfile(name) {
+  async function switchProfile(name, options = {}) {
+    const platform = String(options?.platform || process.platform || "").toLowerCase();
+    const targetNoRestart = Object.prototype.hasOwnProperty.call(options || {}, "noRestart")
+      ? Boolean(options.noRestart)
+      : (platform === "darwin" ? false : true);
+    const payload = {
+      name,
+      no_restart: targetNoRestart,
+    };
+    if (Boolean(options?.closeOnly)) {
+      payload.close_only = true;
+      payload.no_restart = true;
+    }
     await request("/api/local/switch", {
       method: "POST",
       headers: buildApiHeaders(state),
-      body: JSON.stringify({ name, no_restart: true }),
+      body: JSON.stringify(payload),
     });
     return getDesktopState({ usageScope: "all", usageTimeoutSec: 8, usageForce: true });
   }
@@ -195,4 +222,5 @@ module.exports = {
   buildServiceStateFromStatus,
   createApiClient,
   parseServiceStatusOutput,
+  resolveRequestTimeoutMs,
 };

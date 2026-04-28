@@ -24,6 +24,7 @@ import {
   usageTone,
 } from "./switch-state.mjs";
 import { appendSessionToken, buildAuthenticatedDownloadUrl } from "./request-paths.mjs";
+import { buildDesktopLogEntry, mergeDebugLogs } from "./debug-logs.mjs";
 import SettingsView, { SystemInfoSettingsCard } from "./SettingsView.jsx";
 import {
   buildProfileRows,
@@ -51,6 +52,7 @@ import {
   getCurrentRefreshIntervalMs,
   waitForServiceRestart,
 } from "./parity.mjs";
+import { mergeUsagePayload } from "./usage-merge.mjs";
 import { getNextThemeMode, normalizeThemeMode, watchThemePreference } from "./theme.mjs";
 import Badge from "./components/Badge.jsx";
 import Button from "./components/Button.jsx";
@@ -213,6 +215,10 @@ function usageErrorLabel(rowError) {
   if (lower.includes("timed out")) return "timeout";
   if (lower.includes("missing access_token/account_id")) return "missing auth";
   return msg;
+}
+
+function isAuthExpiredLabel(value) {
+  return String(value || "").trim().toLowerCase() === "auth expired";
 }
 
 function isUsageLoadingState(usage, rowError, rowLoading) {
@@ -689,8 +695,77 @@ function formatLogLevel(level) {
   return "Info";
 }
 
+function isLikelyEmail(value) {
+  const text = String(value || "").trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
+}
+
+function normalizeAuthUrl(candidate) {
+  const raw = String(candidate || "").trim().replace(/[),.;]+$/, "");
+  if (!raw || isLikelyEmail(raw)) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^auth\.openai\.com\/\S+/i.test(raw)) return `https://${raw}`;
+  if (/^auth\.openai\.com$/i.test(raw)) return "https://auth.openai.com/";
+  return "";
+}
+
+function isCopyableUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveSessionLoginUrl(session, mode = "device") {
+  const directUrl = normalizeAuthUrl(session?.url);
+  if (directUrl) return directUrl;
+  const lines = Array.isArray(session?.recent_output) ? session.recent_output : [];
+  for (const line of lines) {
+    const text = String(line || "").trim();
+    if (!text) continue;
+    const matchWithProtocol = text.match(/https?:\/\/\S+/i);
+    const normalizedWithProtocol = normalizeAuthUrl(matchWithProtocol?.[0] || "");
+    if (normalizedWithProtocol) return normalizedWithProtocol;
+    const matchAuthHost = text.match(/\bauth\.openai\.com(?:\/\S*)?/i);
+    const normalizedAuthHost = normalizeAuthUrl(matchAuthHost?.[0] || "");
+    if (normalizedAuthHost) return normalizedAuthHost;
+  }
+  if (String(mode || "").toLowerCase() === "device") {
+    return "https://auth.openai.com/activate";
+  }
+  return "https://auth.openai.com/";
+}
+
 function RemainLoadingIndicator() {
   return <span className="remain-loading-spinner" role="status" aria-label="Loading" />;
+}
+
+function AuthExpiredBadge({ className = "" }) {
+  return (
+    <Badge variant="danger" className={["auth-expired-chip", className].filter(Boolean).join(" ")}>
+      auth expired
+    </Badge>
+  );
+}
+
+function LoginModeHelp({ mode = "device" }) {
+  const normalized = String(mode || "device").toLowerCase();
+  const isDevice = normalized === "device";
+  const currentLabel = isDevice ? "Device Login" : "Normal Login";
+  return (
+    <div className="auth-mode-help">
+      <div className="auth-mode-help-head">
+        <span className="muted">Mode guidance</span>
+        <Badge variant="neutral">Current: {currentLabel}</Badge>
+      </div>
+      <p className="muted"><strong>Device Login:</strong> Uses URL + code flow. Best for restricted/headless login situations.</p>
+      <p className="muted"><strong>Normal Login:</strong> Opens standard interactive browser login. Faster when browser auth is stable.</p>
+    </div>
+  );
 }
 
 function UsageCell({ row, usageKey, flash = false, authExpiredAsUnknown = false }) {
@@ -702,10 +777,14 @@ function UsageCell({ row, usageKey, flash = false, authExpiredAsUnknown = false 
   const showUnknown = authExpiredAsUnknown && errorLabel === "auth expired";
 
   if (!loading && errorLabel) {
+    const showAuthExpiredChip = isAuthExpiredLabel(errorLabel);
+    const displayError = showUnknown && !showAuthExpiredChip ? "?" : errorLabel;
     return (
       <div className="usage-cell" title={showUnknown ? "unknown" : errorLabel}>
         <div className="usage-top">
-          <span className="usage-pct usage-low">{showUnknown ? "?" : errorLabel}</span>
+          {showAuthExpiredChip
+            ? <AuthExpiredBadge />
+            : <span className="usage-pct usage-low">{displayError}</span>}
         </div>
         <div className="usage-bar-track" aria-hidden="true">
           <div className="usage-bar-fill usage-bar-error" style={{ width: "100%" }} />
@@ -1043,12 +1122,20 @@ function AccountsTable({
             if (h5Loading) {
               return <RemainLoadingIndicator />;
             }
-            return (
-              <span className={`remain-value ${rowErrorLabel ? "loading-text" : ""}`.trim()} title={fmtResetFull(profile.usage_5h?.resets_at)}>
-                {formatRemainCell(profile.usage_5h?.resets_at, true, false, profile.error)}
-              </span>
-            );
+            {
+              const remainText = formatRemainCell(profile.usage_5h?.resets_at, true, false, profile.error);
+              const remainIsError = Boolean(rowErrorLabel);
+              const remainDisplay = isAuthExpiredLabel(remainText) ? "" : remainText;
+              return (
+                <span className={`remain-value ${remainIsError ? "loading-text" : ""}`.trim()} title={fmtResetFull(profile.usage_5h?.resets_at)}>
+                  {remainDisplay}
+                </span>
+              );
+            }
           case "h5reset":
+            if (rowErrorLabel) {
+              return <span className="muted" />;
+            }
             return <span className="muted" title={fmtResetFull(profile.usage_5h?.resets_at)}>{fmtReset(profile.usage_5h?.resets_at)}</span>;
             case "weekly":
             return <UsageCell row={profile} usageKey="usage_weekly" flash={wFlash} authExpiredAsUnknown />;
@@ -1056,12 +1143,20 @@ function AccountsTable({
               if (wLoading) {
                 return <RemainLoadingIndicator />;
               }
-              return (
-              <span className={`remain-value ${rowErrorLabel ? "loading-text" : ""}`.trim()} title={fmtResetFull(profile.usage_weekly?.resets_at)}>
-                {formatRemainCell(profile.usage_weekly?.resets_at, false, false, profile.error)}
-              </span>
-              );
+              {
+                const remainText = formatRemainCell(profile.usage_weekly?.resets_at, false, false, profile.error);
+                const remainIsError = Boolean(rowErrorLabel);
+                const remainDisplay = isAuthExpiredLabel(remainText) ? "" : remainText;
+                return (
+                  <span className={`remain-value ${remainIsError ? "loading-text" : ""}`.trim()} title={fmtResetFull(profile.usage_weekly?.resets_at)}>
+                    {remainDisplay}
+                  </span>
+                );
+              }
           case "weeklyreset":
+            if (rowErrorLabel) {
+              return <span className="muted" />;
+            }
             return <span className="muted" title={fmtResetFull(profile.usage_weekly?.resets_at)}>{fmtReset(profile.usage_weekly?.resets_at)}</span>;
           case "plan":
             return (
@@ -1080,7 +1175,11 @@ function AccountsTable({
           case "added":
             return <span className="muted" title={fmtSavedAtFull(profile.saved_at)}>{fmtSavedAt(profile.saved_at)}</span>;
           case "note":
-            return <span className="muted" title={noteText || "-"}>{truncateNote(noteText)}</span>;
+            return (
+              <span className="muted" title={noteText || "-"}>
+                {noteText ? truncateNote(noteText) : ""}
+              </span>
+            );
           case "auto":
             return (
               <span className="toggle">
@@ -1173,6 +1272,7 @@ function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions, o
       {profiles.map((profile) => {
         const h5Value = usageValue(profile, "usage_5h");
         const weeklyValue = usageValue(profile, "usage_weekly");
+        const rowErrorLabel = usageErrorLabel(profile.error);
         const quotaBlocked = (h5Value ?? 1) <= 0 || (weeklyValue ?? 1) <= 0;
         const switchDisabled = profile.is_current || Boolean(switching);
         const h5Tone = usageTone(h5Value);
@@ -1214,6 +1314,11 @@ function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions, o
               </div>
             </div>
             <div className="mobile-email">{profile.email_display}</div>
+            {isAuthExpiredLabel(rowErrorLabel) ? (
+              <div className="mobile-auth-warning">
+                <AuthExpiredBadge />
+              </div>
+            ) : null}
             <div className="mobile-stats">
               <div className="mobile-stat"><span className="label" title="5h means the five-hour usage window.">5h</span><span className={h5Tone ? `usage-${h5Tone}` : "loading-text"}>{usagePercent(profile, "usage_5h")}</span></div>
               <div className="mobile-stat"><span className="label">Weekly</span><span className={weeklyTone ? `usage-${weeklyTone}` : "loading-text"}>{usagePercent(profile, "usage_weekly")}</span></div>
@@ -1320,7 +1425,7 @@ function useCountdownText(dueAtText, dueAt) {
   return formatAutoSwitchCountdown(dueAtText, dueAt, now);
 }
 
-function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunSwitch, onRapidTest, onStopTests, onTestAutoSwitch, onAutoArrange }) {
+function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunSwitch, onRapidTest, onStopTests, onTestAutoSwitch, onAutoArrange, autoArrangeBusy = false }) {
   const autoState = state?.autoSwitch || {};
   const autoConfig = state?.config?.auto_switch || {};
   const countdownText = useCountdownText(autoState.pending_switch_due_at_text, autoState.pending_switch_due_at);
@@ -1422,15 +1527,6 @@ function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunS
                       </select>
                     </div>
                   </div>
-                  <div className="settings-inline-actions">
-                    <Button
-                      variant="ghost"
-                      onClick={onAutoArrange}
-                      title="Automatically reorder the switch chain based on current ranking policy."
-                    >
-                      Auto Arrange
-                    </Button>
-                  </div>
                   <div className="metric-pair-grid">
                     <div className="setting-row">
                       <SettingCopy label="5h switch (%)" title="Switch when five-hour usage reaches this threshold." />
@@ -1470,7 +1566,6 @@ function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunS
               <SettingsSubsection
                 title="Chain preview"
                 meta={`${chainCount} account${chainCount === 1 ? "" : "s"}`}
-                action={<Button onClick={onOpenChainEdit}>Edit</Button>}
               >
                 <div className="chain-track-wrap">
                   <div className="chain-track">
@@ -1499,6 +1594,18 @@ function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunS
                   {" · "}
                   <span title="W means weekly usage window">W = weekly usage</span>
                 </div>
+                <div className="settings-inline-actions autoswitch-chain-actions">
+                  <Button
+                    variant="primary"
+                    loading={autoArrangeBusy}
+                    disabled={autoArrangeBusy}
+                    onClick={onAutoArrange}
+                    title="Automatically reorder the switch chain based on current ranking policy."
+                  >
+                    Auto Arrange
+                  </Button>
+                  <Button onClick={onOpenChainEdit}>Edit</Button>
+                </div>
               </SettingsSubsection>
             </div>
           </SettingsCardShell>
@@ -1508,9 +1615,7 @@ function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunS
   );
 }
 
-function GuideView({ releaseNotes, onRefreshReleaseNotes }) {
-  const notes = Array.isArray(releaseNotes?.releases) ? releaseNotes.releases : [];
-  const latestTag = notes[0]?.tag || "No release notes loaded";
+function GuideView() {
   const shortcuts = views.slice(0, 9);
 
   return (
@@ -1520,10 +1625,10 @@ function GuideView({ releaseNotes, onRefreshReleaseNotes }) {
           <SectionCard className="settings-card guide-quick-card">
             <div className="group-title">Quick start</div>
             <p className="muted">Use Add Account, Switch, Import, Export, and Auto Switch from the desktop shell.</p>
-            <LabelValueRow label="Desktop parity" value="Electron mirrors the web panel behavior, dialogs, and table controls." />
-            <LabelValueRow label="Latest release" value={latestTag} />
-            <div className="settings-inline-actions">
-              <Button onClick={onRefreshReleaseNotes}>Reload release notes</Button>
+            <div className="guide-layer-map">
+              <LabelValueRow label="Python core" value="Profile storage, switching, usage fetch, and local /api endpoints." />
+              <LabelValueRow label="Web UI" value="Stable browser panel with complete local controls and release guidance." />
+              <LabelValueRow label="Electron UI" value="Desktop shell, tray/menu integration, runtime setup, and windowed workflow." />
             </div>
           </SectionCard>
 
@@ -1539,9 +1644,101 @@ function GuideView({ releaseNotes, onRefreshReleaseNotes }) {
             </div>
           </SectionCard>
         </div>
+        <div className="guide-reference">
+          <SectionCard className="settings-card guide-reference-card">
+            <div className="group-title">Guide map</div>
+            <p className="muted guide-reference-copy">
+              This view explains how the Python core, web panel, and desktop shell work together so you can choose the right control surface per task.
+            </p>
+            <details className="guide-topic" open>
+              <summary>Python core and CLI contract</summary>
+              <ul className="guide-list">
+                <li>The Python core is the source of truth for profiles, switching, usage collection, notifications, and auto-switch state.</li>
+                <li>CLI-first workflows remain available through commands like <code>save</code>, <code>switch</code>, <code>usage-local</code>, <code>ui</code>, and <code>ui-service</code>.</li>
+                <li>Electron and web both consume the same local API contract, so profile data and status stay consistent across surfaces.</li>
+              </ul>
+            </details>
+            <details className="guide-topic" open>
+              <summary>Web UI parity and shared behavior</summary>
+              <ul className="guide-list">
+                <li>Profiles, Auto Switch, notifications thresholds, import/export flows, release notes, and update actions mirror the web panel behavior.</li>
+                <li>Current and all-account refresh timers follow the same config values and safe usage refresh model.</li>
+                <li>Switching updates active auth through the same backend path used by <code>codex-account switch</code>.</li>
+              </ul>
+            </details>
+            <details className="guide-topic">
+              <summary>Electron-only desktop features</summary>
+              <ul className="guide-list">
+                <li>Runtime setup screen can bootstrap Python/core requirements and show actionable diagnostics before the app opens fully.</li>
+                <li>Desktop tray/menu-bar state reflects current usage and offers quick actions like open, refresh, and test notification.</li>
+                <li>Native desktop notifications can focus the app window; Windows also supports taskbar usage badge and mini live meter.</li>
+              </ul>
+            </details>
+            <details className="guide-topic">
+              <summary>Practical workflows</summary>
+              <ul className="guide-list">
+                <li>Add a profile with Device Login or Normal Login, then run Switch from table rows to activate it.</li>
+                <li>Use Import/Export for migration archives and review import analysis before apply actions.</li>
+                <li>Tune Auto Switch delay, thresholds, ranking mode, and chain order, then use Test, Rapid Test, or Run Switch based on the scenario.</li>
+                <li>Use the Update page for release checks and guided upgrade flow while keeping the desktop shell open.</li>
+              </ul>
+            </details>
+            <details className="guide-topic">
+              <summary>Troubleshooting and safety</summary>
+              <ul className="guide-list">
+                <li>Open Debug view to inspect runtime/API logs and export a JSON snapshot for issue reports.</li>
+                <li>If usage shows auth expired for a profile, refresh that account with a new healthy login session.</li>
+                <li>Current client support targets Codex CLI and Codex VS Code extension; some client launch paths still need manual reload after switch.</li>
+              </ul>
+            </details>
+          </SectionCard>
+        </div>
+      </div>
+    </section>
+  );
+}
 
-        <SectionCard className="settings-card guide-changelog-card">
+function UpdateView({ releaseNotes, updateStatus, checking, onCheck, onRunUpdate, onRefreshReleaseNotes }) {
+  const notes = Array.isArray(releaseNotes?.releases) ? releaseNotes.releases : [];
+  const updateAvailable = !!updateStatus?.update_available;
+
+  return (
+    <section className="view update-view">
+      <div className="sparse-page-layout">
+        <SectionCard className="settings-card update-panel">
+          <div className="group-title">Update status</div>
+          <LabelValueRow label="Current version" value={updateStatus?.current_version || "-"} />
+          <LabelValueRow label="Latest version" value={updateStatus?.latest_version || "-"} />
+          <LabelValueRow label="Status" value={updateStatus?.status_text || updateStatus?.status || "Unknown"} />
+          {checking ? <div className="update-inline-loading" role="status" aria-live="polite">Checking for updates…</div> : null}
+          <div className="settings-inline-actions">
+            <Button loading={checking} onClick={onCheck} disabled={checking}>Check for updates</Button>
+            <Button variant={updateAvailable ? "primary" : "secondary"} onClick={onRunUpdate} disabled={!updateAvailable || checking}>Update now</Button>
+          </div>
+        </SectionCard>
+        <SectionCard className="settings-card sparse-secondary-card">
+          <div className="group-title">Release stream</div>
+          <p className="muted">Desktop updates include renderer fixes, runtime bootstrap improvements, and parity updates with the web panel.</p>
+          <div className="tech-pill-row">
+            <span className="chip chip-neutral">Electron</span>
+            <span className="chip chip-neutral">Python Core</span>
+            <span className="chip chip-neutral">Local API</span>
+          </div>
+        </SectionCard>
+        <SectionCard className="settings-card sparse-bottom-fill">
+          <div className="group-title">Recent update guidance</div>
+          <p className="muted">When an update is available, run it from this page and keep this window open until status changes to ready.</p>
+          <div className="update-guidance-list" aria-label="What gets updated">
+            <LabelValueRow label="Renderer" value="Desktop screens, layout fixes, dialogs, and table behavior." />
+            <LabelValueRow label="Python core" value="Account switching, usage collection, and local command logic." />
+            <LabelValueRow label="Local API" value="The private service bridge used by the Electron shell." />
+          </div>
+        </SectionCard>
+        <SectionCard className="settings-card guide-changelog-card sparse-bottom-fill">
           <div className="group-title">Changelog</div>
+          <div className="settings-inline-actions">
+            <Button onClick={onRefreshReleaseNotes}>Reload release notes</Button>
+          </div>
           <div className="release-sections scrollable scrollable-with-fade">
             {notes.length === 0 ? (
               <div className="muted">No release notes available.</div>
@@ -1577,51 +1774,13 @@ function GuideView({ releaseNotes, onRefreshReleaseNotes }) {
   );
 }
 
-function UpdateView({ updateStatus, checking, onCheck, onRunUpdate }) {
-  const updateAvailable = !!updateStatus?.update_available;
-
-  return (
-    <section className="view update-view">
-      <div className="sparse-page-layout">
-        <SectionCard className="settings-card update-panel">
-          <div className="group-title">Update status</div>
-          <LabelValueRow label="Current version" value={updateStatus?.current_version || "-"} />
-          <LabelValueRow label="Latest version" value={updateStatus?.latest_version || "-"} />
-          <LabelValueRow label="Status" value={updateStatus?.status_text || updateStatus?.status || "Unknown"} />
-          {checking ? <div className="update-inline-loading" role="status" aria-live="polite">Checking for updates…</div> : null}
-          <div className="settings-inline-actions">
-            <Button loading={checking} onClick={onCheck} disabled={checking}>Check for updates</Button>
-            <Button variant={updateAvailable ? "primary" : "secondary"} onClick={onRunUpdate} disabled={!updateAvailable || checking}>Update now</Button>
-          </div>
-        </SectionCard>
-        <SectionCard className="settings-card sparse-secondary-card">
-          <div className="group-title">Release stream</div>
-          <p className="muted">Desktop updates include renderer fixes, runtime bootstrap improvements, and parity updates with the web panel.</p>
-          <div className="tech-pill-row">
-            <span className="chip chip-neutral">Electron</span>
-            <span className="chip chip-neutral">Python Core</span>
-            <span className="chip chip-neutral">Local API</span>
-          </div>
-        </SectionCard>
-        <SectionCard className="settings-card sparse-bottom-fill">
-          <div className="group-title">Recent update guidance</div>
-          <p className="muted">When an update is available, run it from this page and keep this window open until status changes to ready.</p>
-          <div className="update-guidance-list" aria-label="What gets updated">
-            <LabelValueRow label="Renderer" value="Desktop screens, layout fixes, dialogs, and table behavior." />
-            <LabelValueRow label="Python core" value="Account switching, usage collection, and local command logic." />
-            <LabelValueRow label="Local API" value="The private service bridge used by the Electron shell." />
-          </div>
-        </SectionCard>
-      </div>
-    </section>
-  );
-}
-
 function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, onClear, onExport }) {
   const [levelFilter, setLevelFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [showJump, setShowJump] = useState(false);
   const panelRef = useRef(null);
+  const autoScrollInternalRef = useRef(false);
 
   const filteredLogs = useMemo(() => {
     const source = Array.isArray(debugLogs) ? debugLogs : [];
@@ -1639,22 +1798,46 @@ function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, o
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
-    if (!showJump) {
+    if (autoScrollEnabled) {
+      autoScrollInternalRef.current = true;
       panel.scrollTop = panel.scrollHeight;
+      setShowJump(false);
+      requestAnimationFrame(() => {
+        autoScrollInternalRef.current = false;
+      });
     }
-  }, [filteredLogs, showJump]);
+  }, [filteredLogs, autoScrollEnabled, captureEnabled]);
 
   function onPanelScroll(event) {
     const panel = event.currentTarget;
-    const nearBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
+    const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
+    const nearBottom = distanceFromBottom <= 140;
+    if (autoScrollInternalRef.current) {
+      setShowJump(!nearBottom);
+      return;
+    }
+    if (autoScrollEnabled && !nearBottom) {
+      setAutoScrollEnabled(false);
+    }
     setShowJump(!nearBottom);
   }
 
   function jumpToLatest() {
     const panel = panelRef.current;
     if (!panel) return;
+    autoScrollInternalRef.current = true;
     panel.scrollTop = panel.scrollHeight;
     setShowJump(false);
+    requestAnimationFrame(() => {
+      autoScrollInternalRef.current = false;
+    });
+  }
+
+  function handleAutoScrollToggle(next) {
+    setAutoScrollEnabled(Boolean(next));
+    if (next) {
+      jumpToLatest();
+    }
   }
 
   return (
@@ -1687,6 +1870,15 @@ function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, o
             </Button>
           ))}
         </div>
+        <div className="debug-toolbar-controls">
+          <span className="muted">Auto-scroll</span>
+          <ToggleSwitch
+            checked={autoScrollEnabled}
+            onChange={handleAutoScrollToggle}
+            ariaLabel="Toggle debug log auto-scroll"
+            title={autoScrollEnabled ? "Auto-scroll enabled" : "Auto-scroll disabled"}
+          />
+        </div>
         <input
           type="search"
           value={query}
@@ -1695,15 +1887,18 @@ function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, o
           aria-label="Search logs"
         />
       </div>
-      <div ref={panelRef} className="debug-log-panel scrollable scrollable-with-fade" onScroll={onPanelScroll}>
-        {filteredLogs.length ? filteredLogs.map((row, index) => (
-          <div key={`${row.ts || index}-${index}`} className={`debug-line log-${String(row.level || "info").toLowerCase()}`}>
-            <span className="debug-ts">{row.ts || "-"}</span>
-            <strong className="debug-level">{formatLogLevel(row.level)}</strong>
-            <span className="debug-message">{row.message || ""}</span>
-          </div>
-        )) : <div className="muted">No logs yet.</div>}
-        {showJump ? (
+      <div className="debug-log-panel-wrap">
+        <div ref={panelRef} className="debug-log-panel scrollable" onScroll={onPanelScroll}>
+          {filteredLogs.length ? filteredLogs.map((row, index) => (
+            <div key={`${row.ts || index}-${index}`} className={`debug-line log-${String(row.level || "info").toLowerCase()}`}>
+              <span className="debug-ts">{row.ts || "-"}</span>
+              <strong className="debug-level">{formatLogLevel(row.level)}</strong>
+              <span className="debug-source">{String(row?.source || "app")}</span>
+              <span className="debug-message">{row.message || ""}</span>
+            </div>
+          )) : <div className="muted">No logs yet.</div>}
+        </div>
+        {showJump && !autoScrollEnabled ? (
           <Button type="button" className="debug-jump-latest" onClick={jumpToLatest}>
             Jump to latest
           </Button>
@@ -1715,6 +1910,9 @@ function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, o
 
 function AboutView({ backendState, state, version, onOpenExternal }) {
   const backendUrl = String(backendState?.baseUrl || "http://127.0.0.1:4673/").trim();
+  const projectUrl = "https://github.com/alisinaee/Codex-Account-Manager";
+  const authorGithubUrl = "https://github.com/alisinaee";
+  const authorLinkedinUrl = "https://www.linkedin.com/in/alisinaee/";
   const ui = state?.config?.ui || {};
   const platformName = window.codexAccountDesktop?.platform || navigator.platform || "unknown";
 
@@ -1758,6 +1956,47 @@ function AboutView({ backendState, state, version, onOpenExternal }) {
                 <div className="about-detail-item">
                   <span className="about-detail-label">Stable web panel</span>
                   <strong className="about-detail-value">Available through `codex-account ui`</strong>
+                </div>
+                <div className="about-detail-item">
+                  <span className="about-detail-label">Project</span>
+                  <a
+                    className="about-backend-link about-detail-value"
+                    href={projectUrl}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onOpenExternal(projectUrl);
+                    }}
+                  >
+                    github.com/alisinaee/Codex-Account-Manager
+                  </a>
+                </div>
+                <div className="about-detail-item">
+                  <span className="about-detail-label">Author</span>
+                  <span className="about-detail-value">
+                    Ali Sinaee
+                    {" · "}
+                    <a
+                      className="about-backend-link"
+                      href={authorGithubUrl}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onOpenExternal(authorGithubUrl);
+                      }}
+                    >
+                      GitHub
+                    </a>
+                    {" · "}
+                    <a
+                      className="about-backend-link"
+                      href={authorLinkedinUrl}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onOpenExternal(authorLinkedinUrl);
+                      }}
+                    >
+                      LinkedIn
+                    </a>
+                  </span>
                 </div>
                 <div className="about-detail-item">
                   <span className="about-detail-label">Backend</span>
@@ -2066,6 +2305,7 @@ function RuntimeSetupView({
 function AppContent() {
   const desktop = window.codexAccountDesktop;
   const isWindowsDesktop = String(desktop?.platform || "").toLowerCase() === "win32";
+  const isMacDesktop = String(desktop?.platform || "").toLowerCase() === "darwin";
   const { showToast } = useToast();
   const [activeView, setActiveView] = useState("profiles");
   const [viewportSizeClass, setViewportSizeClass] = useState(() => classifyWidth(window.innerWidth));
@@ -2075,12 +2315,14 @@ function AppContent() {
   const [releaseNotes, setReleaseNotes] = useState(null);
   const [updateStatus, setUpdateStatus] = useState(null);
   const [checkingUpdateStatus, setCheckingUpdateStatus] = useState(false);
-  const [debugLogs, setDebugLogs] = useState([]);
+  const [backendDebugLogs, setBackendDebugLogs] = useState([]);
+  const [desktopDebugLogs, setDesktopDebugLogs] = useState([]);
   const [debugCaptureEnabled, setDebugCaptureEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState("");
   const [activatedProfile, setActivatedProfile] = useState("");
-  const [error, setError] = useState("");
+  const [autoArrangeBusy, setAutoArrangeBusy] = useState(false);
+  const [error, setErrorState] = useState("");
   const [columnPrefs, setColumnPrefs] = useState(loadStoredColumns());
   const [windowsSwitchRestartDialogSuppressed, setWindowsSwitchRestartDialogSuppressed] = useState(loadWindowsSwitchRestartDialogPreference());
   const [sort, setSort] = useState({ key: "profile", dir: "asc" });
@@ -2108,7 +2350,9 @@ function AppContent() {
   const allRefreshTimerRef = useRef(null);
   const autoSwitchStateTimerRef = useRef(null);
   const debugCaptureTimerRef = useRef(null);
+  const desktopLogSigRef = useRef({ sig: "", ts: 0 });
   const [, setClockTick] = useState(Date.now());
+  const debugLogs = useMemo(() => mergeDebugLogs(backendDebugLogs, desktopDebugLogs), [backendDebugLogs, desktopDebugLogs]);
 
   const activeTitle = useMemo(() => views.find((view) => view.id === activeView)?.label || "Profiles", [activeView]);
   const updateAvailable = !!updateStatus?.update_available;
@@ -2143,6 +2387,39 @@ function AppContent() {
 
   function notifySuccess(title, description = "") {
     showToast({ tone: "success", title, description });
+  }
+
+  function appendDesktopLog(level, message, details = {}) {
+    const cleanMessage = String(message || "").trim();
+    if (!cleanMessage) return null;
+    const sig = `${String(level || "info").toLowerCase()}|${cleanMessage}|${JSON.stringify(details || {})}`;
+    const now = Date.now();
+    if (desktopLogSigRef.current.sig === sig && now - desktopLogSigRef.current.ts < 1200) {
+      return null;
+    }
+    desktopLogSigRef.current = { sig, ts: now };
+    const entry = buildDesktopLogEntry(level, cleanMessage, details);
+    setDesktopDebugLogs((current) => [...current, entry].slice(-240));
+    return entry;
+  }
+
+  function reportAppError(errorLike, details = {}) {
+    const message = errorLike?.message || String(errorLike || "");
+    if (message) {
+      appendDesktopLog("error", message, details);
+    }
+    return message;
+  }
+
+  function setError(nextError) {
+    setErrorState((current) => {
+      const next = typeof nextError === "function" ? nextError(current) : nextError;
+      const message = String(next || "").trim();
+      if (message && message !== String(current || "").trim()) {
+        appendDesktopLog("error", message, { source: "renderer:setError" });
+      }
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -2224,6 +2501,22 @@ function AppContent() {
     setModal({ type: "switch-restart-warning", dontShowAgain: false });
   }
 
+  function shouldPromptManualMacRestartAfterSwitch(profileName) {
+    if (!isMacDesktop) {
+      return false;
+    }
+    const target = String(profileName || "").trim();
+    if (!target) {
+      return false;
+    }
+    const rows = Array.isArray(stateRef.current?.usage?.profiles) ? stateRef.current.usage.profiles : [];
+    const row = rows.find((item) => String(item?.name || "").trim() === target);
+    if (!row) {
+      return false;
+    }
+    return isAuthExpiredLabel(usageErrorLabel(row.error));
+  }
+
   function closeWindowsSwitchRestartDialog(dontShowAgain) {
     if (dontShowAgain) {
       setWindowsSwitchRestartDialogSuppressed(true);
@@ -2234,7 +2527,13 @@ function AppContent() {
 
   function commitUsagePayload(payload, opts = {}) {
     if (!payload || payload.__error) return false;
-    applyUsageState(payload, { showLoading: !!opts.showLoading });
+    const merged = mergeUsagePayload(
+      stateRef.current?.usage,
+      payload,
+      stateRef.current?.list,
+      stateRef.current?.current,
+    );
+    applyUsageState(merged, { showLoading: !!opts.showLoading });
     return true;
   }
 
@@ -2290,10 +2589,25 @@ function AppContent() {
       return await desktop.request(path, options);
     } catch (error) {
       if (!isInvalidSessionTokenMessage(error)) {
+        reportAppError(error, {
+          channel: "desktop:request",
+          path,
+          method: String(options?.method || "GET").toUpperCase(),
+        });
         throw error;
       }
       await desktop.refresh().catch(() => null);
-      return desktop.request(path, options);
+      try {
+        return await desktop.request(path, options);
+      } catch (retryError) {
+        reportAppError(retryError, {
+          channel: "desktop:request",
+          path,
+          method: String(options?.method || "GET").toUpperCase(),
+          retry: true,
+        });
+        throw retryError;
+      }
     }
   }
 
@@ -2376,8 +2690,9 @@ function AppContent() {
       }
       setUpdateStatus(update);
       setReleaseNotes(notes);
-      setDebugLogs(Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : []);
+      setBackendDebugLogs(Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : []);
     } catch (err) {
+      reportAppError(err, { action: "loadAll" });
       if (sessionUsageCacheRef.current) {
         applyUsageState(sessionUsageCacheRef.current, { showLoading: false });
       }
@@ -2622,8 +2937,9 @@ function AppContent() {
   async function switchProfile(name) {
     const target = String(name || "").trim();
     if (!target || switching) return;
+    const promptManualMacRestart = shouldPromptManualMacRestartAfterSwitch(target);
     if (!switchControllerRef.current) {
-      switchControllerRef.current = createSwitchController((profileName) => desktop.switchProfile(profileName));
+      switchControllerRef.current = createSwitchController((profileName, options = {}) => desktop.switchProfile(profileName, options));
     }
     setSwitching(target);
     setActivatedProfile("");
@@ -2634,12 +2950,24 @@ function AppContent() {
       return nextState;
     });
     try {
-      const next = await switchControllerRef.current.switchProfile(target);
+      const switchOptions = {
+        platform: String(desktop?.platform || "").toLowerCase(),
+      };
+      if (isMacDesktop) {
+        switchOptions.noRestart = Boolean(promptManualMacRestart);
+      }
+      const next = await switchControllerRef.current.switchProfile(target, switchOptions);
       applyDesktopState(next);
       loadAll({ showLoading: false, clearUsageCache: true }).catch(() => {});
       setActivatedProfile(target);
       notifySuccess("Profile switched", `Current profile: ${target}`);
       maybeShowWindowsSwitchRestartDialog();
+      if (promptManualMacRestart) {
+        setModal({
+          type: "mac-auth-expired-restart-warning",
+          profileName: target,
+        });
+      }
       setTimeout(() => setActivatedProfile((current) => (current === target ? "" : current)), 1100);
     } catch (err) {
       loadAll().catch(() => {});
@@ -2823,7 +3151,7 @@ function AppContent() {
   }
 
   async function openAddAccount() {
-    setModal({ type: "add-account", name: "", mode: "device", session: null });
+    setModal({ type: "add-account", name: "", mode: "device", session: null, busy: false, detecting: false, completed: false, successMessage: "" });
   }
 
   async function openExportProfiles() {
@@ -2946,29 +3274,83 @@ function AppContent() {
   }
 
   async function autoArrange() {
+    if (autoArrangeBusy) return;
+    setAutoArrangeBusy(true);
     try {
       const next = await request("/api/auto-switch/auto-arrange", { method: "POST", body: JSON.stringify({}) });
       setAutoChain(normalizeChainPayload(next));
-      refreshAutoSwitchState().catch(() => {});
+      await Promise.all([
+        refreshAutoSwitchState().catch(() => {}),
+        refreshCurrentUsage({ timeoutSec: 8 }).catch(() => {}),
+      ]);
       notifySuccess("Chain reordered");
     } catch (err) {
       setError(err?.message || String(err));
+    } finally {
+      setAutoArrangeBusy(false);
     }
   }
 
-  async function startAddAccount(mode, name) {
+  async function startAddAccount(mode, name, options = {}) {
     const target = String(name || "").trim();
     if (!target) return;
-    const payload = mode === "device"
-      ? await request("/api/local/add/start", { method: "POST", body: JSON.stringify({ name: target, timeout: 600, device_auth: true }) })
-      : await request("/api/local/add", { method: "POST", body: JSON.stringify({ name: target, timeout: 600, device_auth: false }) });
-    if (mode === "device") {
-      setModal((current) => ({ ...current, session: payload }));
-    } else {
-      await loadAll();
-      setModal(null);
-      notifySuccess("Profile added");
+    const payload = await request(
+      "/api/local/add/start",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: target,
+          timeout: 600,
+          device_auth: mode === "device",
+          force: Boolean(options?.force),
+        }),
+      },
+    );
+    setModal((current) => ({
+      ...current,
+      busy: false,
+      detecting: false,
+      completed: false,
+      successMessage: "",
+      session: payload,
+    }));
+  }
+
+  function openAuthRelogin(profileInput) {
+    const profileName = typeof profileInput === "string" ? profileInput : profileInput?.name;
+    const target = String(profileName || "").trim();
+    if (!target) return;
+    let email = "";
+    if (profileInput && typeof profileInput === "object") {
+      email = String(profileInput.email_display || profileInput.email || "").trim();
+      if (!email) {
+        email = extractEmailFromHint(profileInput.account_hint || "");
+      }
     }
+    if (!email) {
+      const usageRows = Array.isArray(stateRef.current?.usage?.profiles) ? stateRef.current.usage.profiles : [];
+      const usageRow = usageRows.find((row) => String(row?.name || "").trim() === target);
+      if (usageRow) {
+        email = String(usageRow.email_display || usageRow.email || "").trim() || extractEmailFromHint(usageRow.account_hint || "");
+      }
+    }
+    if (!email) {
+      const listRows = Array.isArray(stateRef.current?.list?.profiles) ? stateRef.current.list.profiles : [];
+      const listRow = listRows.find((row) => String(row?.name || "").trim() === target);
+      if (listRow) {
+        email = extractEmailFromHint(listRow.account_hint || "");
+      }
+    }
+    setModal({ type: "auth-relogin", name: target, email, mode: "device", session: null, busy: false, detecting: false, completed: false, successMessage: "" });
+  }
+
+  async function cancelLoginSession(sessionId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return;
+    await request("/api/local/add/cancel", {
+      method: "POST",
+      body: JSON.stringify({ id: sid }),
+    });
   }
 
   function triggerImportArchivePicker() {
@@ -3122,8 +3504,9 @@ function AppContent() {
   }
 
   async function loadDebugLogs() {
-    const logs = await request(appendSessionToken("/api/debug/logs?tail=240", backendState?.token), {});
-    setDebugLogs(Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : []);
+    const logs = await request(appendSessionToken(`/api/debug/logs?tail=240&t=${Date.now()}`, backendState?.token), {});
+    const rows = Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : [];
+    setBackendDebugLogs(rows);
   }
 
   function startDebugCapture() {
@@ -3136,7 +3519,8 @@ function AppContent() {
   }
 
   function clearDebugLogs() {
-    setDebugLogs([]);
+    setBackendDebugLogs([]);
+    setDesktopDebugLogs([]);
   }
 
   useEffect(() => {
@@ -3280,7 +3664,6 @@ function AppContent() {
   }, [runtimeStatus?.phase, activeView]);
 
   useEffect(() => {
-    if (activeView === "guide") loadReleaseNotes().catch(() => {});
     if (activeView === "debug") loadDebugLogs().catch(() => {});
     if (activeView === "update") loadAll().catch(() => {});
   }, [activeView]);
@@ -3303,6 +3686,79 @@ function AppContent() {
       }
     };
   }, [activeView, debugCaptureEnabled, backendState?.token]);
+
+  useEffect(() => {
+    const modalType = modal?.type;
+    if (modalType !== "add-account" && modalType !== "auth-relogin") {
+      return undefined;
+    }
+    const sessionId = String(modal?.session?.id || "").trim();
+    const sessionStatus = String(modal?.session?.status || "").trim().toLowerCase();
+    if (!sessionId || sessionStatus !== "running") {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const nextSession = await request(`/api/local/add/session?id=${encodeURIComponent(sessionId)}`, {});
+        if (cancelled) return;
+        setModal((current) => (
+          current && current.type === modalType
+            ? { ...current, session: nextSession, busy: false }
+            : current
+        ));
+        const nextStatus = String(nextSession?.status || "").trim().toLowerCase();
+        if (nextStatus === "completed") {
+          const targetName = String(nextSession?.name || modal?.name || "").trim();
+          if (modalType === "add-account") {
+            setModal((current) => (
+              current && current.type === "add-account"
+                ? { ...current, session: nextSession, busy: true, detecting: true, completed: false, successMessage: "" }
+                : current
+            ));
+          }
+          await loadAll({ showLoading: false, clearUsageCache: true });
+          if (targetName) {
+            await refreshProfileUsage(targetName, { timeoutSec: 8 }).catch(() => {});
+          }
+          if (cancelled) return;
+          if (modalType === "add-account") {
+            setModal((current) => (
+              current && current.type === "add-account"
+                ? {
+                    ...current,
+                    session: nextSession,
+                    busy: false,
+                    detecting: false,
+                    completed: true,
+                    successMessage: targetName ? `Profile detected and refreshed: ${targetName}` : "Profile login finished and refreshed.",
+                  }
+                : current
+            ));
+          } else {
+            setModal(null);
+            notifySuccess("Login completed", targetName ? `Profile refreshed: ${targetName}` : "Profile login finished.");
+          }
+        } else if (nextStatus === "failed") {
+          setError(nextSession?.error || "Login session failed");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err?.message || String(err));
+        }
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      tick().catch(() => {});
+    }, 1400);
+    tick().catch(() => {});
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [modal?.type, modal?.session?.id, modal?.session?.status]);
 
   if (!isRuntimeOperational(runtimeStatus)) {
     return (
@@ -3375,11 +3831,21 @@ function AppContent() {
             onStopTests={stopTests}
             onTestAutoSwitch={testAutoSwitch}
             onAutoArrange={autoArrange}
+            autoArrangeBusy={autoArrangeBusy}
           />
         )}
         {activeView === "settings" && <SettingsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
-        {activeView === "guide" && <GuideView releaseNotes={releaseNotes} onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})} />}
-        {activeView === "update" && <UpdateView updateStatus={updateStatus} checking={checkingUpdateStatus || loading} onCheck={checkForUpdates} onRunUpdate={runUpdate} />}
+        {activeView === "guide" && <GuideView />}
+        {activeView === "update" && (
+          <UpdateView
+            releaseNotes={releaseNotes}
+            updateStatus={updateStatus}
+            checking={checkingUpdateStatus || loading}
+            onCheck={checkForUpdates}
+            onRunUpdate={runUpdate}
+            onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})}
+          />
+        )}
         {activeView === "debug" && (
           <DebugView
             debugLogs={debugLogs}
@@ -3442,6 +3908,20 @@ function AppContent() {
         </Dialog>
       )}
 
+      {modal?.type === "mac-auth-expired-restart-warning" && (
+        <Dialog
+          title="Manual restart recommended on macOS"
+          size="sm"
+          onClose={() => setModal(null)}
+          footer={<Button variant="primary" onClick={() => setModal(null)}>OK</Button>}
+        >
+          <p>
+            This profile appears to have expired auth. After switching, close and reopen the Codex app manually so host connections reset cleanly.
+          </p>
+          {modal.profileName ? <p className="muted">Switched profile: {modal.profileName}</p> : null}
+        </Dialog>
+      )}
+
       {modal?.type === "columns" && (
         <Dialog
           title="Table columns"
@@ -3490,6 +3970,8 @@ function AppContent() {
         const profile = modal.profile || {};
         const h5Loading = isUsageLoadingState(profile.usage_5h, profile.error, profile.loading_usage);
         const weeklyLoading = isUsageLoadingState(profile.usage_weekly, profile.error, profile.loading_usage);
+        const errorLabel = usageErrorLabel(profile.error) || formatAccountDetailValue(profile.error);
+        const hasAuthExpired = isAuthExpiredLabel(errorLabel);
         const rawJson = JSON.stringify(profile, null, 2);
         return (
           <Dialog
@@ -3504,14 +3986,46 @@ function AppContent() {
             )}
           >
             <div className="account-details-layout">
+              {hasAuthExpired ? (
+                <section className="account-details-auth-warning" role="alert">
+                  <div className="account-details-auth-warning-head">
+                    <AuthExpiredBadge />
+                    <strong>Session refresh required</strong>
+                  </div>
+                  <p>This profile auth snapshot is expired and cannot read usage until you refresh its session.</p>
+                  <ol>
+                    <li>Click <strong>Re-login profile</strong> and complete the login flow.</li>
+                    <li>Wait until login status reaches <strong>completed</strong>.</li>
+                    <li>The app refreshes this profile automatically after completion.</li>
+                  </ol>
+                  <p className="muted">Tip: if it still shows auth expired after completion, switch to the profile once and refresh usage again.</p>
+                  <div className="settings-inline-actions">
+                    <Button variant="primary" onClick={() => openAuthRelogin(profile)}>
+                      Re-login profile
+                    </Button>
+                    <Button variant="primary" onClick={() => {
+                      const profileName = String(profile.name || "").trim();
+                      setModal(null);
+                      if (profileName) {
+                        switchProfile(profileName).catch((err) => setError(err?.message || String(err)));
+                      }
+                    }}
+                    >
+                      Switch now
+                    </Button>
+                  </div>
+                </section>
+              ) : null}
               <section className="account-details-hero">
                 <div className="account-details-primary">
-                  <div className="account-details-title-row">
-                    <StatusDot active={!!profile.is_current} />
-                    <strong>{profile.name || "-"}</strong>
-                    {profile.is_current ? <Badge variant="success">Current</Badge> : <Badge variant="neutral">Saved</Badge>}
+                  <div className="account-details-title-row account-details-identity">
+                    <strong className="account-details-name">{profile.name || "-"}</strong>
+                    <span className="account-details-sep" aria-hidden="true">•</span>
+                    <span className="account-details-state">{profile.is_current ? "Current profile" : "Saved profile"}</span>
+                  </div>
+                  <div className="account-details-meta-row">
                     <Badge variant={planBadgeVariant(profile.plan_type)}>{String(profile.plan_type || "free")}</Badge>
-                    <Badge variant={profile.is_paid ? "success" : "neutral"}>Paid: {fmtPaid(profile.is_paid)}</Badge>
+                    <Badge variant={profile.is_paid ? "success" : "neutral"}>{profile.is_paid ? "Paid account" : "Free account"}</Badge>
                   </div>
                   <div className="account-details-email">{profile.email_display || profile.email || "-"}</div>
                 </div>
@@ -3554,7 +4068,7 @@ function AppContent() {
                   <LabelValueRow label="Same principal" value={formatAccountDetailValue(profile.same_principal)} />
                   <LabelValueRow label="Plan type" value={formatAccountDetailValue(profile.plan_type || "free")} />
                   <LabelValueRow label="Paid account" value={formatAccountDetailValue(profile.is_paid)} />
-                  <LabelValueRow label="Last error" value={formatAccountDetailValue(profile.error)} />
+                  <LabelValueRow label="Last error" value={hasAuthExpired ? <AuthExpiredBadge /> : formatAccountDetailValue(profile.error)} />
                 </section>
               </div>
 
@@ -3568,8 +4082,13 @@ function AppContent() {
       })()}
 
       {modal?.type === "add-account" && (
+        (() => {
+          const loginUrlValue = resolveSessionLoginUrl(modal.session, modal.mode);
+          const canCopyLoginUrl = isCopyableUrl(loginUrlValue);
+          return (
         <Dialog title="Add account" size="md" onClose={() => setModal(null)} footer={<Button onClick={() => setModal(null)}>Close</Button>}>
           <div className="modal-form">
+            <p className="muted">Create or refresh a saved profile with the selected login flow.</p>
             <label>Profile name</label>
             <input value={modal.name} onChange={(event) => setModal((current) => ({ ...current, name: event.target.value }))} placeholder="work" />
             <label>Login mode</label>
@@ -3577,18 +4096,137 @@ function AppContent() {
               <option value="device">Device Login</option>
               <option value="normal">Normal Login</option>
             </select>
+            <LoginModeHelp mode={modal.mode} />
             <div className="settings-inline-actions">
-              <Button variant="primary" onClick={() => startAddAccount(modal.mode, modal.name).catch((e) => setError(e?.message || String(e)))}>Start</Button>
+              <Button
+                variant="primary"
+                loading={!!modal.busy || !!modal.detecting}
+                disabled={!!modal.busy || !!modal.detecting}
+                onClick={() => {
+                  setModal((current) => ({ ...current, busy: true, detecting: false, completed: false, successMessage: "" }));
+                  startAddAccount(modal.mode, modal.name).catch((e) => {
+                    setModal((current) => ({ ...current, busy: false }));
+                    setError(e?.message || String(e));
+                  });
+                }}
+              >
+                Start
+              </Button>
+              <Button
+                disabled={!canCopyLoginUrl}
+                disabledReason={!canCopyLoginUrl ? "Login URL is not ready yet." : ""}
+                onClick={() => copyToClipboard("Login URL", canCopyLoginUrl ? loginUrlValue : "")}
+              >
+                Copy login URL
+              </Button>
+              {modal.session?.status === "running" ? (
+                <Button
+                  variant="warning"
+                  onClick={() => cancelLoginSession(modal.session?.id).catch((e) => setError(e?.message || String(e)))}
+                >
+                  Cancel login
+                </Button>
+              ) : null}
             </div>
             {modal.session && (
-              <div className="modal-card-inline">
-                <div><label>Status</label><strong>{modal.session.status || "-"}</strong></div>
-                <div><label>Login URL</label><strong>{modal.session.url || "-"}</strong></div>
-                <div><label>Code</label><strong>{modal.session.code || "-"}</strong></div>
+              <div className="auth-session-card">
+                <LabelValueRow label="Status" value={modal.session.status || "-"} />
+                <LabelValueRow label="Login URL" value={loginUrlValue || "-"} />
+                <LabelValueRow label="Code" value={modal.session.code || "-"} />
               </div>
             )}
+            {modal.detecting ? <p className="muted">Detecting and refreshing the new profile...</p> : null}
+            {modal.completed && modal.successMessage ? <p className="muted"><strong>Success:</strong> {modal.successMessage}</p> : null}
           </div>
         </Dialog>
+          );
+        })()
+      )}
+
+      {modal?.type === "auth-relogin" && (
+        (() => {
+          const loginUrlValue = resolveSessionLoginUrl(modal.session, modal.mode);
+          const canCopyLoginUrl = isCopyableUrl(loginUrlValue);
+          return (
+        <Dialog
+          title={`Re-login profile - ${modal.name || "profile"}`}
+          size="md"
+          onClose={() => setModal(null)}
+          footer={<Button onClick={() => setModal(null)}>Close</Button>}
+        >
+          <div className="modal-form">
+            <p>Replace expired auth for this profile using your preferred login flow.</p>
+            <div className="auth-session-card">
+              <LabelValueRow label="Profile" value={modal.name || "-"} />
+              <LabelValueRow label="Email" value={modal.email || "-"} />
+            </div>
+            <label>Login mode</label>
+            <select
+              value={modal.mode || "device"}
+              disabled={!!modal.busy || modal.session?.status === "running"}
+              onChange={(event) => setModal((current) => (
+                current?.type === "auth-relogin"
+                  ? {
+                      ...current,
+                      mode: event.target.value,
+                      session: null,
+                      busy: false,
+                      detecting: false,
+                      completed: false,
+                      successMessage: "",
+                    }
+                  : current
+              ))}
+            >
+              <option value="device">Device Login</option>
+              <option value="normal">Normal Login</option>
+            </select>
+            <LoginModeHelp mode={modal.mode} />
+            <div className="auth-session-card">
+              <LabelValueRow label="Status" value={modal.session?.status || (modal.busy ? "starting" : (modal.completed ? "completed" : "-"))} />
+              <LabelValueRow label="Login URL" value={loginUrlValue || "-"} />
+              <LabelValueRow label="Code" value={modal.mode === "device" ? (modal.session?.code || "-") : "-"} />
+            </div>
+            <div className="settings-inline-actions auth-relogin-actions">
+              <Button
+                variant="primary"
+                loading={!!modal.busy}
+                disabled={!!modal.busy || modal.session?.status === "running"}
+                onClick={() => {
+                  setModal((current) => ({ ...current, busy: true, completed: false, successMessage: "" }));
+                  startAddAccount(modal.mode || "device", modal.name, { force: true, keepDialogOnSuccess: true }).catch((e) => {
+                    setModal((current) => ({ ...current, busy: false }));
+                    setError(e?.message || String(e));
+                  });
+                }}
+              >
+                Start
+              </Button>
+              <Button onClick={() => copyToClipboard("Email", modal.email)}>
+                Copy email
+              </Button>
+              <Button
+                disabled={!canCopyLoginUrl}
+                disabledReason={!canCopyLoginUrl ? "Login URL is not ready yet." : ""}
+                onClick={() => copyToClipboard("Login URL", canCopyLoginUrl ? loginUrlValue : "")}
+              >
+                Copy login URL
+              </Button>
+              {modal.mode === "device" && modal.session?.status === "running" ? (
+                <Button
+                  variant="warning"
+                  onClick={() => cancelLoginSession(modal.session?.id).catch((e) => setError(e?.message || String(e)))}
+                >
+                  Cancel login
+                </Button>
+              ) : null}
+            </div>
+            {modal.session?.error ? <p className="workspace-error">{modal.session.error}</p> : null}
+            {modal.completed && modal.successMessage ? <p className="muted"><strong>Success:</strong> {modal.successMessage}</p> : null}
+          </div>
+        </Dialog>
+          );
+        })()
       )}
 
       <input

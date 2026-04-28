@@ -69,6 +69,47 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(cli.electron_app_dir().name, "electron")
         self.assertTrue((cli.electron_app_dir() / "package.json").exists())
 
+    def test_platform_process_candidates_on_macos_are_strict(self):
+        with mock.patch("sys.platform", "darwin"):
+            candidates = cli._platform_process_candidates()
+        self.assertEqual(
+            candidates["Codex"],
+            ["/Applications/Codex.app/Contents/MacOS/Codex"],
+        )
+        self.assertEqual(
+            candidates["CodexBar"],
+            ["/Applications/CodexBar.app/Contents/MacOS/CodexBar"],
+        )
+
+    def test_platform_process_candidates_on_linux_use_cli_names(self):
+        with mock.patch("sys.platform", "linux"):
+            candidates = cli._platform_process_candidates()
+        self.assertEqual(candidates["Codex"], ["codex"])
+        self.assertEqual(candidates["CodexBar"], ["codexbar"])
+
+    @mock.patch("codex_account_manager.cli._proc_running")
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_detect_running_app_name_on_macos_prefers_applescript_running_state(self, mock_run, mock_proc_running):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="true\n", stderr="")
+        mock_proc_running.return_value = False
+
+        with mock.patch("sys.platform", "darwin"):
+            app_name = cli.detect_running_app_name()
+
+        self.assertEqual(app_name, "Codex")
+        mock_proc_running.assert_not_called()
+
+    @mock.patch("codex_account_manager.cli._proc_running")
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_detect_running_app_name_on_macos_falls_back_to_process_pattern(self, mock_run, mock_proc_running):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="false\n", stderr="")
+        mock_proc_running.side_effect = [False, True]
+
+        with mock.patch("sys.platform", "darwin"):
+            app_name = cli.detect_running_app_name()
+
+        self.assertEqual(app_name, "CodexBar")
+
     @mock.patch("codex_account_manager.cli._ui_service_command_base")
     def test_build_ui_service_restart_command_reuses_runtime_base(self, mock_base):
         mock_base.return_value = ["py", "-3", "C:\\repo\\codex_account_manager\\cli.py"]
@@ -568,8 +609,12 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn('.usage-pct{display:inline-block;min-width:72px}', html)
         self.assertIn('.usage-cell-loading .usage-pct{min-width:72px}', html)
 
-    def test_render_ui_html_guide_mentions_supported_clients_and_manual_reload_caveat(self):
+    def test_render_ui_html_guide_mentions_cross_layer_contract_and_supported_clients(self):
         html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
+        self.assertIn("source of truth for profile state, switching, usage, and local `/api/*` behavior used by both web and Electron", html)
+        self.assertIn("<h4>Layer Responsibilities</h4>", html)
+        self.assertIn("<b>Python CLI Core:</b> owns profiles, switching, usage collection, notifications, auto-switch logic, and local API endpoints.", html)
+        self.assertIn("<b>Electron Shell:</b> optional desktop GUI with tray/menu integration, runtime bootstrap, and Windows taskbar/mini-meter extras.", html)
         self.assertIn("Current client support targets the <b>Codex CLI</b> and the <b>Codex VS Code extension</b>.", html)
         self.assertIn("manual reload or restart after switching", html)
 

@@ -205,7 +205,7 @@
       <span class="guide-title">Guide & Help</span>
     </summary>
     <div class="guide-body">
-      <p class="guide-intro">Use this panel to add accounts, monitor live usage, import or export saved profiles, tune native notification and auto-switch behavior, review release notes, and update the app from one place.</p>
+      <p class="guide-intro">Use this panel to manage profiles through the Python core API, monitor live usage, import or export saved profiles, tune notification and auto-switch behavior, review release notes, and run updates from one local control surface.</p>
       <div class="guide-grid">
         <section class="guide-block">
           <h4>Quick Start</h4>
@@ -215,6 +215,7 @@
             <li>Use <b>Refresh</b> for a full immediate sync after switching, login, config changes, or recovering from stale data.</li>
             <li>Current client support targets the <b>Codex CLI</b> and the <b>Codex VS Code extension</b>.</li>
             <li>On some OS/client combinations, the CLI or VS Code extension may still need a manual reload or restart after switching before the new account is picked up.</li>
+            <li>The Python core remains the source of truth for profile state, switching, usage, and local `/api/*` behavior used by both web and Electron.</li>
           </ul>
         </section>
         <section class="guide-block">
@@ -243,6 +244,7 @@
             <li>Set warning thresholds with <b>5H notify %</b> and <b>Weekly notify %</b>.</li>
             <li>When warning thresholds are breached, notifications use the same native OS path as the test button.</li>
             <li>Before a delayed auto-switch executes, the app also sends a native heads-up about 30 seconds before the switch time.</li>
+            <li>Electron desktop shell can also emit Electron-native notifications and focus the desktop window on click.</li>
           </ul>
         </section>
         <section class="guide-block">
@@ -268,16 +270,20 @@
           </ul>
         </section>
         <section class="guide-block">
-          <h4>Debug & Advanced</h4>
+          <h4>Debug, Runtime, & Advanced</h4>
           <ul>
             <li>In debug mode, <b>System.Out</b> shows UI/API actions, warnings, events, and errors.</li>
             <li><b>Export Debug Logs</b> downloads a JSON snapshot for troubleshooting.</li>
             <li><b>Advanced Actions</b> exposes wrapped `codex-auth` operations for status/login/switch/import/config/daemon/clean/raw auth when deeper inspection is needed.</li>
+            <li>If you use the Electron shell, its runtime setup screen adds Python/core bootstrap diagnostics before desktop views load.</li>
           </ul>
         </section>
         <section class="guide-block">
-          <h4>About Project</h4>
+          <h4>Layer Responsibilities</h4>
           <ul>
+            <li><b>Python CLI Core:</b> owns profiles, switching, usage collection, notifications, auto-switch logic, and local API endpoints.</li>
+            <li><b>Web UI:</b> stable browser panel that exposes the complete local workflow without desktop runtime requirements.</li>
+            <li><b>Electron Shell:</b> optional desktop GUI with tray/menu integration, runtime bootstrap, and Windows taskbar/mini-meter extras.</li>
             <li><b>App Version:</b> v__UI_VERSION__</li>
             <li><b>Repository:</b> <a href="https://github.com/alisinaee/Codex-Account-Manager" target="_blank" rel="noopener noreferrer">Codex-Account-Manager</a></li>
             <li>Local-first Codex profile manager with usage monitoring, safe switching workflows, and auto-switch automation.</li>

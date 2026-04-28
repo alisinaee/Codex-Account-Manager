@@ -1198,17 +1198,33 @@ def prepare_profile_home(name: str) -> Path:
 
 
 def _platform_process_candidates() -> dict[str, list[str]]:
+    if sys.platform == "darwin":
+        # On macOS, avoid broad "codex" process matches because they can include
+        # non-app helper/CLI processes and make app restart behavior unstable.
+        return {
+            "Codex": [
+                "/Applications/Codex.app/Contents/MacOS/Codex",
+            ],
+            "CodexBar": [
+                "/Applications/CodexBar.app/Contents/MacOS/CodexBar",
+            ],
+        }
+    if sys.platform.startswith("win"):
+        return {
+            "Codex": [
+                "Codex.exe",
+                "codex.exe",
+            ],
+            "CodexBar": [
+                "CodexBar.exe",
+                "codexbar.exe",
+            ],
+        }
     return {
         "Codex": [
-            "/Applications/Codex.app/Contents/MacOS/Codex",
-            "Codex.exe",
-            "codex.exe",
             "codex",
         ],
         "CodexBar": [
-            "/Applications/CodexBar.app/Contents/MacOS/CodexBar",
-            "CodexBar.exe",
-            "codexbar.exe",
             "codexbar",
         ],
     }
@@ -1240,9 +1256,31 @@ def _proc_running(pattern: str) -> bool:
     return False
 
 
+def _macos_app_is_running(app_name: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    target = str(app_name or "").strip()
+    if not target:
+        return False
+    script = f'application "{target}" is running'
+    try:
+        proc = _subprocess_run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    return (proc.stdout or "").strip().lower() == "true"
+
+
 def detect_running_app_name():
     candidates = _platform_process_candidates()
     for app_name in APP_CANDIDATES:
+        if sys.platform == "darwin" and _macos_app_is_running(app_name):
+            return app_name
         for proc_pattern in candidates.get(app_name, []):
             if _proc_running(proc_pattern):
                 return app_name
@@ -1259,10 +1297,25 @@ def codex_running() -> bool:
 def stop_codex() -> bool:
     candidates = _platform_process_candidates()
     touched = False
-    for app_name in APP_CANDIDATES:
-        if sys.platform == "darwin":
+    if sys.platform == "darwin":
+        for app_name in APP_CANDIDATES:
             _subprocess_run(["osascript", "-e", f'tell application "{app_name}" to quit'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             touched = True
+        for _ in range(40):
+            if not codex_running():
+                break
+            time.sleep(0.15)
+        if codex_running() and shutil.which("killall"):
+            # Fallback only to strict app binary names on macOS.
+            for app_binary in ("Codex", "CodexBar"):
+                _subprocess_run(["killall", "-q", app_binary], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                touched = True
+            for _ in range(20):
+                if not codex_running():
+                    break
+                time.sleep(0.15)
+        return touched
+    for app_name in APP_CANDIDATES:
         for proc_pattern in candidates.get(app_name, []):
             if sys.platform.startswith("win"):
                 image = Path(proc_pattern).name

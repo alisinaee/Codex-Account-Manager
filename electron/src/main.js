@@ -1247,19 +1247,19 @@ function registerIpcHandlers() {
     await refreshUsage();
     return desktopState;
   });
-  handle("desktop:switch-profile", async (_event, name) => {
+  handle("desktop:switch-profile", async (_event, name, options = {}) => {
     if (!apiClient) {
       throw new Error(runtimeState.message || "Python core is not ready.");
     }
     const previousProfileName = String(desktopState?.usage?.current_profile || desktopState?.current?.profile_name || "").trim();
     try {
-      desktopState = await apiClient.switchProfile(String(name || ""));
+      desktopState = await apiClient.switchProfile(String(name || ""), options || {});
     } catch (error) {
       if (!isInvalidSessionTokenError(error)) {
         throw error;
       }
       await refreshBackendClient();
-      desktopState = await apiClient.switchProfile(String(name || ""));
+      desktopState = await apiClient.switchProfile(String(name || ""), options || {});
     }
     latestUsagePayload = desktopState.usage;
     applyTrayFromLatestUsage();
