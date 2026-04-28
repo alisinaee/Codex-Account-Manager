@@ -22,6 +22,24 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-28T17:05:03+03:30
+- Changed files: `electron/src/renderer/App.jsx`
+- Summary: Fixed usage merge behavior so partial usage refreshes no longer replace the entire table usage snapshot with unknown values for non-active accounts.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:49f3badd4d01 -->
+
+### 2026-04-28T16:49:46+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/renderer/debug-logs.mjs`, `electron/tests/debug-logs.test.js`
+- Summary: Merged Electron renderer/app errors with backend debug logs so the Debug view Error filter includes desktop IPC failures.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:f349d8de5be5 -->
+
+### 2026-04-28T16:46:50+03:30
+- Changed files: `electron/src/api-client.js`, `electron/tests/api-client.test.js`
+- Summary: Extended Electron API client default timeout for /api/auto-switch/chain to handle slow macOS usage collection.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:0c8515cf1280 -->
+
 ### 2026-04-27T20:29:36+03:30
 - Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
 - Summary: Aligned sidebar usage percentage text on the same horizontal line as the usage bar and reduced sidebar percentage typography size for a cleaner compact readout.
@@ -124,23 +142,5 @@
 - Behavior impact: Recorded code-level deltas for future AI context.
 <!-- fingerprint:7c2a93f7f0f8 -->
 
-### 2026-04-27T13:11:42+03:30
-- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
-- Summary: Refined the Electron Settings layout into a full-width card stack, token-driven 2-to-1 responsive inner grids, aligned right-edge controls, and stabilized shared stepper sizing and Windows helper-copy rows.
-- Behavior impact: Added or refreshed 4 behavior rule(s) from user instructions.
-<!-- fingerprint:4e62bad66447 -->
-
-### 2026-04-27T09:25:57+03:30
-- Changed files: `electron/src/renderer/App.jsx`, `docs/agent-rules.md`
-- Summary: Disabled automatic core installation on the Electron setup screen; install steps now wait for explicit user action.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:69791133204e -->
-
-### 2026-04-27T09:22:24+03:30
-- Changed files: `docs/agent-rules.md`
-- Summary: Recorded that Electron prerequisite install flow must work generally across Windows systems, not only the local machine.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:8acfc423dee7 -->
-
 ## Last Updated
-- 2026-04-27T20:29:36+03:30
+- 2026-04-28T17:05:03+03:30

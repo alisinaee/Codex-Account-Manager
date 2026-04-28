@@ -6,6 +6,7 @@ const {
   buildServiceStateFromStatus,
   createApiClient,
   parseServiceStatusOutput,
+  resolveRequestTimeoutMs,
 } = require("../src/api-client");
 
 test("parseServiceStatusOutput reads status JSON", () => {
@@ -47,7 +48,7 @@ test("buildApiHeaders includes X-Codex-Token for POST requests", () => {
   });
 });
 
-test("switchProfile sends no_restart true and refreshes desktop state", async () => {
+test("switchProfile sends no_restart true when explicitly requested and refreshes desktop state", async () => {
   const calls = [];
   const client = createApiClient({
     state: { baseUrl: "http://127.0.0.1:4673/", token: "session-token" },
@@ -60,7 +61,7 @@ test("switchProfile sends no_restart true and refreshes desktop state", async ()
     },
   });
 
-  await client.switchProfile("work");
+  await client.switchProfile("work", { noRestart: true });
 
   assert.equal(calls[0].url, "http://127.0.0.1:4673/api/local/switch");
   assert.equal(calls[0].options.method, "POST");
@@ -76,6 +77,23 @@ test("switchProfile sends no_restart true and refreshes desktop state", async ()
       "http://127.0.0.1:4673/api/auto-switch/state",
     ],
   );
+});
+
+test("switchProfile defaults to restart on macOS", async () => {
+  const calls = [];
+  const client = createApiClient({
+    state: { baseUrl: "http://127.0.0.1:4673/", token: "session-token" },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        json: async () => ({ ok: true, data: { ok: true } }),
+      };
+    },
+  });
+
+  await client.switchProfile("work", { platform: "darwin" });
+  assert.deepEqual(JSON.parse(calls[0].options.body), { name: "work", no_restart: false });
 });
 
 test("generic request attaches X-Codex-Token to POST requests", async () => {
@@ -163,4 +181,10 @@ test("request times out when backend hangs", async () => {
     () => client.request("/api/current", {}),
     /request timeout after/i,
   );
+});
+
+test("auto-switch chain uses an extended default timeout", () => {
+  assert.equal(resolveRequestTimeoutMs("/api/current", {}, {}), 12000);
+  assert.equal(resolveRequestTimeoutMs("/api/auto-switch/chain", {}, {}), 30000);
+  assert.equal(resolveRequestTimeoutMs("/api/auto-switch/chain", { timeoutMs: 9000 }, {}), 9000);
 });

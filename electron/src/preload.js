@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
   stopBackendService: () => ipcRenderer.invoke("desktop:stop-backend-service"),
   openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
   refresh: () => ipcRenderer.invoke("desktop:refresh"),
-  switchProfile: (name) => ipcRenderer.invoke("desktop:switch-profile", name),
+  switchProfile: (name, options) => ipcRenderer.invoke("desktop:switch-profile", name, options),
   saveConfig: (patch) => ipcRenderer.invoke("desktop:save-config", patch),
   listDisplays: () => ipcRenderer.invoke("desktop:list-displays"),
   request: (path, options) => ipcRenderer.invoke("desktop:request", path, options),

@@ -23,7 +23,7 @@ export function createSwitchController(switchFn) {
     getPendingName() {
       return pendingName;
     },
-    async switchProfile(name) {
+    async switchProfile(name, options = {}) {
       const target = String(name || "").trim();
       if (!target) {
         throw new Error("profile name is required");
@@ -33,7 +33,7 @@ export function createSwitchController(switchFn) {
       }
       pendingName = target;
       try {
-        return await switchFn(target);
+        return await switchFn(target, options || {});
       } finally {
         pendingName = "";
       }

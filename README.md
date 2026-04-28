@@ -118,6 +118,22 @@ This project may call upstream services that Codex itself uses for account and u
 - Use the detailed in-repo release log in [CHANGELOG.md](CHANGELOG.md) or [docs/release-notes.md](docs/release-notes.md).
 - The web panel can detect updates and run the `pipx upgrade codex-account-manager` flow from the UI.
 
+## How It Works Across CLI, Web UI, and Electron
+
+Codex Account Manager is one local-first system with three connected layers:
+
+- **Python CLI core (`codex-account`)**:
+  - source of truth for profile storage, auth switching, usage collection, auto-switch logic, notifications, import/export, and local `/api/*` endpoints
+  - usable directly for terminal workflows and automation
+- **Web UI (`codex-account ui`)**:
+  - stable browser control surface over the same Python backend
+  - exposes day-to-day profile, usage, refresh, import/export, auto-switch, release-note, and update flows
+- **Electron desktop shell (`codex-account electron`)**:
+  - optional GUI that connects to the same Python backend contract
+  - adds desktop integrations such as tray/menu-bar usage, desktop-native notification behavior, runtime bootstrap/setup, and Windows taskbar + mini-meter enhancements
+
+Because all layers share the same backend state, profile changes and usage status remain consistent between CLI, web panel, and desktop shell.
+
 ## Web Panel
 
 The web panel is the main day-to-day experience. It runs locally in your browser and gives you a fast control surface without a heavyweight desktop runtime.

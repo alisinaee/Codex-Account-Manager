@@ -319,6 +319,13 @@ test("electron renderer exposes the web panel parity surfaces", async () => {
   await expect(window.getByText("Auto-switch rules")).toBeVisible();
   await expect(window.getByText("Switch Chain Preview")).toBeVisible();
 
+  await window.getByRole("button", { name: "Guide & Help" }).click();
+  await expect(window.locator(".guide-view")).toBeVisible();
+  await expect(window.getByText("Guide map")).toBeVisible();
+  await expect(window.getByText("Python core and CLI contract")).toBeVisible();
+  await expect(window.getByText("Electron-only desktop features")).toBeVisible();
+  await expect(window.getByText("Troubleshooting and safety")).toBeVisible();
+
   await window.getByRole("button", { name: "Profiles" }).click();
   await expect(window.getByRole("button", { name: /Add Account/i })).toBeVisible();
   await expect(window.getByRole("button", { name: /Remove All/i })).toBeVisible();
