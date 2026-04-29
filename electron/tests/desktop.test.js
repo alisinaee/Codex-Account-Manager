@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { buildNotificationOptions, notificationsEnabled } = require("../src/notifications");
+const { buildNotificationOptions, notificationsEnabled, sendUsageNotification } = require("../src/notifications");
 const {
   applyTrayState,
   buildMacMenuBarTitle,
@@ -45,6 +45,53 @@ test("notificationsEnabled follows the desktop notification toggle", () => {
   assert.equal(notificationsEnabled({ notifications: { enabled: true } }), true);
   assert.equal(notificationsEnabled({ notifications: { enabled: false } }), false);
   assert.equal(notificationsEnabled({}), false);
+});
+
+test("sendUsageNotification keeps click callback active and invokes it on click", () => {
+  class NotificationMock {
+    static isSupported() { return true; }
+    constructor(options) {
+      this.options = options;
+      this.handlers = new Map();
+    }
+    on(event, handler) {
+      this.handlers.set(event, handler);
+    }
+    show() {}
+    emit(event, ...args) {
+      const handler = this.handlers.get(event);
+      if (typeof handler === "function") handler(...args);
+    }
+  }
+
+  let clicked = 0;
+  const result = sendUsageNotification(
+    NotificationMock,
+    { current_profile: "work", profiles: [{ name: "work", usage_5h: { remaining_percent: 50 }, usage_weekly: { remaining_percent: 80 } }] },
+    () => { clicked += 1; },
+  );
+
+  assert.equal(result.ok, true);
+  // Trigger callback through the same notification instance.
+  // In production this is emitted by the native Windows toast activation.
+  const instance = new NotificationMock({});
+  // Recreate event wiring behavior for assertion by invoking the wired path end-to-end.
+  let onClick;
+  instance.on = (event, handler) => {
+    if (event === "click") onClick = handler;
+  };
+  sendUsageNotification(
+    class InlineNotificationMock extends NotificationMock {
+      constructor(options) {
+        super(options);
+        return instance;
+      }
+    },
+    { current_profile: "work", profiles: [{ name: "work", usage_5h: { remaining_percent: 50 }, usage_weekly: { remaining_percent: 80 } }] },
+    () => { clicked += 1; },
+  );
+  onClick?.();
+  assert.equal(clicked, 1);
 });
 
 test("buildTrayMenuTemplate includes readable color-coded desktop status actions", () => {
@@ -216,6 +263,6 @@ test("prepareTrayIcon resizes the Windows tray image to a compact 16px icon", ()
 
 test("resolveTrayIconPath prefers the dedicated tray asset on macOS and Windows", () => {
   assert.match(resolveTrayIconPath("darwin"), /codex-account-manager-tray\.svg$/);
-  assert.match(resolveTrayIconPath("win32"), /codex-account-manager\.png$/);
+  assert.match(resolveTrayIconPath("win32"), /codex-account-manager-win\.ico$/);
   assert.match(resolveTrayIconPath("linux"), /codex-account-manager\.png$/);
 });
