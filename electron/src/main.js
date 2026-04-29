@@ -1,11 +1,12 @@
 "use strict";
 
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, screen, shell } = require("electron");
 
 const { createApiClient } = require("./api-client");
 const { ensureBackendRunning, fetchCurrentUsage, getDefaultBackendState, runServiceCommand } = require("./backend");
-const { APP_ID, APP_NAME, getIconPath } = require("./icons");
+const { APP_ID, APP_NAME, getIconPath, getWindowIconPath } = require("./icons");
 const { buildApplicationMenuTemplate, shouldQuitOnWindowAllClosed } = require("./menu");
 const { notificationsEnabled, sendUsageNotification } = require("./notifications");
 const {
@@ -27,8 +28,13 @@ app.name = APP_NAME;
 if (typeof app.setAppUserModelId === "function") {
   app.setAppUserModelId(APP_ID);
 }
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 let mainWindow = null;
+let splashWindow = null;
 let tray = null;
 let miniMeterWindow = null;
 let backendState = getDefaultBackendState();
@@ -50,6 +56,12 @@ const MINI_METER_BASE_FONT_SIZE = 14;
 const ZOOM_FACTOR_MIN = 0.5;
 const ZOOM_FACTOR_MAX = 3.0;
 const ZOOM_FACTOR_STEP = 0.1;
+const WINDOWS_NOTIFICATION_LAUNCH_ARG_PATTERNS = [
+  "--notification-launch-id=",
+  "--notification-app-user-model-id=",
+  "--notification-",
+];
+let pendingOpenProfilesFromNotification = false;
 
 function windowsMiniMeterEnabled(config = {}) {
   return Boolean(config?.ui?.windows_mini_meter_enabled);
@@ -79,14 +91,14 @@ function windowsMiniMeterDisplayTarget(config = {}) {
 
 function windowsMiniMeterSize(config = {}) {
   const fontSize = windowsMiniMeterFontSize(config);
-  const valueColumnWidth = Math.round(fontSize * 2.85);
-  const metricColumnWidth = Math.round(fontSize * 1.85);
-  const horizontalPadding = Math.round(fontSize * 0.9);
-  const verticalPadding = Math.round(fontSize * 0.56);
+  const valueColumnWidth = Math.round(fontSize * 2.35);
+  const metricColumnWidth = Math.round(fontSize * 1.3);
+  const horizontalPadding = Math.round(fontSize * 0.6);
+  const verticalPadding = Math.round(fontSize * 0.5);
   const rowHeight = Math.round(fontSize * 1.06);
-  const rowGap = Math.round(fontSize * 0.18);
+  const rowGap = Math.round(fontSize * 0.14);
   return {
-    width: Math.max(82, Math.min(172, valueColumnWidth + metricColumnWidth + (horizontalPadding * 2))),
+    width: Math.max(60, Math.min(138, valueColumnWidth + metricColumnWidth + (horizontalPadding * 2))),
     height: Math.max(44, Math.min(96, (rowHeight * 2) + rowGap + (verticalPadding * 2))),
   };
 }
@@ -104,12 +116,12 @@ function buildWindowsMiniMeterHtml() {
     "<html><head><meta charset=\"utf-8\" />",
     "<style>",
     "html, body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; font-family:'Segoe UI', Arial, sans-serif; }",
-    ".meter { box-sizing:border-box; width:100%; height:100%; padding:calc(var(--meter-font-size) * 0.28) calc(var(--meter-font-size) * 0.45); border-radius:calc(var(--meter-font-size) * 0.5); background:rgba(10,12,15,0.90); border:1px solid rgba(255,255,255,0.10); display:flex; flex-direction:column; justify-content:center; gap:calc(var(--meter-font-size) * 0.18); --meter-font-size:14px; }",
+    ".meter { box-sizing:border-box; width:100%; height:100%; padding:calc(var(--meter-font-size) * 0.24) calc(var(--meter-font-size) * 0.30); border-radius:calc(var(--meter-font-size) * 0.5); background:rgba(10,12,15,0.90); border:1px solid rgba(255,255,255,0.10); display:flex; flex-direction:column; justify-content:center; gap:calc(var(--meter-font-size) * 0.14); --meter-font-size:14px; }",
     ".meter.draggable { -webkit-app-region: drag; cursor:move; }",
     ".row { display:flex; align-items:center; font-size:var(--meter-font-size); line-height:1.05; font-weight:700; letter-spacing:0.1px; text-shadow:0 0 4px rgba(0,0,0,0.45); }",
     ".five { color:#22c55e; }",
     ".week { color:#22c55e; }",
-    ".value { min-width:calc(var(--meter-font-size) * 2.85); margin-right:calc(var(--meter-font-size) * 0.24); }",
+    ".value { min-width:calc(var(--meter-font-size) * 2.35); margin-right:calc(var(--meter-font-size) * 0.18); }",
     "</style></head><body>",
     "<div class=\"meter\" id=\"meter\">",
     "<div class=\"row five\"><span class=\"value\" id=\"five\">--</span><span>5H</span></div>",
@@ -477,6 +489,24 @@ function getLoadUrl() {
   return null;
 }
 
+function isWindowsNotificationLaunchArg(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return WINDOWS_NOTIFICATION_LAUNCH_ARG_PATTERNS.some((prefix) => normalized.startsWith(prefix));
+}
+
+function wasLaunchedFromWindowsNotification(argv = []) {
+  if (process.platform !== "win32") {
+    return false;
+  }
+  if (!Array.isArray(argv)) {
+    return false;
+  }
+  return argv.some((arg) => isWindowsNotificationLaunchArg(arg));
+}
+
 function focusMainWindow() {
   if (!mainWindow) {
     return;
@@ -493,6 +523,39 @@ function setRendererView(view) {
     mainWindow.webContents.send("desktop:navigate", view);
     focusMainWindow();
   }
+}
+
+function openProfilesFromNotification() {
+  pendingOpenProfilesFromNotification = false;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createSplashWindow();
+    createMainWindow();
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once("did-finish-load", () => setRendererView("profiles"));
+    focusMainWindow();
+    return;
+  }
+  setRendererView("profiles");
+}
+
+function cycleRendererView(step = 1) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send("desktop:cycle-view", Number(step) < 0 ? -1 : 1);
+  focusMainWindow();
+}
+
+function requestRendererRefresh() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send("desktop:refresh-requested");
+  focusMainWindow();
 }
 
 function toggleRendererSidebar() {
@@ -586,8 +649,83 @@ function isZoomResetShortcutInput(input = {}) {
   return key === "0" || code === "Digit0" || code === "Numpad0" || keyCode === 48 || keyCode === 96;
 }
 
+function buildSplashHtml(iconUrl) {
+  return [
+    "<!doctype html>",
+    "<html><head><meta charset=\"utf-8\" />",
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+    "<style>",
+    "html, body { margin:0; width:100%; height:100%; overflow:hidden; }",
+    "body { display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 32% 20%, #132238, #081019 62%); font-family:'Segoe UI', Arial, sans-serif; color:#d9ecff; }",
+    ".card { width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }",
+    ".icon-wrap { width:78px; height:78px; border-radius:18px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.14); display:flex; align-items:center; justify-content:center; box-shadow:0 16px 36px rgba(0,0,0,0.32); }",
+    ".icon { width:54px; height:54px; object-fit:contain; }",
+    ".title { font-size:20px; font-weight:700; letter-spacing:0.3px; text-shadow:0 1px 4px rgba(0,0,0,0.35); }",
+    ".subtitle { font-size:13px; color:rgba(217,236,255,0.78); letter-spacing:0.2px; }",
+    ".loader { width:180px; height:5px; border-radius:999px; background:rgba(255,255,255,0.14); overflow:hidden; }",
+    ".bar { width:35%; height:100%; border-radius:999px; background:linear-gradient(90deg, #34d399, #22c55e, #16a34a); animation:slide 1.05s ease-in-out infinite; }",
+    "@keyframes slide { 0% { transform:translateX(-110%); } 100% { transform:translateX(390%); } }",
+    "</style></head><body>",
+    "<div class=\"card\">",
+    `<div class="icon-wrap"><img class="icon" src="${iconUrl}" alt="App icon" /></div>`,
+    `<div class="title">${APP_NAME}</div>`,
+    "<div class=\"subtitle\">Launching desktop runtime...</div>",
+    "<div class=\"loader\"><div class=\"bar\"></div></div>",
+    "</div>",
+    "</body></html>",
+  ].join("");
+}
+
+function createSplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    return splashWindow;
+  }
+  const iconPath = getWindowIconPath();
+  const iconUrl = pathToFileURL(getIconPath()).toString();
+  splashWindow = new BrowserWindow({
+    width: 440,
+    height: 320,
+    minWidth: 440,
+    minHeight: 320,
+    maxWidth: 440,
+    maxHeight: 320,
+    frame: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    backgroundColor: "#081019",
+    autoHideMenuBar: true,
+    skipTaskbar: true,
+    center: true,
+    icon: iconPath,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  splashWindow.once("ready-to-show", () => splashWindow?.show());
+  splashWindow.on("closed", () => {
+    splashWindow = null;
+  });
+  splashWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildSplashHtml(iconUrl))}`).catch(() => {});
+  return splashWindow;
+}
+
+function destroySplashWindow() {
+  if (!splashWindow || splashWindow.isDestroyed()) {
+    splashWindow = null;
+    return;
+  }
+  splashWindow.close();
+}
+
 function createMainWindow() {
-  const iconPath = getIconPath();
+  const iconPath = getWindowIconPath();
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -604,6 +742,19 @@ function createMainWindow() {
       backgroundThrottling: false,
     },
   });
+  if (process.platform === "win32" && typeof mainWindow.setAppDetails === "function") {
+    try {
+      mainWindow.setAppDetails({
+        appId: APP_ID,
+        appIconPath: iconPath,
+        appIconIndex: 0,
+        relaunchDisplayName: APP_NAME,
+        relaunchCommand: process.execPath,
+      });
+    } catch (_) {
+      // Ignore setAppDetails failures; BrowserWindow icon is still applied.
+    }
+  }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const loadUrl = getLoadUrl();
@@ -647,7 +798,16 @@ function createMainWindow() {
     }
   });
 
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.show();
+    destroySplashWindow();
+  });
+  mainWindow.webContents.once("did-finish-load", () => {
+    destroySplashWindow();
+  });
+  mainWindow.webContents.once("did-fail-load", () => {
+    destroySplashWindow();
+  });
   const loadUrl = getLoadUrl();
   if (loadUrl) {
     mainWindow.loadURL(loadUrl);
@@ -709,7 +869,7 @@ async function sendTestNotification() {
   if (!latestUsagePayload) {
     await refreshUsage();
   }
-  return sendUsageNotification(Notification, latestUsagePayload, focusMainWindow, getIconPath());
+  return sendUsageNotification(Notification, latestUsagePayload, openProfilesFromNotification, getIconPath());
 }
 
 function notifySwitchIfEnabled(nextDesktopState, previousProfileName = "") {
@@ -721,7 +881,7 @@ function notifySwitchIfEnabled(nextDesktopState, previousProfileName = "") {
   if (!notificationsEnabled(nextDesktopState?.config || {})) {
     return { ok: false, reason: "Notifications are disabled in desktop settings." };
   }
-  return sendUsageNotification(Notification, nextDesktopState?.usage, focusMainWindow, getIconPath());
+  return sendUsageNotification(Notification, nextDesktopState?.usage, openProfilesFromNotification, getIconPath());
 }
 
 function buildTrayActions() {
@@ -747,24 +907,42 @@ function buildTrayActions() {
 }
 
 function buildMenuActions() {
+  const coreCommand = runtimeState?.core?.commandPath ? { command: runtimeState.core.commandPath } : {};
+  const quitAppAndStopCore = () => {
+    runServiceCommand("kill-all", coreCommand);
+    runServiceCommand("stop", coreCommand);
+    app.isQuitting = true;
+    app.quit();
+  };
+
   return {
     onAbout: () => setRendererView("about"),
     onProfiles: () => setRendererView("profiles"),
+    onAutoSwitch: () => setRendererView("autoswitch"),
     onSettings: () => setRendererView("settings"),
-    onUpdates: () => setRendererView("settings"),
+    onGuide: () => setRendererView("guide"),
+    onUpdate: () => setRendererView("update"),
+    onDebug: () => setRendererView("debug"),
+    onUpdates: () => setRendererView("update"),
     onRefresh: () => {
-      refreshUsage().then(() => {
-        if (mainWindow) mainWindow.webContents.send("desktop:navigate", "profiles");
-      }).catch(() => {});
+      refreshUsage().catch(() => {});
+      setRendererView("profiles");
+      requestRendererRefresh();
     },
     onTestNotification: () => {
       sendTestNotification().catch(() => {});
     },
     onToggleSidebar: toggleRendererSidebar,
+    onNextSection: () => cycleRendererView(1),
+    onPreviousSection: () => cycleRendererView(-1),
+    onZoomIn: () => adjustMainWindowZoom(ZOOM_FACTOR_STEP),
+    onZoomOut: () => adjustMainWindowZoom(-ZOOM_FACTOR_STEP),
+    onZoomReset: () => setMainWindowZoomFactor(1),
     onQuit: () => {
       app.isQuitting = true;
       app.quit();
     },
+    onQuitAndStopCore: quitAppAndStopCore,
   };
 }
 
@@ -1306,13 +1484,18 @@ async function bootstrap() {
       app,
       appId: APP_ID,
       appName: APP_NAME,
-      iconPath: getIconPath(),
+      iconPath: process.execPath,
     });
   } catch (error) {
     console.warn(`Windows notification shortcut setup failed: ${String(error?.message || error)}`);
   }
   installApplicationMenu();
+  pendingOpenProfilesFromNotification = wasLaunchedFromWindowsNotification(process.argv);
+  createSplashWindow();
   createMainWindow();
+  if (pendingOpenProfilesFromNotification) {
+    openProfilesFromNotification();
+  }
   await checkRuntime({ activateBackend: true });
 }
 
@@ -1331,8 +1514,24 @@ app.whenReady().then(() => {
   });
 });
 
+app.on("second-instance", (_event, argv) => {
+  const activateFromNotification = () => {
+    if (wasLaunchedFromWindowsNotification(argv)) {
+      openProfilesFromNotification();
+      return;
+    }
+    focusMainWindow();
+  };
+  if (app.isReady()) {
+    activateFromNotification();
+  } else {
+    app.once("ready", activateFromNotification);
+  }
+});
+
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
+    createSplashWindow();
     createMainWindow();
   } else {
     focusMainWindow();
@@ -1347,6 +1546,7 @@ app.on("before-quit", () => {
   if (miniMeterPersistTimer) {
     clearTimeout(miniMeterPersistTimer);
   }
+  destroySplashWindow();
   destroyWindowsMiniMeterWindow();
 });
 
