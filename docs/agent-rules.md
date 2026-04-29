@@ -22,6 +22,12 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-29T15:00:00+03:30
+- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
+- Summary: Fixed Electron relogin for expired profiles by completing add-login sessions as soon as temp auth credentials are written, repairing Windows auth-file copy permissions, invalidating usage cache, refreshing profile usage after relogin, and tightening Debug/Update UI behavior.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:7c4068a5da50 -->
+
 ### 2026-04-28T17:05:03+03:30
 - Changed files: `electron/src/renderer/App.jsx`
 - Summary: Fixed usage merge behavior so partial usage refreshes no longer replace the entire table usage snapshot with unknown values for non-active accounts.
@@ -136,11 +142,5 @@
 - Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
 <!-- fingerprint:2dbfb2d0af9c -->
 
-### 2026-04-27T14:48:26+03:30
-- Changed files: `electron/src/renderer/App.jsx`, `electron/src/renderer/SettingsView.jsx`, `electron/src/renderer/theme.mjs`, `electron/src/styles/components.css`, `electron/src/styles/tokens.css`, `electron/tests/e2e/electron-shell.spec.js`, `electron/tests/theme.test.js`
-- Summary: Extracted the Electron settings screen into a dedicated module, rebuilt it as a responsive card-based layout with bottom-right section actions, fixed settings-page scrolling, and completed renderer-side light/dark/auto theme application with new regression coverage.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:7c2a93f7f0f8 -->
-
 ## Last Updated
-- 2026-04-28T17:05:03+03:30
+- 2026-04-29T15:00:00+03:30

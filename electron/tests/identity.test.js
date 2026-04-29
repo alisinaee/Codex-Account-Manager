@@ -21,19 +21,23 @@ test("Electron identity constants use Codex Account Manager branding", () => {
 
 test("Electron icon helper resolves project-owned assets", () => {
   const source = getProjectSourceIconPath();
-  const png = getIconPath();
+  const appIcon = getIconPath();
   const dock = getDockIconPath();
   const icns = getMacIconPath();
   const trayIcon = getTrayIconPath();
 
   assert.equal(path.basename(source), "codex_account_manager.svg");
   assert.match(source, /codex_account_manager[\\/]assets[\\/]codex_account_manager\.svg$/);
-  assert.match(png, /electron[\\/]assets[\\/]codex-account-manager\.png$/);
+  if (process.platform === "win32") {
+    assert.match(appIcon, /electron[\\/]assets[\\/]codex-account-manager-win\.ico$/);
+  } else {
+    assert.match(appIcon, /electron[\\/]assets[\\/]codex-account-manager\.png$/);
+  }
   assert.match(dock, /electron[\\/]assets[\\/]codex-account-manager\.icns$/);
   assert.match(icns, /electron[\\/]assets[\\/]codex-account-manager\.icns$/);
   assert.match(trayIcon, /electron[\\/]assets[\\/]codex-account-manager-tray\.svg$/);
   assert.ok(fs.existsSync(source), "source SVG should exist");
-  assert.ok(fs.existsSync(png), "Electron PNG icon should exist");
+  assert.ok(fs.existsSync(appIcon), "Electron app icon should exist");
   assert.ok(fs.existsSync(dock), "Electron Dock icon should exist");
   assert.ok(fs.existsSync(icns), "Electron macOS ICNS icon should exist");
   assert.ok(fs.existsSync(trayIcon), "Electron tray icon should exist");
@@ -56,7 +60,7 @@ test("electron package metadata is ready for packaged app identity", () => {
   assert.equal(pkg.build.appId, APP_ID);
   assert.equal(pkg.build.mac.icon, "assets/codex-account-manager.icns");
   assert.equal(pkg.build.dmg.icon, "assets/codex-account-manager.icns");
-  assert.equal(pkg.build.win.icon, "assets/codex-account-manager.png");
+  assert.equal(pkg.build.win.icon, "assets/codex-account-manager-win.ico");
   assert.equal(pkg.build.linux.icon, "assets/codex-account-manager.png");
 });
 

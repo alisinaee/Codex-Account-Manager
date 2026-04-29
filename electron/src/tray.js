@@ -119,7 +119,7 @@ function resolveTrayIconPath(platform = process.platform) {
   if (platform === "darwin") {
     return getTrayIconPath();
   }
-  return getIconPath();
+  return getIconPath(platform);
 }
 
 function createTray({ Tray, Menu, nativeImage, summary, actions }) {

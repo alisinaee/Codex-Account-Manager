@@ -6,12 +6,14 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
 
-const { APP_ID, APP_NAME, getMacIconPath } = require("../src/icons");
+const { APP_ID, APP_NAME, getIconPath, getMacIconPath } = require("../src/icons");
 
 const root = path.resolve(__dirname, "..");
 const rendererUrl = "http://127.0.0.1:5173";
 const MAC_RUNTIME_DIRNAME = ".codex-electron-runtime";
 const MAC_APP_BUNDLE_NAME = `${APP_NAME}.app`;
+const WINDOWS_RUNTIME_DIRNAME = ".codex-electron-runtime-win";
+const WINDOWS_APP_EXE_NAME = `${APP_NAME} Dev.exe`;
 
 function binPath(rootDir, name, platform = process.platform) {
   return path.join(rootDir, "node_modules", ".bin", platform === "win32" ? `${name}.cmd` : name);
@@ -56,6 +58,20 @@ function getMacDevAppPaths(rootDir = root) {
   };
 }
 
+function getWindowsDevAppPaths(rootDir = root) {
+  const sourceDist = path.join(rootDir, "node_modules", "electron", "dist");
+  const runtimeDir = path.join(rootDir, WINDOWS_RUNTIME_DIRNAME);
+  return {
+    sourceDist,
+    runtimeDir,
+    sourceExecutable: path.join(sourceDist, "electron.exe"),
+    executable: path.join(runtimeDir, WINDOWS_APP_EXE_NAME),
+    stockExecutable: path.join(runtimeDir, "electron.exe"),
+    iconPath: path.join(rootDir, "assets", path.basename(getIconPath("win32"))),
+    rcedit: path.join(rootDir, "node_modules", "electron-winstaller", "vendor", "rcedit.exe"),
+  };
+}
+
 function prepareMacDevAppBundle({
   rootDir = root,
   fsImpl = fs,
@@ -80,6 +96,36 @@ function prepareMacDevAppBundle({
   return paths;
 }
 
+function prepareWindowsDevRuntime({
+  rootDir = root,
+  fsImpl = fs,
+  execFileSyncImpl = execFileSync,
+} = {}) {
+  const paths = getWindowsDevAppPaths(rootDir);
+  fsImpl.rmSync(paths.runtimeDir, { recursive: true, force: true });
+  fsImpl.mkdirSync(paths.runtimeDir, { recursive: true });
+  fsImpl.cpSync(paths.sourceDist, paths.runtimeDir, { recursive: true });
+  fsImpl.copyFileSync(paths.stockExecutable, paths.executable);
+  execFileSyncImpl(paths.rcedit, [
+    paths.executable,
+    "--set-icon",
+    paths.iconPath,
+    "--set-version-string",
+    "ProductName",
+    APP_NAME,
+    "--set-version-string",
+    "FileDescription",
+    APP_NAME,
+    "--set-version-string",
+    "InternalName",
+    APP_NAME,
+    "--set-version-string",
+    "OriginalFilename",
+    WINDOWS_APP_EXE_NAME,
+  ]);
+  return paths;
+}
+
 function getElectronLaunchSpec({
   rootDir = root,
   platform = process.platform,
@@ -98,6 +144,20 @@ function getElectronLaunchSpec({
         env: { ...env, CAM_ELECTRON_RENDERER_URL: rendererUrl, CAM_ELECTRON_USE_DEV_SERVER: "1" },
       },
       appBundle: paths.appBundle,
+    };
+  }
+  if (platform === "win32") {
+    const paths = prepareWindowsDevRuntime({ rootDir, fsImpl, execFileSyncImpl });
+    return {
+      command: paths.executable,
+      args: ["."],
+      options: {
+        cwd: rootDir,
+        stdio: "inherit",
+        env: { ...env, CAM_ELECTRON_RENDERER_URL: rendererUrl, CAM_ELECTRON_USE_DEV_SERVER: "1" },
+      },
+      appBundle: "",
+      runtimeDir: paths.runtimeDir,
     };
   }
   return {
@@ -134,7 +194,7 @@ function main() {
   waitForVite()
     .then(() => {
       const electronSpec = getElectronLaunchSpec();
-      if (process.platform === "win32") {
+      if (process.platform === "win32" && /\.cmd$/i.test(electronSpec.command)) {
         electronSpec.options.shell = true;
       }
       const electron = spawn(electronSpec.command, electronSpec.args, electronSpec.options);
@@ -163,7 +223,9 @@ module.exports = {
   binPath,
   getElectronLaunchSpec,
   getMacDevAppPaths,
+  getWindowsDevAppPaths,
   main,
   missingRuntimeBins,
   prepareMacDevAppBundle,
+  prepareWindowsDevRuntime,
 };

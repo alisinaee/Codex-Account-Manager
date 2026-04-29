@@ -111,6 +111,21 @@ function normalizeViewId(view) {
   }
 }
 
+function cycleViewId(currentViewId, step = 1) {
+  const total = views.length;
+  if (!total) return "profiles";
+  const normalizedCurrent = normalizeViewId(currentViewId);
+  const currentIndex = views.findIndex((view) => view.id === normalizedCurrent);
+  const startIndex = currentIndex >= 0 ? currentIndex : 0;
+  const direction = Number(step) < 0 ? -1 : 1;
+  const nextIndex = (startIndex + direction + total) % total;
+  return views[nextIndex]?.id || "profiles";
+}
+
+function shortcutModifierLabel(isMacDesktop = false) {
+  return isMacDesktop ? "Cmd" : "Ctrl";
+}
+
 const columnDefs = [
   { key: "cur", label: "Status", required: false },
   { key: "profile", label: "Profile", required: false },
@@ -171,6 +186,7 @@ function saveStoredColumns(prefs) {
 }
 
 const WINDOWS_SWITCH_RESTART_DIALOG_PREF_KEY = "codex_windows_switch_restart_dialog_suppressed";
+const DEBUG_CAPTURE_PREF_KEY = "codex_debug_capture_enabled";
 
 function loadWindowsSwitchRestartDialogPreference() {
   try {
@@ -183,6 +199,20 @@ function loadWindowsSwitchRestartDialogPreference() {
 function saveWindowsSwitchRestartDialogPreference(suppressed) {
   try {
     localStorage.setItem(WINDOWS_SWITCH_RESTART_DIALOG_PREF_KEY, suppressed ? "1" : "0");
+  } catch (_) {}
+}
+
+function loadDebugCapturePreference() {
+  try {
+    return localStorage.getItem(DEBUG_CAPTURE_PREF_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function saveDebugCapturePreference(enabled) {
+  try {
+    localStorage.setItem(DEBUG_CAPTURE_PREF_KEY, enabled ? "1" : "0");
   } catch (_) {}
 }
 
@@ -690,6 +720,7 @@ function formatReleaseDate(value) {
 
 function formatLogLevel(level) {
   const normalized = String(level || "info").toLowerCase();
+  if (normalized === "debug") return "Debug";
   if (normalized === "warn" || normalized === "warning") return "Warn";
   if (normalized === "error") return "Error";
   return "Info";
@@ -1615,8 +1646,25 @@ function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunS
   );
 }
 
-function GuideView() {
-  const shortcuts = views.slice(0, 9);
+function GuideView({ isMacDesktop = false }) {
+  const modifier = shortcutModifierLabel(isMacDesktop);
+  const quitKeys = [`${modifier}+Q`, ...(isMacDesktop ? [] : ["Alt+F4"])];
+  const shortcuts = [
+    ...views.map((view) => ({
+      id: `nav-${view.id}`,
+      label: view.label,
+      keys: [`${modifier}+${view.id === "guide" ? "/" : view.key.toUpperCase()}`],
+    })),
+    { id: "next", label: "Switch to next section", keys: [`${modifier}+PageDown`] },
+    { id: "previous", label: "Switch to previous section", keys: [`${modifier}+PageUp`] },
+    { id: "refresh-primary", label: "Refresh profiles table", keys: [`${modifier}+R`, "F5"] },
+    { id: "zoom-in", label: "Zoom in", keys: [`${modifier}+=`] },
+    { id: "zoom-out", label: "Zoom out", keys: [`${modifier}+-`] },
+    { id: "zoom-reset", label: "Zoom reset", keys: [`${modifier}+0`] },
+    { id: "toggle-sidebar", label: "Toggle sidebar", keys: [`${modifier}+B`] },
+    { id: "quit", label: "Quit app", keys: quitKeys },
+    { id: "quit-stop-core", label: "Quit + stop core", keys: [`${modifier}+Shift+Q`] },
+  ];
 
   return (
     <section className="view guide-view">
@@ -1635,10 +1683,14 @@ function GuideView() {
           <SectionCard className="settings-card guide-shortcuts-card">
             <div className="group-title">Key shortcuts</div>
             <div className="guide-shortcuts-table">
-              {shortcuts.map((view) => (
-                <div key={view.id} className="guide-shortcuts-row">
-                  <span className="muted">{view.label}</span>
-                  <code>{view.key}</code>
+              {shortcuts.map((item) => (
+                <div key={item.id} className="guide-shortcuts-row">
+                  <span className="muted">{item.label}</span>
+                  <div className="guide-shortcuts-keys">
+                    {item.keys.map((keyLabel) => (
+                      <code key={`${item.id}-${keyLabel}`}>{keyLabel}</code>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1857,13 +1909,14 @@ function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, o
           {[
             { key: "all", label: "All" },
             { key: "info", label: "Info" },
+            { key: "debug", label: "Debug" },
             { key: "warn", label: "Warn" },
             { key: "error", label: "Error" },
           ].map((item) => (
             <Button
               key={item.key}
               type="button"
-              className={`debug-chip ${levelFilter === item.key ? "active" : ""}`}
+              className={`debug-chip debug-chip-${item.key} ${levelFilter === item.key ? "active" : ""}`}
               onClick={() => setLevelFilter(item.key)}
             >
               {item.label}
@@ -1889,7 +1942,9 @@ function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, o
       </div>
       <div className="debug-log-panel-wrap">
         <div ref={panelRef} className="debug-log-panel scrollable" onScroll={onPanelScroll}>
-          {filteredLogs.length ? filteredLogs.map((row, index) => (
+          {!captureEnabled ? (
+            <div className="muted">Log capture is stopped. Click Start logs to begin collecting entries.</div>
+          ) : filteredLogs.length ? filteredLogs.map((row, index) => (
             <div key={`${row.ts || index}-${index}`} className={`debug-line log-${String(row.level || "info").toLowerCase()}`}>
               <span className="debug-ts">{row.ts || "-"}</span>
               <strong className="debug-level">{formatLogLevel(row.level)}</strong>
@@ -2317,7 +2372,7 @@ function AppContent() {
   const [checkingUpdateStatus, setCheckingUpdateStatus] = useState(false);
   const [backendDebugLogs, setBackendDebugLogs] = useState([]);
   const [desktopDebugLogs, setDesktopDebugLogs] = useState([]);
-  const [debugCaptureEnabled, setDebugCaptureEnabled] = useState(false);
+  const [debugCaptureEnabled, setDebugCaptureEnabled] = useState(loadDebugCapturePreference());
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState("");
   const [activatedProfile, setActivatedProfile] = useState("");
@@ -2390,6 +2445,7 @@ function AppContent() {
   }
 
   function appendDesktopLog(level, message, details = {}) {
+    if (!debugCaptureEnabled) return null;
     const cleanMessage = String(message || "").trim();
     if (!cleanMessage) return null;
     const sig = `${String(level || "info").toLowerCase()}|${cleanMessage}|${JSON.stringify(details || {})}`;
@@ -3511,11 +3567,23 @@ function AppContent() {
 
   function startDebugCapture() {
     setDebugCaptureEnabled(true);
+    saveDebugCapturePreference(true);
     loadDebugLogs().catch((err) => setError(err?.message || String(err)));
+  }
+
+  async function forceRefreshUsage({ timeoutSec = 8 } = {}) {
+    const usage = await request(
+      `/api/usage-local?force=true&timeout=${encodeURIComponent(String(Math.max(1, timeoutSec)))}`,
+      {},
+    );
+    if (!commitUsagePayload(usage, { showLoading: false })) {
+      throw new Error("request failed");
+    }
   }
 
   function stopDebugCapture() {
     setDebugCaptureEnabled(false);
+    saveDebugCapturePreference(false);
   }
 
   function clearDebugLogs() {
@@ -3572,6 +3640,13 @@ function AppContent() {
         setSidebarMode((mode) => (mode === "fixed" ? "minimal" : "fixed"));
       }
     });
+    const offCycleView = desktop.onCycleView((step) => {
+      setActiveView((current) => cycleViewId(current, step));
+    });
+    const offRefreshRequested = desktop.onRefreshRequested(() => {
+      setActiveView("profiles");
+      loadAll().catch(() => {});
+    });
     const offRuntime = desktop.onRuntimeStatus((status) => {
       setRuntimeStatus(status);
       if (isRuntimeOperational(status)) {
@@ -3584,6 +3659,8 @@ function AppContent() {
     return () => {
       offNavigate?.();
       offSidebar?.();
+      offCycleView?.();
+      offRefreshRequested?.();
       offRuntime?.();
       offProgress?.();
       if (resizeObserver) resizeObserver.disconnect();
@@ -3664,9 +3741,9 @@ function AppContent() {
   }, [runtimeStatus?.phase, activeView]);
 
   useEffect(() => {
-    if (activeView === "debug") loadDebugLogs().catch(() => {});
+    if (activeView === "debug" && debugCaptureEnabled) loadDebugLogs().catch(() => {});
     if (activeView === "update") loadAll().catch(() => {});
-  }, [activeView]);
+  }, [activeView, debugCaptureEnabled]);
 
   useEffect(() => {
     if (debugCaptureTimerRef.current) {
@@ -3719,6 +3796,7 @@ function AppContent() {
             ));
           }
           await loadAll({ showLoading: false, clearUsageCache: true });
+          await forceRefreshUsage({ timeoutSec: 8 }).catch(() => {});
           if (targetName) {
             await refreshProfileUsage(targetName, { timeoutSec: 8 }).catch(() => {});
           }
@@ -3835,7 +3913,7 @@ function AppContent() {
           />
         )}
         {activeView === "settings" && <SettingsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
-        {activeView === "guide" && <GuideView />}
+        {activeView === "guide" && <GuideView isMacDesktop={isMacDesktop} />}
         {activeView === "update" && (
           <UpdateView
             releaseNotes={releaseNotes}

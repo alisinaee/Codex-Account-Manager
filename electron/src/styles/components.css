@@ -1522,6 +1522,30 @@ select {
   background: var(--color-blue-bg);
 }
 
+.debug-chip-info.active {
+  border-color: var(--color-blue);
+  color: var(--color-blue);
+  background: var(--color-blue-bg);
+}
+
+.debug-chip-debug.active {
+  border-color: #7c3aed;
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.14);
+}
+
+.debug-chip-warn.active {
+  border-color: var(--color-amber);
+  color: var(--color-amber);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.debug-chip-error.active {
+  border-color: var(--color-red);
+  color: var(--color-red);
+  background: rgba(239, 68, 68, 0.14);
+}
+
 .debug-log-panel {
   background: var(--bg-base);
   border: 1px solid var(--border-subtle);
@@ -1578,6 +1602,10 @@ select {
 
 .debug-line.log-error {
   color: var(--color-red);
+}
+
+.debug-line.log-debug {
+  color: #a78bfa;
 }
 
 .debug-jump-latest {
@@ -1891,6 +1919,9 @@ select {
   justify-content: center;
   width: 34px;
   height: 34px;
+  padding: 0;
+  line-height: 0;
+  box-sizing: border-box;
   flex-shrink: 0;
   border-radius: var(--radius-full);
   border: 1px solid color-mix(in srgb, var(--border-default) 70%, transparent);
@@ -1902,6 +1933,7 @@ select {
 }
 
 .dialog-close svg {
+  display: block;
   width: 15px;
   height: 15px;
   stroke-width: 2.4;
@@ -2868,6 +2900,14 @@ body.size-compact .guide-layout {
   gap: var(--space-2);
 }
 
+.guide-shortcuts-keys {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .guide-shortcuts-row code {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -3731,6 +3771,9 @@ body.size-compact .guide-layout {
 }
 
 .guide-topic summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   cursor: pointer;
   font-weight: 600;
   color: var(--text-primary);
@@ -3739,6 +3782,20 @@ body.size-compact .guide-layout {
 
 .guide-topic summary::-webkit-details-marker {
   display: none;
+}
+
+.guide-topic summary::before {
+  content: "▸";
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-secondary);
+  transform: translateY(-1px);
+  transition: transform 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+
+.guide-topic[open] summary::before {
+  transform: rotate(90deg) translateX(1px);
+  color: var(--text-primary);
 }
 
 .guide-list {
@@ -3757,6 +3814,12 @@ body.size-compact .guide-layout {
 .guide-changelog-card .release-sections {
   overflow-y: auto;
   padding-bottom: 0;
+}
+
+.update-view .guide-changelog-card .release-section {
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 .release-section + .release-section {
