@@ -17,7 +17,8 @@ function buildApplicationMenuTemplate({ isMac = process.platform === "darwin", i
           { role: "hideOthers" },
           { role: "unhide" },
           { type: "separator" },
-          { label: "Quit", accelerator: "CmdOrCtrl+Q", click: actions.onQuit },
+          { label: "Quit App", accelerator: "CmdOrCtrl+Q", click: actions.onQuit },
+          { label: "Quit + Stop Core", accelerator: "CmdOrCtrl+Shift+Q", click: actions.onQuitAndStopCore },
         ],
       }]
     : [];
@@ -28,9 +29,16 @@ function buildApplicationMenuTemplate({ isMac = process.platform === "darwin", i
       label: "File",
       submenu: [
         { label: "Profiles", accelerator: "CmdOrCtrl+1", click: actions.onProfiles },
+        { label: "Auto Switch", accelerator: "CmdOrCtrl+2", click: actions.onAutoSwitch },
         { label: "Settings", accelerator: "CmdOrCtrl+,", click: actions.onSettings },
+        { label: "Guide & Help", accelerator: "CmdOrCtrl+/", click: actions.onGuide },
+        { label: "Update", accelerator: "CmdOrCtrl+U", click: actions.onUpdate },
+        { label: "Debug", accelerator: "CmdOrCtrl+D", click: actions.onDebug },
+        { label: "About", accelerator: "CmdOrCtrl+A", click: actions.onAbout },
         { type: "separator" },
-        ...(isMac ? [{ role: "close" }] : [{ label: "Quit", accelerator: "Alt+F4", click: actions.onQuit }]),
+        ...(isMac ? [{ role: "close" }] : [{ label: "Quit App", accelerator: "Alt+F4", click: actions.onQuit }]),
+        { label: "Quit App", accelerator: "CmdOrCtrl+Q", click: actions.onQuit },
+        { label: "Quit + Stop Core", accelerator: "CmdOrCtrl+Shift+Q", click: actions.onQuitAndStopCore },
       ],
     },
     {
@@ -48,14 +56,30 @@ function buildApplicationMenuTemplate({ isMac = process.platform === "darwin", i
     {
       label: "View",
       submenu: [
-        { label: "Refresh", accelerator: "CmdOrCtrl+R", click: actions.onRefresh },
+        { label: "Refresh Table", accelerator: "CmdOrCtrl+R", click: actions.onRefresh },
+        { label: "Refresh Table (F5)", accelerator: "F5", click: actions.onRefresh },
         { label: "Toggle Sidebar", accelerator: "CmdOrCtrl+B", click: actions.onToggleSidebar },
         { label: "Test Notification", accelerator: "CmdOrCtrl+Shift+N", click: actions.onTestNotification },
         { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
+        { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: actions.onZoomIn },
+        { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: actions.onZoomOut },
+        { label: "Reset Zoom", accelerator: "CmdOrCtrl+0", click: actions.onZoomReset },
         ...(isDev ? [{ type: "separator" }, { role: "reload" }, { role: "toggleDevTools" }] : []),
+      ],
+    },
+    {
+      label: "Go",
+      submenu: [
+        { label: "Profiles", accelerator: "CmdOrCtrl+1", click: actions.onProfiles },
+        { label: "Auto Switch", accelerator: "CmdOrCtrl+2", click: actions.onAutoSwitch },
+        { label: "Settings", accelerator: "CmdOrCtrl+,", click: actions.onSettings },
+        { label: "Guide & Help", accelerator: "CmdOrCtrl+/", click: actions.onGuide },
+        { label: "Update", accelerator: "CmdOrCtrl+U", click: actions.onUpdate },
+        { label: "Debug", accelerator: "CmdOrCtrl+D", click: actions.onDebug },
+        { label: "About", accelerator: "CmdOrCtrl+A", click: actions.onAbout },
+        { type: "separator" },
+        { label: "Next Section", accelerator: "CmdOrCtrl+PageDown", click: actions.onNextSection },
+        { label: "Previous Section", accelerator: "CmdOrCtrl+PageUp", click: actions.onPreviousSection },
       ],
     },
     {

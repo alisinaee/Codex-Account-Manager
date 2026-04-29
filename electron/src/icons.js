@@ -15,8 +15,18 @@ function getElectronAssetPath(name) {
   return path.join(ROOT_DIR, "assets", name);
 }
 
-function getIconPath() {
+function getIconPath(platform = process.platform) {
+  if (platform === "win32") {
+    return getElectronAssetPath("codex-account-manager-win.ico");
+  }
   return getElectronAssetPath("codex-account-manager.png");
+}
+
+function getWindowIconPath(platform = process.platform) {
+  if (platform === "win32") {
+    return getElectronAssetPath("codex-account-manager-win.ico");
+  }
+  return getIconPath(platform);
 }
 
 function getMacIconPath() {
@@ -36,6 +46,7 @@ module.exports = {
   APP_NAME,
   getElectronAssetPath,
   getIconPath,
+  getWindowIconPath,
   getDockIconPath,
   getMacIconPath,
   getProjectSourceIconPath,

@@ -209,6 +209,16 @@ def _ensure_windows_user_writable(path: Path) -> bool:
         return False
 
 
+def _copy_auth_file_with_repair(source_auth: Path, target_auth: Path) -> None:
+    try:
+        shutil.copy2(source_auth, target_auth)
+        return
+    except PermissionError:
+        if not _ensure_windows_user_writable(target_auth):
+            raise
+        shutil.copy2(source_auth, target_auth)
+
+
 DEFAULT_CAM_CONFIG = {
     "ui": {
         "theme": "auto",
@@ -307,6 +317,96 @@ def _cleanup_add_login_session(s: dict) -> None:
         pass
 
 
+def _auth_file_has_usage_credentials(auth_path: Path) -> bool:
+    try:
+        data = load_json(auth_path)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+    access_token = data.get("access_token") or tokens.get("access_token")
+    account_id = data.get("account_id") or tokens.get("account_id")
+    return bool(access_token and account_id)
+
+
+def _invalidate_add_login_usage_cache(s: dict, reason: str) -> None:
+    invalidator = s.get("invalidate_usage_cache")
+    if callable(invalidator):
+        try:
+            invalidator(reason)
+        except Exception:
+            pass
+
+
+def _complete_add_login_session_from_auth(session_id: str) -> bool:
+    with ADD_LOGIN_LOCK:
+        s = ADD_LOGIN_SESSIONS.get(session_id)
+        if not s or s.get("status") != "running":
+            return False
+        name = str(s.get("name") or "").strip()
+        temp_auth = Path(str(s.get("temp_auth") or ""))
+        overwrite = bool(s.get("overwrite", False))
+        proc = s.get("proc")
+    if not name or not temp_auth.exists() or not _auth_file_has_usage_credentials(temp_auth):
+        return False
+
+    err_text = None
+    try:
+        write_profile(name=name, source_auth=temp_auth, source_label=str(temp_auth), overwrite=overwrite)
+    except RuntimeError as e:
+        err_text = str(e)
+
+    with ADD_LOGIN_LOCK:
+        s = ADD_LOGIN_SESSIONS.get(session_id)
+        if not s or s.get("status") != "running":
+            return False
+        if err_text:
+            s["status"] = "failed"
+            s["error"] = err_text
+            cam_log("error", "login session profile update failed", {"session_id": session_id, "profile": name, "error": err_text})
+        else:
+            active_synced = False
+            try:
+                context = _build_usage_profile_context(config=load_cam_config())
+                current_profile = str(context.get("current_profile") or "").strip()
+            except Exception:
+                current_profile = ""
+            if current_profile and current_profile == name:
+                try:
+                    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _copy_auth_file_with_repair(temp_auth, AUTH_FILE)
+                    _set_private_permissions(AUTH_FILE)
+                    active_synced = True
+                except Exception:
+                    pass
+            s["status"] = "completed"
+            s["message"] = f"profile '{name}' added"
+            _invalidate_add_login_usage_cache(s, "local-add-session")
+            cam_log("info", "login session profile updated", {"session_id": session_id, "profile": name, "active_synced": active_synced})
+        s["finished_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        s["updated_at"] = s["finished_at"]
+        if proc:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        _cleanup_add_login_session(s)
+    return err_text is None
+
+
+def _watch_add_login_auth(session_id: str, timeout: int) -> None:
+    deadline = time.time() + max(1, int(timeout))
+    while time.time() < deadline:
+        if _complete_add_login_session_from_auth(session_id):
+            return
+        with ADD_LOGIN_LOCK:
+            s = ADD_LOGIN_SESSIONS.get(session_id)
+            if not s or s.get("status") != "running":
+                return
+        time.sleep(0.35)
+
+
 def _run_add_login_session(session_id: str) -> None:
     with ADD_LOGIN_LOCK:
         session = ADD_LOGIN_SESSIONS.get(session_id)
@@ -360,6 +460,8 @@ def _run_add_login_session(session_id: str) -> None:
             s["updated_at"] = s["finished_at"]
             _cleanup_add_login_session(s)
             return
+        if s.get("status") == "completed":
+            return
         if rc != 0:
             tail = ""
             out_lines = s.get("output") or []
@@ -385,6 +487,8 @@ def _run_add_login_session(session_id: str) -> None:
             _cleanup_add_login_session(s)
             return
     # write profile outside lock
+    if _complete_add_login_session_from_auth(session_id):
+        return
     err_text = None
     try:
         write_profile(name=name, source_auth=Path(temp_auth), source_label=str(temp_auth), overwrite=overwrite)
@@ -397,15 +501,42 @@ def _run_add_login_session(session_id: str) -> None:
         if err_text:
             s["status"] = "failed"
             s["error"] = err_text
+            cam_log("error", "login session profile update failed", {"session_id": session_id, "profile": name, "error": err_text})
         else:
+            active_synced = False
+            # If this is the currently active profile, update live auth.json too.
+            try:
+                context = _build_usage_profile_context(config=load_cam_config())
+                current_profile = str(context.get("current_profile") or "").strip()
+            except Exception:
+                current_profile = ""
+            if current_profile and current_profile == str(name).strip():
+                try:
+                    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _copy_auth_file_with_repair(Path(temp_auth), AUTH_FILE)
+                    _set_private_permissions(AUTH_FILE)
+                    active_synced = True
+                except Exception:
+                    # Keep profile save successful; UI can still switch to this profile if needed.
+                    pass
             s["status"] = "completed"
             s["message"] = f"profile '{name}' added"
+            # Clear stale usage/auth snapshots so the UI can detect fresh auth immediately.
+            _invalidate_add_login_usage_cache(s, "local-add-session")
+            cam_log("info", "login session profile updated", {"session_id": session_id, "profile": name, "active_synced": active_synced})
         s["finished_at"] = dt.datetime.now().isoformat(timespec="seconds")
         s["updated_at"] = s["finished_at"]
         _cleanup_add_login_session(s)
 
 
-def start_add_login_session(name: str, timeout: int, overwrite: bool, keep_temp_home: bool, device_auth: bool) -> dict:
+def start_add_login_session(
+    name: str,
+    timeout: int,
+    overwrite: bool,
+    keep_temp_home: bool,
+    device_auth: bool,
+    invalidate_usage_cache_fn=None,
+) -> dict:
     ensure_dirs()
     _validate_target_profile_name(name, overwrite=overwrite)
     try:
@@ -449,11 +580,13 @@ def start_add_login_session(name: str, timeout: int, overwrite: bool, keep_temp_
         "overwrite": bool(overwrite),
         "keep_temp_home": bool(keep_temp_home),
         "timeout": int(timeout),
+        "invalidate_usage_cache": invalidate_usage_cache_fn,
     }
     with ADD_LOGIN_LOCK:
         ADD_LOGIN_SESSIONS[session_id] = session
     t = threading.Thread(target=_run_add_login_session, args=(session_id,), daemon=True)
     t.start()
+    threading.Thread(target=_watch_add_login_auth, args=(session_id, int(timeout)), daemon=True).start()
     def _timeout_watchdog(sid: str, sec: int):
         time.sleep(max(1, sec))
         with ADD_LOGIN_LOCK:
@@ -1192,7 +1325,7 @@ def prepare_profile_home(name: str) -> Path:
     profile_home = PROFILE_HOMES_DIR / name
     profile_home.mkdir(parents=True, exist_ok=True)
     target_auth = profile_home / "auth.json"
-    shutil.copy2(source_auth, target_auth)
+    _copy_auth_file_with_repair(source_auth, target_auth)
     _set_private_permissions(target_auth)
     return profile_home
 
@@ -2017,7 +2150,7 @@ def write_profile(name: str, source_auth: Path, source_label: str, overwrite: bo
 
     target_dir.mkdir(parents=True, exist_ok=True)
     target_auth = target_dir / "auth.json"
-    shutil.copy2(source_auth, target_auth)
+    _copy_auth_file_with_repair(source_auth, target_auth)
     _set_private_permissions(target_auth)
 
     meta = {
@@ -5148,6 +5281,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                         overwrite=force,
                         keep_temp_home=keep_temp,
                         device_auth=device_auth,
+                        invalidate_usage_cache_fn=invalidate_usage_cache,
                     )
                 except RuntimeError as e:
                     return _json_error("START_FAILED", str(e), 400)

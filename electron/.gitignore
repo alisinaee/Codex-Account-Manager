@@ -3,3 +3,4 @@ dist/
 test-results/
 playwright-report/
 .codex-electron-runtime/
+.codex-electron-runtime-win/

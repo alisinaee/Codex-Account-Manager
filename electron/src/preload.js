@@ -43,6 +43,16 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
     ipcRenderer.on("desktop:toggle-sidebar", handler);
     return () => ipcRenderer.removeListener("desktop:toggle-sidebar", handler);
   },
+  onCycleView: (callback) => {
+    const handler = (_event, step) => callback(step);
+    ipcRenderer.on("desktop:cycle-view", handler);
+    return () => ipcRenderer.removeListener("desktop:cycle-view", handler);
+  },
+  onRefreshRequested: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("desktop:refresh-requested", handler);
+    return () => ipcRenderer.removeListener("desktop:refresh-requested", handler);
+  },
   onRuntimeStatus: (callback) => {
     const handler = (_event, status) => callback(status);
     ipcRenderer.on("desktop:runtime-status", handler);

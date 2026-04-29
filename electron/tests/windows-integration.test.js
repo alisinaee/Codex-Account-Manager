@@ -132,27 +132,43 @@ test("applyWindowsTrayUsage restores the default icon when disabled", () => {
   assert.deepEqual(calls[0], defaultIcon);
 });
 
+test("buildWindowsNotificationShortcutSpec returns null for unpackaged apps", () => {
+  const spec = buildWindowsNotificationShortcutSpec({
+    platform: "win32",
+    appId: "com.codexaccountmanager.desktop",
+    appName: "Codex Account Manager",
+    iconPath: "C:\\repo\\electron\\assets\\codex-account-manager-win.ico",
+    processExecPath: "C:\\repo\\electron\\node_modules\\electron\\dist\\electron.exe",
+    app: {
+      isPackaged: false,
+      getPath() {
+        return "C:\\Users\\alisi\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu";
+      },
+    },
+  });
+  assert.equal(spec, null);
+});
+
 test("buildWindowsNotificationShortcutSpec creates a branded start menu shortcut contract", () => {
   const spec = buildWindowsNotificationShortcutSpec({
     platform: "win32",
     appId: "com.codexaccountmanager.desktop",
     appName: "Codex Account Manager",
-    iconPath: "C:\\repo\\electron\\assets\\codex-account-manager.png",
-    processExecPath: "C:\\repo\\electron\\node_modules\\electron\\dist\\electron.exe",
+    iconPath: "C:\\repo\\electron\\assets\\codex-account-manager-win.ico",
+    processExecPath: "C:\\repo\\Codex Account Manager.exe",
     app: {
-      isPackaged: false,
+      isPackaged: true,
       getPath(kind) {
         assert.equal(kind, "startMenu");
         return "C:\\Users\\alisi\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu";
-      },
-      getAppPath() {
-        return "C:\\repo\\electron";
       },
     },
   });
 
   assert.match(spec.shortcutPath, /Codex Account Manager\.lnk$/);
   assert.equal(spec.options.appUserModelId, "com.codexaccountmanager.desktop");
-  assert.equal(spec.options.target, "C:\\repo\\electron\\node_modules\\electron\\dist\\electron.exe");
-  assert.equal(spec.options.args, "\"C:\\repo\\electron\"");
+  assert.equal(spec.operation, "update");
+  assert.equal(spec.options.target, "C:\\repo\\Codex Account Manager.exe");
+  assert.equal(spec.options.args, "");
+  assert.equal(spec.options.icon, "C:\\repo\\electron\\assets\\codex-account-manager-win.ico");
 });

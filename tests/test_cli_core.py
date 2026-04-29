@@ -22,6 +22,7 @@ class CliCoreTests(unittest.TestCase):
             "PROFILE_HOMES_DIR": cli.PROFILE_HOMES_DIR,
             "EXPORT_SESSIONS": dict(cli.EXPORT_SESSIONS),
             "IMPORT_ANALYSES": dict(cli.IMPORT_ANALYSES),
+            "ADD_LOGIN_SESSIONS": dict(cli.ADD_LOGIN_SESSIONS),
         }
         cli.CAM_DIR = root / "cam"
         cli.CAM_CONFIG_FILE = cli.CAM_DIR / "config.json"
@@ -31,6 +32,7 @@ class CliCoreTests(unittest.TestCase):
         cli.PROFILE_HOMES_DIR = root / "homes"
         cli.EXPORT_SESSIONS.clear()
         cli.IMPORT_ANALYSES.clear()
+        cli.ADD_LOGIN_SESSIONS.clear()
 
     def tearDown(self):
         cli.CAM_DIR = self._orig["CAM_DIR"]
@@ -43,6 +45,8 @@ class CliCoreTests(unittest.TestCase):
         cli.EXPORT_SESSIONS.update(self._orig["EXPORT_SESSIONS"])
         cli.IMPORT_ANALYSES.clear()
         cli.IMPORT_ANALYSES.update(self._orig["IMPORT_ANALYSES"])
+        cli.ADD_LOGIN_SESSIONS.clear()
+        cli.ADD_LOGIN_SESSIONS.update(self._orig["ADD_LOGIN_SESSIONS"])
         self.tmp.cleanup()
 
     def test_build_native_notification_payload_uses_current_profile_usage(self):
@@ -706,6 +710,43 @@ class CliCoreTests(unittest.TestCase):
         }
         chain = cli._ordered_chain_names(payload, cfg)
         self.assertEqual(chain, ["acc1", "acc3", "acc2"])
+
+    def test_add_login_session_completes_when_temp_auth_is_written_before_process_exit(self):
+        temp_home = Path(self.tmp.name) / "login-temp"
+        temp_home.mkdir(parents=True)
+        temp_auth = temp_home / "auth.json"
+        temp_auth.write_text(json.dumps({
+            "tokens": {
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+                "account_id": "acc-fresh",
+                "id_token": f"header.{self._jwt_payload({'email': 'fresh@example.com'})}.sig",
+            }
+        }), encoding="utf-8")
+
+        class Proc:
+            terminated = False
+            def terminate(self):
+                self.terminated = True
+
+        proc = Proc()
+        cli.ADD_LOGIN_SESSIONS["sid"] = {
+            "id": "sid",
+            "name": "work",
+            "status": "running",
+            "temp_home": str(temp_home),
+            "temp_auth": str(temp_auth),
+            "overwrite": True,
+            "keep_temp_home": True,
+            "proc": proc,
+        }
+
+        self.assertTrue(cli._complete_add_login_session_from_auth("sid"))
+        payload = cli.get_add_login_session("sid")
+        self.assertEqual(payload["status"], "completed")
+        saved = json.loads((cli.PROFILES_DIR / "work" / "auth.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tokens"]["access_token"], "fresh-access")
+        self.assertTrue(proc.terminated)
 
     def _write_profile(self, name: str, *, email: str, account_id: str) -> None:
         profile_dir = cli.PROFILES_DIR / name

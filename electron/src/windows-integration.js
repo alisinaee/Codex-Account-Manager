@@ -7,6 +7,12 @@ function windowsTaskbarUsageEnabled(config = {}) {
   return Boolean(config?.ui?.windows_taskbar_usage_enabled);
 }
 
+function shouldApplyTaskbarOverlayInCurrentRuntime() {
+  // In dev-server mode, Windows can render the tiny 16x16 overlay in a way
+  // that looks like a broken app icon. Keep the base app icon clean in dev.
+  return process.env.CAM_ELECTRON_USE_DEV_SERVER !== "1";
+}
+
 function buildTaskbarUsageOverlayDataUrl(summary = {}) {
   const percent = Number(summary?.fiveHourPercent);
   if (!summary?.available || !Number.isFinite(percent)) {
@@ -46,6 +52,11 @@ function buildWindowsTrayUsageDataUrl(summary = {}) {
 
 function applyWindowsTaskbarUsage({ windowLike, nativeImage, summary, config, platform = process.platform }) {
   if (platform !== "win32" || !windowLike || typeof windowLike.setOverlayIcon !== "function") {
+    return false;
+  }
+  if (!shouldApplyTaskbarOverlayInCurrentRuntime()) {
+    const emptyIcon = nativeImage?.createEmpty ? nativeImage.createEmpty() : null;
+    windowLike.setOverlayIcon(emptyIcon, "");
     return false;
   }
   if (!windowsTaskbarUsageEnabled(config) || !summary?.available) {
@@ -96,23 +107,23 @@ function buildWindowsNotificationShortcutSpec({
   platform = process.platform,
   processExecPath = process.execPath,
 } = {}) {
-  if (platform !== "win32" || !app) {
+  if (platform !== "win32" || !app || !app.isPackaged) {
     return null;
   }
   const startMenuPath = app.getPath?.("startMenu");
-  const appPath = app.getAppPath?.();
-  if (!startMenuPath || !appPath) {
+  if (!startMenuPath) {
     return null;
   }
+  const resolvedIconPath = iconPath || processExecPath;
   return {
     shortcutPath: path.join(startMenuPath, "Programs", `${appName}.lnk`),
-    operation: "create",
+    operation: "update",
     options: {
       target: processExecPath,
       cwd: path.dirname(processExecPath),
-      args: app.isPackaged ? "" : `"${appPath}"`,
+      args: "",
       description: appName,
-      icon: iconPath,
+      icon: resolvedIconPath,
       iconIndex: 0,
       appUserModelId: appId,
     },
@@ -124,8 +135,9 @@ function ensureWindowsNotificationShortcut({ shell, ...rest } = {}) {
   if (!spec || typeof shell?.writeShortcutLink !== "function") {
     return { ok: false, reason: "unsupported" };
   }
-  const ok = shell.writeShortcutLink(spec.shortcutPath, spec.operation, spec.options);
-  return { ok, shortcutPath: spec.shortcutPath };
+  const created = shell.writeShortcutLink(spec.shortcutPath, "create", spec.options);
+  const updated = shell.writeShortcutLink(spec.shortcutPath, "update", spec.options);
+  return { ok: Boolean(created || updated), shortcutPath: spec.shortcutPath };
 }
 
 module.exports = {
@@ -135,5 +147,6 @@ module.exports = {
   buildTaskbarUsageOverlayDataUrl,
   buildWindowsNotificationShortcutSpec,
   ensureWindowsNotificationShortcut,
+  shouldApplyTaskbarOverlayInCurrentRuntime,
   windowsTaskbarUsageEnabled,
 };
