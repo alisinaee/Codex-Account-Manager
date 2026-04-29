@@ -1151,6 +1151,11 @@ select {
   gap: var(--space-2);
 }
 
+.dialog-inline-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .auth-session-card .kv-row {
   padding: var(--space-1) 0;
 }

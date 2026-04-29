@@ -3206,8 +3206,23 @@ function AppContent() {
     }
   }
 
+  function resolveProfileEmailByName(name) {
+    const target = String(name || "").trim();
+    if (!target) return "";
+    const rows = buildProfileRows(stateRef.current || state);
+    const row = rows.find((item) => String(item?.name || "").trim() === target);
+    if (!row) {
+      return isLikelyEmail(target) ? target : "";
+    }
+    return (
+      String(row.email_display || row.email || "").trim()
+      || extractEmailFromHint(row.account_hint || "")
+      || (isLikelyEmail(target) ? target : "")
+    );
+  }
+
   async function openAddAccount() {
-    setModal({ type: "add-account", name: "", mode: "device", session: null, busy: false, detecting: false, completed: false, successMessage: "" });
+    setModal({ type: "add-account", name: "", email: "", mode: "device", session: null, busy: false, detecting: false, completed: false, successMessage: "" });
   }
 
   async function openExportProfiles() {
@@ -3800,12 +3815,14 @@ function AppContent() {
           if (targetName) {
             await refreshProfileUsage(targetName, { timeoutSec: 8 }).catch(() => {});
           }
+          const refreshedEmail = resolveProfileEmailByName(targetName);
           if (cancelled) return;
           if (modalType === "add-account") {
             setModal((current) => (
               current && current.type === "add-account"
                 ? {
                     ...current,
+                    email: refreshedEmail || current.email || "",
                     session: nextSession,
                     busy: false,
                     detecting: false,
@@ -4163,19 +4180,29 @@ function AppContent() {
         (() => {
           const loginUrlValue = resolveSessionLoginUrl(modal.session, modal.mode);
           const canCopyLoginUrl = isCopyableUrl(loginUrlValue);
+          const emailValue = String(modal.email || resolveProfileEmailByName(modal.name) || "").trim();
+          const canCopyEmail = isLikelyEmail(emailValue);
           return (
         <Dialog title="Add account" size="md" onClose={() => setModal(null)} footer={<Button onClick={() => setModal(null)}>Close</Button>}>
           <div className="modal-form">
             <p className="muted">Create or refresh a saved profile with the selected login flow.</p>
             <label>Profile name</label>
-            <input value={modal.name} onChange={(event) => setModal((current) => ({ ...current, name: event.target.value }))} placeholder="work" />
+            <input
+              value={modal.name}
+              onChange={(event) => setModal((current) => ({
+                ...current,
+                name: event.target.value,
+                email: isLikelyEmail(event.target.value) ? event.target.value.trim() : current.email,
+              }))}
+              placeholder="work"
+            />
             <label>Login mode</label>
             <select value={modal.mode} onChange={(event) => setModal((current) => ({ ...current, mode: event.target.value }))}>
               <option value="device">Device Login</option>
               <option value="normal">Normal Login</option>
             </select>
             <LoginModeHelp mode={modal.mode} />
-            <div className="settings-inline-actions">
+            <div className="settings-inline-actions dialog-inline-actions add-account-actions">
               <Button
                 variant="primary"
                 loading={!!modal.busy || !!modal.detecting}
@@ -4189,6 +4216,13 @@ function AppContent() {
                 }}
               >
                 Start
+              </Button>
+              <Button
+                disabled={!canCopyEmail}
+                disabledReason={!canCopyEmail ? "Email is not available yet. It appears after the profile is detected." : ""}
+                onClick={() => copyToClipboard("Email", canCopyEmail ? emailValue : "")}
+              >
+                Copy email
               </Button>
               <Button
                 disabled={!canCopyLoginUrl}
@@ -4209,6 +4243,7 @@ function AppContent() {
             {modal.session && (
               <div className="auth-session-card">
                 <LabelValueRow label="Status" value={modal.session.status || "-"} />
+                <LabelValueRow label="Email" value={emailValue || "-"} />
                 <LabelValueRow label="Login URL" value={loginUrlValue || "-"} />
                 <LabelValueRow label="Code" value={modal.session.code || "-"} />
               </div>
