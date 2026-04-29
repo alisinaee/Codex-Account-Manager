@@ -22,6 +22,12 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-29T15:20:00+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
+- Summary: Restored Add account dialog copy-email support, surfaced detected email in the session card, and right-aligned the dialog action buttons with a dedicated inline action class.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:df39a169d231 -->
+
 ### 2026-04-29T15:00:00+03:30
 - Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`
 - Summary: Fixed Electron relogin for expired profiles by completing add-login sessions as soon as temp auth credentials are written, repairing Windows auth-file copy permissions, invalidating usage cache, refreshing profile usage after relogin, and tightening Debug/Update UI behavior.
@@ -136,11 +142,5 @@
 - Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
 <!-- fingerprint:aa235d35119c -->
 
-### 2026-04-27T15:13:39+03:30
-- Changed files: `electron/src/renderer/SettingsView.jsx`, `electron/src/styles/components.css`
-- Summary: Simplified the Electron settings internals so each settings group now uses a single stacked subsection lane instead of side-by-side inner grids, making the page follow the `Current account refresh` box pattern more consistently.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:2dbfb2d0af9c -->
-
 ## Last Updated
-- 2026-04-29T15:00:00+03:30
+- 2026-04-29T15:20:00+03:30
