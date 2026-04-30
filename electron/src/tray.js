@@ -28,7 +28,7 @@ function toneAnsiColor(value) {
   const tone = buildStatusTone(value);
   if (tone === "danger") return "\u001b[31m";
   if (tone === "warning") return "\u001b[33m";
-  if (tone === "caution") return "\u001b[93m";
+  if (tone === "caution") return "\u001b[33m";
   if (tone === "good") return "\u001b[32m";
   return "\u001b[37m";
 }
@@ -48,32 +48,65 @@ function statusItem(label, tone, platform) {
           ? "🟢"
           : "⚪";
   const prefixedLabel = `${marker} ${label}`;
-  if (platform === "darwin") {
-    return { label: prefixedLabel, enabled: true };
+  return { label: prefixedLabel, enabled: false };
+}
+
+function parseMacMajorVersion(version) {
+  const major = Number.parseInt(String(version || "").split(".")[0], 10);
+  return Number.isFinite(major) ? major : 0;
+}
+
+function supportsMacTrayHeaders(version) {
+  return parseMacMajorVersion(version) >= 14;
+}
+
+function buildTrayStatusItems(summary = {}, platform = process.platform, options = {}) {
+  const profileName = compactProfileName(summary.profileName);
+  if (!summary.available) {
+    return [statusItem("Usage unavailable", "neutral", platform)];
   }
-  return { label: prefixedLabel, enabled: true };
+  const macSystemVersion = String(
+    options.macSystemVersion
+    || (typeof process.getSystemVersion === "function" ? process.getSystemVersion() : ""),
+  ).trim();
+  const usageItems = [
+    statusItem(`5H ${toPercentLabel(summary.fiveHourPercent)} left`, buildStatusTone(summary.fiveHourPercent), platform),
+    statusItem(`Weekly ${toPercentLabel(summary.weeklyPercent)} left`, buildStatusTone(summary.weeklyPercent), platform),
+  ];
+  if (platform === "darwin" && supportsMacTrayHeaders(macSystemVersion)) {
+    return [
+      { type: "header", label: `Current ${profileName}` },
+      { type: "header", label: `5H ${toPercentLabel(summary.fiveHourPercent)} left` },
+      { type: "header", label: `Weekly ${toPercentLabel(summary.weeklyPercent)} left` },
+    ];
+  }
+  if (platform === "darwin") {
+    return [{
+      label: `Status ${profileName}`,
+      submenu: usageItems,
+    }];
+  }
+  return [
+    { label: `Current ${profileName}`, enabled: false },
+    ...usageItems,
+  ];
 }
 
 function buildTrayMenuTemplate(actions = {}) {
   const summary = actions.summary || {};
   const platform = actions.platform || process.platform;
-  const profileName = compactProfileName(summary.profileName);
-  const statusItems = summary.available
-    ? [
-        { label: `Current ${profileName}`, enabled: true },
-        statusItem(`5H ${toPercentLabel(summary.fiveHourPercent)} left`, buildStatusTone(summary.fiveHourPercent), platform),
-        statusItem(`Weekly ${toPercentLabel(summary.weeklyPercent)} left`, buildStatusTone(summary.weeklyPercent), platform),
-      ]
-    : [statusItem("Usage unavailable", "neutral", platform)];
+  const statusItems = buildTrayStatusItems(summary, platform, {
+    macSystemVersion: actions.macSystemVersion,
+  });
   return [
     ...statusItems,
     { type: "separator" },
     { label: "Open Codex Account Manager", click: actions.onOpen },
+    { label: "Web Panel", click: actions.onOpenWebPanel },
     { label: "Refresh Usage", click: actions.onRefresh },
     { label: "Send Test Notification", click: actions.onNotify },
     { type: "separator" },
-    { label: "Start UI Service", click: actions.onStartService },
-    { label: "Stop UI Service", click: actions.onStopService },
+    { label: "Restart Service", click: actions.onRestartService },
     { label: "Quit", click: actions.onQuit },
   ];
 }
@@ -93,7 +126,7 @@ function applyTrayState({ tray, Menu, summary, actions, nativeImage }) {
     tray.setToolTip(summary?.tooltip || "Codex Account Manager");
   }
   if (process.platform === "darwin" && typeof tray.setTitle === "function") {
-    tray.setTitle(buildMacMenuBarTitle(summary));
+    tray.setTitle(buildMacMenuBarTitle(summary), { fontType: "monospacedDigit" });
   }
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({ ...actions, summary })));
 }

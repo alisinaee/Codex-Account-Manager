@@ -3,6 +3,41 @@ export function extractEmailFromHint(hint) {
   return left.includes("@") ? left : "";
 }
 
+function usageMetricHasObservedValues(metric) {
+  if (!metric || typeof metric !== "object") return false;
+  if (metric.remaining_percent !== null && metric.remaining_percent !== undefined) return true;
+  return ![null, undefined, "", 0].includes(metric.resets_at);
+}
+
+function usageRowHasObservedValues(row) {
+  if (!row || typeof row !== "object") return false;
+  if (usageMetricHasObservedValues(row.usage_5h)) return true;
+  if (usageMetricHasObservedValues(row.usage_weekly)) return true;
+  if (typeof row.plan_type === "string" && row.plan_type.trim()) return true;
+  return typeof row.is_paid === "boolean";
+}
+
+function mergeUsageRow(prev, next) {
+  if (!next || typeof next !== "object") return prev || {};
+  if (!prev || typeof prev !== "object" || !Object.keys(prev).length) {
+    return next;
+  }
+  const transientError = Boolean(String(next.error || "").trim()) && !usageRowHasObservedValues(next);
+  if (!transientError) {
+    return next;
+  }
+  return {
+    ...prev,
+    name: next.name ?? prev.name,
+    email: next.email ?? prev.email,
+    account_id: next.account_id ?? prev.account_id,
+    same_principal: next.same_principal ?? prev.same_principal,
+    saved_at: next.saved_at ?? prev.saved_at,
+    auto_switch_eligible: next.auto_switch_eligible ?? prev.auto_switch_eligible,
+    is_current: Boolean(next.is_current ?? prev.is_current),
+  };
+}
+
 export function mergeUsagePayload(prevUsage, nextUsage, listPayload, currentPayload) {
   if (!nextUsage || nextUsage.__error) return nextUsage;
 
@@ -40,10 +75,10 @@ export function mergeUsagePayload(prevUsage, nextUsage, listPayload, currentPayl
     const prev = prevByName.get(name) || {};
     const next = nextByName.get(name) || {};
     const list = listRows.find((row) => String(row?.name || "").trim() === name) || {};
+    const mergedRow = mergeUsageRow(prev, next);
     return {
       ...list,
-      ...prev,
-      ...next,
+      ...mergedRow,
       name,
       // Per-row loading flags are UI-local and must not survive a fresh payload merge.
       loading_usage: false,

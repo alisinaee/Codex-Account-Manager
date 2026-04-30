@@ -78,6 +78,7 @@ function fallbackUsagePayload({ list, current, previousUsage } = {}) {
   const profiles = profileRows.map((row) => {
     const name = String(row?.name || "");
     const previous = previousByName.get(name) || {};
+    const hasPreviousSnapshot = Object.keys(previous).length > 0;
     const accountHint = String(row?.account_hint || "");
     const emailHint = accountHint.split("|")[0].trim().toLowerCase();
     const isCurrent = activeHint && emailHint ? activeHint === emailHint : Boolean(row?.is_current);
@@ -88,7 +89,9 @@ function fallbackUsagePayload({ list, current, previousUsage } = {}) {
       usage_5h: previous?.usage_5h || { remaining_percent: null, resets_at: null, text: "-" },
       usage_weekly: previous?.usage_weekly || { remaining_percent: null, resets_at: null, text: "-" },
       is_current: isCurrent,
-      error: previous?.error || "usage unavailable",
+      error: hasPreviousSnapshot
+        ? (Object.prototype.hasOwnProperty.call(previous, "error") ? (previous.error ?? null) : null)
+        : "usage unavailable",
     };
   });
 

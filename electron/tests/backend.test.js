@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   buildServiceCommand,
   buildServiceRuntimeContract,
+  ensureBackendRunning,
   getDefaultBackendState,
   normalizeServiceStatus,
 } = require("../src/backend");
@@ -58,4 +59,37 @@ test("buildServiceRuntimeContract carries desktop-ready backend details", () => 
       token: "session-token",
     },
   );
+});
+
+test("ensureBackendRunning can force restart a stale service before reuse", async () => {
+  const calls = [];
+  const state = {
+    running: true,
+    host: "127.0.0.1",
+    port: 4673,
+    baseUrl: "http://127.0.0.1:4673/",
+  };
+
+  const result = await ensureBackendRunning({
+    command: "/repo/bin/codex-account",
+    forceRestart: true,
+    readServiceStateImpl: () => {
+      calls.push(["status"]);
+      return state;
+    },
+    runServiceCommandImpl: (action, options) => {
+      calls.push(["command", action, options.command]);
+      return { ok: true, status: 0, stdout: "", stderr: "" };
+    },
+    waitForBackendImpl: async (nextState) => {
+      calls.push(["wait", nextState.baseUrl]);
+    },
+  });
+
+  assert.equal(result, state);
+  assert.deepEqual(calls, [
+    ["command", "restart", "/repo/bin/codex-account"],
+    ["wait", "http://127.0.0.1:4673/"],
+    ["status"],
+  ]);
 });

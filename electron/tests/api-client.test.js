@@ -79,7 +79,7 @@ test("switchProfile sends no_restart true when explicitly requested and refreshe
   );
 });
 
-test("switchProfile defaults to restart on macOS", async () => {
+test("switchProfile allows backend Codex restart on macOS by default", async () => {
   const calls = [];
   const client = createApiClient({
     state: { baseUrl: "http://127.0.0.1:4673/", token: "session-token" },
@@ -162,6 +162,91 @@ test("getDesktopState falls back when usage endpoint fails", async () => {
   assert.equal(state.usage.profiles.length, 1);
   assert.equal(state.usage.profiles[0].name, "acc-a");
   assert.equal(state.usage.profiles[0].error, "usage unavailable");
+});
+
+test("getDesktopState preserves previous profile usage when a forced switch refresh fails once", async () => {
+  let usageCalls = 0;
+  const client = createApiClient({
+    state: { baseUrl: "http://127.0.0.1:4673/", token: "session-token" },
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/current")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { ok: true, account_hint: "b@example.com | id:2", account_id: "2" } }),
+        };
+      }
+      if (url.endsWith("/api/list")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              profiles: [
+                { name: "acc-a", account_hint: "a@example.com | id:1", is_current: false },
+                { name: "acc-b", account_hint: "b@example.com | id:2", is_current: true },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.includes("/api/usage-local")) {
+        usageCalls += 1;
+        if (usageCalls === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              data: {
+                current_profile: "acc-a",
+                profiles: [
+                  {
+                    name: "acc-a",
+                    error: null,
+                    usage_5h: { remaining_percent: 61, resets_at: 1700000000, text: "61%" },
+                    usage_weekly: { remaining_percent: 74, resets_at: 1700000000, text: "74%" },
+                    is_current: true,
+                  },
+                  {
+                    name: "acc-b",
+                    error: null,
+                    usage_5h: { remaining_percent: 91, resets_at: 1700000000, text: "91%" },
+                    usage_weekly: { remaining_percent: 96, resets_at: 1700000000, text: "96%" },
+                    is_current: false,
+                  },
+                ],
+              },
+            }),
+          };
+        }
+        return {
+          ok: false,
+          json: async () => ({ ok: false, error: { message: "http 401" } }),
+        };
+      }
+      if (url.endsWith("/api/ui-config")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { ui: {} } }),
+        };
+      }
+      if (url.endsWith("/api/auto-switch/state")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { enabled: false } }),
+        };
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+
+  await client.getDesktopState();
+  const state = await client.getDesktopState({ usageScope: "all", usageForce: true, usageTimeoutSec: 8 });
+
+  assert.equal(state.usage.current_profile, "acc-b");
+  assert.equal(state.usage.profiles[0].error, null);
+  assert.equal(state.usage.profiles[0].usage_5h.remaining_percent, 61);
+  assert.equal(state.usage.profiles[1].error, null);
+  assert.equal(state.usage.profiles[1].usage_weekly.remaining_percent, 96);
 });
 
 test("request times out when backend hangs", async () => {

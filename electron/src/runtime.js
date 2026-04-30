@@ -409,7 +409,7 @@ async function resolveRuntimeStatus({
       core: {
         ...doctor.core,
         installed: true,
-        commandPath: doctor.core?.command_path || candidate,
+        commandPath: candidate,
         minSupportedVersion: doctor.core?.min_supported_version || minCoreVersion,
         meetsMinimumVersion: doctor.core?.meets_minimum_version ?? isVersionAtLeast(doctor.core?.version || "", minCoreVersion),
       },

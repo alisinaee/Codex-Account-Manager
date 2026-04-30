@@ -38,6 +38,19 @@ export function applyProfileSelection(snapshot, profileName) {
   };
 }
 
+export function buildDesktopSwitchOptions(input = {}) {
+  const { platform = "", noRestart } = input || {};
+  const normalizedPlatform = String(platform || "").trim().toLowerCase();
+  const nextOptions = {};
+  if (normalizedPlatform) {
+    nextOptions.platform = normalizedPlatform;
+  }
+  if (Object.prototype.hasOwnProperty.call(input || {}, "noRestart")) {
+    nextOptions.noRestart = Boolean(noRestart);
+  }
+  return nextOptions;
+}
+
 export function getCurrentRefreshIntervalMs(ui = {}) {
   if (!ui?.current_auto_refresh_enabled) {
     return null;
@@ -52,6 +65,80 @@ export function getAllRefreshIntervalMs(ui = {}) {
   }
   const intervalMin = Math.max(1, Math.min(60, Number(ui.all_refresh_interval_min || 5)));
   return intervalMin * 60 * 1000;
+}
+
+export function isTimeoutErrorMessage(error) {
+  const message = String(error?.message || error || "").trim().toLowerCase();
+  if (!message) {
+    return false;
+  }
+  return message.includes("timed out") || message.includes("timeout after");
+}
+
+export function formatUsageRefreshError(error, { scope = "usage", profileName = "" } = {}) {
+  if (!isTimeoutErrorMessage(error)) {
+    return String(error?.message || error || "request failed");
+  }
+
+  switch (String(scope || "").trim().toLowerCase()) {
+    case "current":
+      return "Current usage refresh timed out. The app will retry automatically.";
+    case "profile": {
+      const name = String(profileName || "").trim();
+      return name
+        ? `Usage refresh for ${name} timed out. Try again in a moment.`
+        : "Usage refresh timed out. Try again in a moment.";
+    }
+    case "all":
+      return "Refreshing usage for saved accounts timed out. Existing values are still shown.";
+    default:
+      return "Usage refresh timed out. Try again in a moment.";
+  }
+}
+
+export function shouldRunStartupAllAccountsRefresh({
+  runtimeStatus,
+  loading,
+  state,
+  alreadyStarted = false,
+} = {}) {
+  if (alreadyStarted || loading) {
+    return false;
+  }
+  const runtimeReady = runtimeStatus?.phase === "ready" || Boolean(
+    runtimeStatus?.python?.supported
+      && runtimeStatus?.core?.installed
+      && runtimeStatus?.uiService?.running,
+  );
+  if (!runtimeReady) {
+    return false;
+  }
+
+  const currentName = String(
+    state?.usage?.current_profile
+    || state?.current?.profile_name
+    || "",
+  ).trim();
+  const listProfiles = Array.isArray(state?.list?.profiles) ? state.list.profiles : [];
+  const usageProfiles = Array.isArray(state?.usage?.profiles) ? state.usage.profiles : [];
+  const sourceProfiles = listProfiles.length ? listProfiles : usageProfiles;
+  const names = new Set();
+  for (const row of sourceProfiles) {
+    const name = String(row?.name || "").trim();
+    if (name) names.add(name);
+  }
+  if (names.size < 2) {
+    return false;
+  }
+  if (!currentName) {
+    return true;
+  }
+  for (const name of names) {
+    if (name !== currentName) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function formatAutoSwitchCountdown(dueAtText, dueAt, nowMs = Date.now()) {
