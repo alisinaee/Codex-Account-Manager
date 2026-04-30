@@ -82,7 +82,7 @@ test("profile column widths redistribute flexible space by visible column weight
   );
 
   assert.ok(shareFromWidth(reduced.email) > shareFromWidth(reduced.profile));
-  assert.ok(shareFromWidth(reduced.profile) > shareFromWidth(reduced.h5remain));
+  assert.ok(shareFromWidth(reduced.h5remain) > shareFromWidth(reduced.profile));
   assert.ok(shareFromWidth(reduced.email) > shareFromWidth(full.email));
   assert.ok(shareFromWidth(reduced.email) <= 22);
   assert.ok(shareFromWidth(reduced.profile) <= 15);

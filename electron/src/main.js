@@ -482,7 +482,7 @@ function emitToRenderer(channel, payload) {
 
 function setRuntimeState(next) {
   runtimeState = normalizeRuntimeStatus(next, {
-    minCoreVersion: process.env.CAM_ELECTRON_MIN_CORE_VERSION || "0.0.12",
+    minCoreVersion: process.env.CAM_ELECTRON_MIN_CORE_VERSION || "0.0.15",
   });
   if (runtimeState.core.commandPath) {
     saveStoredRuntimeState({
@@ -1101,7 +1101,7 @@ function createMockApiClient() {
   const clone = (value) => JSON.parse(JSON.stringify(value));
   let exportIdCounter = 1;
   let addSessionCounter = 1;
-  let updateAvailable = true;
+  let updateAvailable = false;
   let releaseNotes = {
     status: "synced",
     status_text: "Synced from GitHub",
@@ -1109,9 +1109,9 @@ function createMockApiClient() {
     repo_url: "https://github.com/alisinaee/Codex-Account-Manager/releases",
     releases: [
       {
-        tag: "v0.0.13",
-        version: "v0.0.13",
-        title: "v0.0.13",
+        tag: "v0.0.15",
+        version: "v0.0.15",
+        title: "v0.0.15",
         published_at: "2026-04-23T10:00:00Z",
         body: "Mock release notes",
         highlights: ["Mock release notes"],
@@ -1158,9 +1158,9 @@ function createMockApiClient() {
       return {
         status: "synced",
         update_available: updateAvailable,
-        latest_version: "v0.0.13",
+        latest_version: "v0.0.15",
         latest_release: clone(releaseNotes.releases[0]),
-        current_version: "v0.0.12",
+        current_version: "v0.0.15",
         release_notes: clone(releaseNotes),
       };
     }
@@ -1191,7 +1191,7 @@ function createMockApiClient() {
     if (method === "POST" && path === "/api/system/kill-all") return { killed: true };
     if (method === "POST" && path === "/api/system/update") {
       updateAvailable = false;
-      return { updated: true, stdout: "updated", stderr: "", command: ["pipx", "upgrade"], returncode: 0, update_status: { update_available: false, latest_version: "v0.0.13" } };
+      return { updated: true, stdout: "updated", stderr: "", command: ["pipx", "upgrade"], returncode: 0, update_status: { update_available: false, latest_version: "v0.0.15" } };
     }
     if (method === "POST" && path === "/api/local/remove-all") {
       desktopState = { ...state, list: { profiles: [] }, usage: { current_profile: null, profiles: [] } };
@@ -1336,7 +1336,7 @@ async function checkRuntime({ activateBackend = true } = {}) {
     setRuntimeState({
       phase: "ready",
       python: { available: true, supported: true, version: process.versions.node, path: process.execPath, command: process.execPath },
-      core: { installed: true, version: "mock", commandPath: "mock-core", minSupportedVersion: "0.0.12", meetsMinimumVersion: true },
+      core: { installed: true, version: "mock", commandPath: "mock-core", minSupportedVersion: "0.0.15", meetsMinimumVersion: true },
       uiService: { ...getDefaultBackendState(), running: true, healthy: true, token: "mock-token" },
       errors: [],
       mockMode: true,

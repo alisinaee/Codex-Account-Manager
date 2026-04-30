@@ -10,4 +10,6 @@ test("profiles toolbar does not include the TA test animation button", () => {
 
   assert.doesNotMatch(source, /className="test-animation-btn"/);
   assert.doesNotMatch(source, /onTestAnimation/);
+  assert.doesNotMatch(source, />test snak</);
+  assert.doesNotMatch(source, /onTestSnack/);
 });
