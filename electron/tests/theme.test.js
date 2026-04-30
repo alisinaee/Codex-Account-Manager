@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const themeModule = import("../src/renderer/theme.mjs");
 const tokensCss = fs.readFileSync(path.join(__dirname, "../src/styles/tokens.css"), "utf8");
+const componentsCss = fs.readFileSync(path.join(__dirname, "../src/styles/components.css"), "utf8");
 
 test("normalizeThemeMode keeps theme values inside the supported auto-light-dark set", async () => {
   const { normalizeThemeMode } = await themeModule;
@@ -87,4 +88,10 @@ test("toggle palette tokens are defined for base and light themes", () => {
   assert.match(lightThemeBlock[1], /--control-toggle-track-on:/);
   assert.match(lightThemeBlock[1], /--control-toggle-thumb-off:/);
   assert.match(lightThemeBlock[1], /--control-toggle-thumb-on:/);
+});
+
+test("spinner styles use a shared calmer loading duration", () => {
+  assert.match(tokensCss, /--duration-spinner:\s*(?:9[0-9]{2}|1[0-9]{3})ms;/);
+  assert.match(componentsCss, /\.btn-progress::after\s*\{[\s\S]*animation:\s*spin var\(--duration-spinner\) linear infinite;/);
+  assert.match(componentsCss, /\.remain-loading-spinner\s*\{[\s\S]*animation:\s*spin var\(--duration-spinner\) linear infinite;/);
 });

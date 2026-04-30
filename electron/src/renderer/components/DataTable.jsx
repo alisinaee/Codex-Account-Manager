@@ -11,12 +11,13 @@ function DataTable({
   rowAriaLabel,
   emptyState,
   className = "",
+  tableRef,
 }) {
   const hasRows = Array.isArray(rows) && rows.length > 0;
   const rowClickable = typeof onRowClick === "function";
 
   return (
-    <table className={className}>
+    <table ref={tableRef} className={className}>
       <colgroup>
         {columns.map((column) => (
           <col
@@ -54,6 +55,7 @@ function DataTable({
         {hasRows ? rows.map((row) => (
           <tr
             key={rowKey(row)}
+            data-row-key={rowKey(row)}
             className={[
               rowClassName?.(row) || "",
               rowClickable ? "table-row-clickable" : "",

@@ -17,6 +17,7 @@ class CliCoreTests(unittest.TestCase):
             "CAM_DIR": cli.CAM_DIR,
             "CAM_CONFIG_FILE": cli.CAM_CONFIG_FILE,
             "CAM_LOG_FILE": cli.CAM_LOG_FILE,
+            "AUTH_FILE": cli.AUTH_FILE,
             "PROFILES_DIR": cli.PROFILES_DIR,
             "BACKUPS_DIR": cli.BACKUPS_DIR,
             "PROFILE_HOMES_DIR": cli.PROFILE_HOMES_DIR,
@@ -27,6 +28,7 @@ class CliCoreTests(unittest.TestCase):
         cli.CAM_DIR = root / "cam"
         cli.CAM_CONFIG_FILE = cli.CAM_DIR / "config.json"
         cli.CAM_LOG_FILE = cli.CAM_DIR / "ui.log"
+        cli.AUTH_FILE = root / "auth.json"
         cli.PROFILES_DIR = root / "profiles"
         cli.BACKUPS_DIR = root / "backups"
         cli.PROFILE_HOMES_DIR = root / "homes"
@@ -38,6 +40,7 @@ class CliCoreTests(unittest.TestCase):
         cli.CAM_DIR = self._orig["CAM_DIR"]
         cli.CAM_CONFIG_FILE = self._orig["CAM_CONFIG_FILE"]
         cli.CAM_LOG_FILE = self._orig["CAM_LOG_FILE"]
+        cli.AUTH_FILE = self._orig["AUTH_FILE"]
         cli.PROFILES_DIR = self._orig["PROFILES_DIR"]
         cli.BACKUPS_DIR = self._orig["BACKUPS_DIR"]
         cli.PROFILE_HOMES_DIR = self._orig["PROFILE_HOMES_DIR"]
@@ -92,27 +95,45 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(candidates["CodexBar"], ["codexbar"])
 
     @mock.patch("codex_account_manager.cli._proc_running")
-    @mock.patch("codex_account_manager.cli._subprocess_run")
-    def test_detect_running_app_name_on_macos_prefers_applescript_running_state(self, mock_run, mock_proc_running):
-        mock_run.return_value = mock.Mock(returncode=0, stdout="true\n", stderr="")
-        mock_proc_running.return_value = False
-
-        with mock.patch("sys.platform", "darwin"):
-            app_name = cli.detect_running_app_name()
-
-        self.assertEqual(app_name, "Codex")
-        mock_proc_running.assert_not_called()
-
-    @mock.patch("codex_account_manager.cli._proc_running")
-    @mock.patch("codex_account_manager.cli._subprocess_run")
-    def test_detect_running_app_name_on_macos_falls_back_to_process_pattern(self, mock_run, mock_proc_running):
-        mock_run.return_value = mock.Mock(returncode=0, stdout="false\n", stderr="")
+    def test_detect_running_app_name_on_macos_uses_strict_process_paths(self, mock_proc_running):
         mock_proc_running.side_effect = [False, True]
 
         with mock.patch("sys.platform", "darwin"):
             app_name = cli.detect_running_app_name()
 
         self.assertEqual(app_name, "CodexBar")
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_start_codex_on_macos_uses_exact_app_bundle_path(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("sys.platform", "darwin"):
+            started = cli.start_codex(preferred_app_name="Codex")
+
+        self.assertTrue(started)
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["open", "/Applications/Codex.app"],
+        )
+
+    @mock.patch("codex_account_manager.cli.time.sleep")
+    @mock.patch("codex_account_manager.cli.codex_running", return_value=False)
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_stop_codex_on_macos_quits_exact_app_bundle_paths(self, mock_run, _mock_running, _mock_sleep):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("sys.platform", "darwin"):
+            stopped = cli.stop_codex()
+
+        self.assertTrue(stopped)
+        self.assertEqual(
+            mock_run.call_args_list[0].args[0],
+            ["osascript", "-e", 'tell application (POSIX file "/Applications/Codex.app" as alias) to quit'],
+        )
+        self.assertEqual(
+            mock_run.call_args_list[1].args[0],
+            ["osascript", "-e", 'tell application (POSIX file "/Applications/CodexBar.app" as alias) to quit'],
+        )
 
     @mock.patch("codex_account_manager.cli._ui_service_command_base")
     def test_build_ui_service_restart_command_reuses_runtime_base(self, mock_base):
@@ -698,6 +719,96 @@ class CliCoreTests(unittest.TestCase):
         self.assertIsNotNone(cand)
         self.assertEqual(cand.get("name"), "acc3")
 
+    def test_merge_cached_usage_payload_preserves_previous_row_when_refresh_returns_only_transient_errors(self):
+        base_payload = {
+            "refreshed_at": "2026-04-30T07:20:00",
+            "current_profile": "acc7",
+            "profiles": [
+                {
+                    "name": "acc7",
+                    "email": "acc7@example.test",
+                    "usage_5h": {"remaining_percent": 100, "resets_at": 1000, "text": "100%"},
+                    "usage_weekly": {"remaining_percent": 88, "resets_at": 2000, "text": "88%"},
+                    "plan_type": "team",
+                    "is_paid": True,
+                    "is_current": True,
+                    "error": None,
+                },
+                {
+                    "name": "acc8",
+                    "email": "acc8@example.test",
+                    "usage_5h": {"remaining_percent": 64, "resets_at": 3000, "text": "64%"},
+                    "usage_weekly": {"remaining_percent": 72, "resets_at": 4000, "text": "72%"},
+                    "plan_type": "free",
+                    "is_paid": False,
+                    "is_current": False,
+                    "error": None,
+                },
+            ],
+        }
+        updated_payload = {
+            "refreshed_at": "2026-04-30T07:24:03",
+            "current_profile": "acc7",
+            "profiles": [
+                {
+                    "name": "acc7",
+                    "email": "acc7@example.test",
+                    "usage_5h": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "usage_weekly": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "plan_type": None,
+                    "is_paid": None,
+                    "is_current": True,
+                    "error": "request failed: transient reset",
+                },
+                {
+                    "name": "acc8",
+                    "email": "acc8@example.test",
+                    "usage_5h": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "usage_weekly": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "plan_type": None,
+                    "is_paid": None,
+                    "is_current": False,
+                    "error": "request failed: transient reset",
+                },
+            ],
+        }
+        list_rows = [{"name": "acc7"}, {"name": "acc8"}]
+
+        merged = cli._merge_cached_usage_payload(base_payload, updated_payload, list_rows)
+
+        self.assertEqual(merged["current_profile"], "acc7")
+        self.assertEqual(merged["profiles"][0]["usage_5h"]["remaining_percent"], 100)
+        self.assertEqual(merged["profiles"][0]["usage_weekly"]["remaining_percent"], 88)
+        self.assertEqual(merged["profiles"][0]["plan_type"], "team")
+        self.assertIsNone(merged["profiles"][0]["error"])
+        self.assertEqual(merged["profiles"][1]["usage_5h"]["remaining_percent"], 64)
+        self.assertEqual(merged["profiles"][1]["usage_weekly"]["remaining_percent"], 72)
+        self.assertEqual(merged["profiles"][1]["plan_type"], "free")
+        self.assertFalse(merged["profiles"][1]["is_paid"])
+        self.assertIsNone(merged["profiles"][1]["error"])
+
+    def test_merge_cached_usage_payload_filters_out_profiles_not_in_current_list(self):
+        base_payload = {
+            "refreshed_at": "2026-04-30T07:20:00",
+            "current_profile": "acc7",
+            "profiles": [
+                {"name": "acc7", "usage_5h": {"remaining_percent": 100}, "usage_weekly": {"remaining_percent": 88}, "error": None},
+                {"name": "old-removed", "usage_5h": {"remaining_percent": 55}, "usage_weekly": {"remaining_percent": 65}, "error": None},
+            ],
+        }
+        updated_payload = {
+            "refreshed_at": "2026-04-30T07:25:00",
+            "current_profile": "acc7",
+            "profiles": [
+                {"name": "acc7", "usage_5h": {"remaining_percent": 96}, "usage_weekly": {"remaining_percent": 84}, "error": None},
+            ],
+        }
+
+        merged = cli._merge_cached_usage_payload(base_payload, updated_payload, [{"name": "acc7"}])
+
+        self.assertEqual([row["name"] for row in merged["profiles"]], ["acc7"])
+        self.assertEqual(merged["profiles"][0]["usage_5h"]["remaining_percent"], 96)
+
     def test_ordered_chain_balanced_mode_ignores_manual_chain_override(self):
         cfg = {"auto_switch": {"ranking_mode": "balanced", "manual_chain": ["acc1", "acc2", "acc3"]}}
         payload = {
@@ -757,6 +868,15 @@ class CliCoreTests(unittest.TestCase):
         }
         (profile_dir / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
         (profile_dir / "meta.json").write_text(json.dumps({"name": name, "saved_at": "2026-04-23T00:00:00", "account_hint": email}), encoding="utf-8")
+
+    def _write_profile_auth(self, name: str, auth: dict, *, account_hint: str = "unknown") -> None:
+        profile_dir = cli.PROFILES_DIR / name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+        (profile_dir / "meta.json").write_text(
+            json.dumps({"name": name, "saved_at": "2026-04-23T00:00:00", "account_hint": account_hint}),
+            encoding="utf-8",
+        )
 
     def _jwt_payload(self, payload: dict) -> str:
         import base64
@@ -832,6 +952,26 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(by_name["work"]["status"], "name_conflict")
         self.assertEqual(by_name["moved"]["status"], "account_conflict")
 
+    def test_import_analysis_reports_duplicate_emails_inside_archive(self):
+        archive = Path(self.tmp.name) / "duplicate-email.camzip"
+        export_root = Path(self.tmp.name) / "export-duplicate-email"
+        export_profiles = export_root / "profiles"
+        export_profiles.mkdir(parents=True, exist_ok=True)
+        old_profiles = cli.PROFILES_DIR
+        try:
+            cli.PROFILES_DIR = export_profiles
+            self._write_profile("acc4", email="same@example.com", account_id="acc-4")
+            self._write_profile("acc5", email="same@example.com", account_id="acc-5")
+            cli.create_profiles_archive(archive)
+        finally:
+            cli.PROFILES_DIR = old_profiles
+        analysis = cli.analyze_profiles_archive(archive)
+        by_name = {row["name"]: row for row in analysis["profiles"]}
+        self.assertEqual(by_name["acc4"]["status"], "account_conflict")
+        self.assertEqual(by_name["acc5"]["status"], "account_conflict")
+        self.assertTrue(any("also appears in archive profile" in msg for msg in by_name["acc4"]["problems"]))
+        self.assertTrue(any("also appears in archive profile" in msg for msg in by_name["acc5"]["problems"]))
+
     def test_import_apply_skip_leaves_existing_profile_untouched(self):
         self._write_profile("work", email="work@example.com", account_id="acc-old")
         archive = Path(self.tmp.name) / "skip.camzip"
@@ -883,6 +1023,80 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(result["summary"]["overwritten"], 1)
         auth = json.loads((cli.PROFILES_DIR / "work" / "auth.json").read_text(encoding="utf-8"))
         self.assertEqual(auth["account_id"], "acc-new")
+
+    def test_usage_row_does_not_sync_live_auth_when_current_profile_is_email_only_match(self):
+        self._write_profile_auth(
+            "acc4",
+            {
+                "tokens": {
+                    "access_token": "saved-access",
+                    "id_token": f"header.{self._jwt_payload({'email': 'same@example.com'})}.sig",
+                }
+            },
+            account_hint="same@example.com",
+        )
+        cli.AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cli.AUTH_FILE.write_text(
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": "live-access",
+                        "id_token": f"header.{self._jwt_payload({'email': 'same@example.com'})}.sig",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch(
+            "codex_account_manager.cli.fetch_usage_from_auth",
+            return_value=((90, None), (80, None), "plus", True, None),
+        ):
+            payload = cli.collect_usage_local_data(timeout_sec=1)
+
+        self.assertEqual(payload["current_profile"], "acc4")
+        saved = json.loads((cli.PROFILES_DIR / "acc4" / "auth.json").read_text(encoding="utf-8"))
+        meta = json.loads((cli.PROFILES_DIR / "acc4" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tokens"]["access_token"], "saved-access")
+        self.assertNotIn("last_synced_at", meta)
+
+    def test_usage_row_syncs_live_auth_when_current_profile_matches_same_principal(self):
+        self._write_profile_auth(
+            "acc4",
+            {
+                "tokens": {
+                    "access_token": "saved-access",
+                    "account_id": "acc-4",
+                    "id_token": f"header.{self._jwt_payload({'email': 'same@example.com', 'sub': 'sub-4'})}.sig",
+                }
+            },
+            account_hint="same@example.com",
+        )
+        cli.AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cli.AUTH_FILE.write_text(
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": "live-access",
+                        "account_id": "acc-4",
+                        "id_token": f"header.{self._jwt_payload({'email': 'same@example.com', 'sub': 'sub-4'})}.sig",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch(
+            "codex_account_manager.cli.fetch_usage_from_auth",
+            return_value=((90, None), (80, None), "plus", True, None),
+        ):
+            payload = cli.collect_usage_local_data(timeout_sec=1)
+
+        self.assertEqual(payload["current_profile"], "acc4")
+        saved = json.loads((cli.PROFILES_DIR / "acc4" / "auth.json").read_text(encoding="utf-8"))
+        meta = json.loads((cli.PROFILES_DIR / "acc4" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tokens"]["access_token"], "live-access")
+        self.assertIn("last_synced_at", meta)
 
     def test_import_analysis_rejects_unsupported_manifest_version(self):
         self._write_profile("work", email="work@example.com", account_id="acc-work")

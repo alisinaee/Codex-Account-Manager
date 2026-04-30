@@ -1389,31 +1389,24 @@ def _proc_running(pattern: str) -> bool:
     return False
 
 
-def _macos_app_is_running(app_name: str) -> bool:
+def _macos_app_bundle_path(app_name: str) -> Path | None:
     if sys.platform != "darwin":
-        return False
-    target = str(app_name or "").strip()
-    if not target:
-        return False
-    script = f'application "{target}" is running'
-    try:
-        proc = _subprocess_run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return False
-    if proc.returncode != 0:
-        return False
-    return (proc.stdout or "").strip().lower() == "true"
+        return None
+    candidates = _platform_process_candidates().get(str(app_name or "").strip(), [])
+    for candidate in candidates:
+        path = Path(candidate)
+        try:
+            bundle = path.parents[2]
+        except IndexError:
+            continue
+        if bundle.suffix == ".app":
+            return bundle
+    return None
 
 
 def detect_running_app_name():
     candidates = _platform_process_candidates()
     for app_name in APP_CANDIDATES:
-        if sys.platform == "darwin" and _macos_app_is_running(app_name):
-            return app_name
         for proc_pattern in candidates.get(app_name, []):
             if _proc_running(proc_pattern):
                 return app_name
@@ -1432,7 +1425,11 @@ def stop_codex() -> bool:
     touched = False
     if sys.platform == "darwin":
         for app_name in APP_CANDIDATES:
-            _subprocess_run(["osascript", "-e", f'tell application "{app_name}" to quit'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            bundle = _macos_app_bundle_path(app_name)
+            if not bundle:
+                continue
+            script = f'tell application (POSIX file "{bundle}" as alias) to quit'
+            _subprocess_run(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             touched = True
         for _ in range(40):
             if not codex_running():
@@ -1698,8 +1695,11 @@ def start_codex(preferred_app_name: str = "", preferred_exec_path: str = "") -> 
         return False
     if sys.platform == "darwin":
         for app_name in app_order:
+            bundle = _macos_app_bundle_path(app_name)
+            if not bundle:
+                continue
             for _ in range(3):
-                p = _subprocess_run(["open", "-a", app_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                p = _subprocess_run(["open", str(bundle)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if p.returncode == 0:
                     return True
                 time.sleep(0.35)
@@ -2343,6 +2343,11 @@ def account_hint_from_auth_bytes(data: dict | None) -> str:
 def analyze_profiles_archive(archive_path: Path) -> dict:
     ensure_dirs()
     manifest, entries = _read_profile_archive(archive_path)
+    archive_email_map: dict[str, list[str]] = {}
+    for entry in entries:
+        email = _normalized_email(entry.get("email"))
+        if email:
+            archive_email_map.setdefault(email, []).append(str(entry.get("name") or "").strip())
     results: list[dict] = []
     for entry in entries:
         name = str(entry["name"])
@@ -2356,10 +2361,19 @@ def analyze_profiles_archive(archive_path: Path) -> dict:
         if existing_name:
             status = "name_conflict"
             problems.append(f"profile name '{existing_name}' already exists")
+        archive_email_conflicts = [item for item in archive_email_map.get(email, []) if item and item != name] if email else []
+        if archive_email_conflicts:
+            email_conflict = archive_email_conflicts[0]
+            if status == "ready":
+                status = "account_conflict"
+            problems.append(
+                f"email '{email}' also appears in archive profile '{archive_email_conflicts[0]}'"
+            )
         if email:
             dup = find_same_email_profiles(email, exclude_name=name if existing_name == name else "")
             if dup:
-                email_conflict = dup[0]
+                if not email_conflict:
+                    email_conflict = dup[0]
                 if status == "ready":
                     status = "account_conflict"
                 problems.append(f"email '{email}' already exists in profile '{email_conflict}'")
@@ -2395,6 +2409,13 @@ def analyze_profiles_archive(archive_path: Path) -> dict:
 def _copy_profile_from_import_entry(entry: dict, target_name: str, overwrite: bool) -> tuple[str, bool]:
     target_name = str(target_name or "").strip()
     _validate_target_profile_name(target_name, overwrite=overwrite)
+    entry_email = _normalized_email(entry.get("email"))
+    if entry_email:
+        dup = find_same_email_profiles(entry_email, exclude_name=target_name if overwrite else "")
+        if dup:
+            raise RuntimeError(
+                f"Email '{entry_email}' already exists in profile(s): {', '.join(dup)}. Use that profile instead."
+            )
     target_dir = PROFILES_DIR / target_name
     if overwrite and target_dir.exists():
         shutil.rmtree(target_dir, ignore_errors=True)
@@ -2848,21 +2869,25 @@ def _build_usage_profile_context(config: dict | None = None):
         profile_meta[p.name] = entry
 
     current_profile = None
+    current_profile_match = None
     for p in profiles:
         profile_canonical = (profile_meta.get(p.name) or {}).get("canonical")
         if active_canonical is not None and profile_canonical and profile_canonical == active_canonical:
             current_profile = p.name
+            current_profile_match = "canonical"
             break
     if current_profile is None and active_principal_id:
         for p in profiles:
             if str((profile_meta.get(p.name) or {}).get("principal_id") or "") == str(active_principal_id):
                 current_profile = p.name
+                current_profile_match = "principal"
                 break
     if current_profile is None and active_email:
         for p in profiles:
             profile_email = str((profile_meta.get(p.name) or {}).get("email") or "").strip().lower()
             if profile_email and profile_email == active_email:
                 current_profile = p.name
+                current_profile_match = "email"
                 break
 
     return {
@@ -2872,6 +2897,7 @@ def _build_usage_profile_context(config: dict | None = None):
         "profile_meta": profile_meta,
         "principal_counts": principal_counts,
         "current_profile": current_profile,
+        "current_profile_match": current_profile_match,
     }
 
 
@@ -2881,11 +2907,19 @@ def _build_usage_profile_row(profile_dir: Path, context: dict, timeout_sec: int)
     profile_meta = context.get("profile_meta") or {}
     principal_counts = context.get("principal_counts") or {}
     current_profile = str(context.get("current_profile") or "")
+    current_profile_match = str(context.get("current_profile_match") or "")
     p = profile_dir
     auth_path = p / "auth.json"
-    if current_profile and p.name == current_profile and AUTH_FILE.exists():
+    can_sync_live_auth = (
+        bool(current_profile)
+        and p.name == current_profile
+        and AUTH_FILE.exists()
+        and current_profile_match in {"canonical", "principal"}
+    )
+    if can_sync_live_auth:
         # The active Codex session may refresh tokens after a switch, so the live auth
         # file is more accurate than the saved profile snapshot for the current row.
+        # Never trust an email-only match for write-back or live-row substitution.
         auth_path = AUTH_FILE
     meta_path = p / "meta.json"
     entry = profile_meta.get(p.name) or {}
@@ -2900,7 +2934,7 @@ def _build_usage_profile_row(profile_dir: Path, context: dict, timeout_sec: int)
     account_id = str(entry.get("account_id", "-") or "-")
     principal_id = entry.get("principal_id")
     usage_5h, usage_weekly, plan_type, is_paid, err = fetch_usage_from_auth(auth_path, timeout_sec=timeout_sec)
-    if current_profile and p.name == current_profile and auth_path == AUTH_FILE and err is None:
+    if can_sync_live_auth and err is None:
         try:
             sync_profile_auth_snapshot(
                 p.name,
@@ -2934,6 +2968,109 @@ def _build_usage_profile_row(profile_dir: Path, context: dict, timeout_sec: int)
         "error": err or None,
         "saved_at": saved_at,
         "auto_switch_eligible": bool(eligibility.get(p.name, False)),
+    }
+
+
+def _usage_metric_has_observed_values(metric: dict | None) -> bool:
+    if not isinstance(metric, dict):
+        return False
+    if metric.get("remaining_percent") is not None:
+        return True
+    reset_value = metric.get("resets_at")
+    return reset_value not in (None, "", 0)
+
+
+def _usage_row_has_observed_values(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if _usage_metric_has_observed_values(row.get("usage_5h")):
+        return True
+    if _usage_metric_has_observed_values(row.get("usage_weekly")):
+        return True
+    plan_type = row.get("plan_type")
+    if isinstance(plan_type, str) and plan_type.strip():
+        return True
+    return isinstance(row.get("is_paid"), bool)
+
+
+def _merge_cached_usage_row(base_row: dict | None, updated_row: dict | None) -> dict:
+    if not isinstance(updated_row, dict):
+        return copy.deepcopy(base_row) if isinstance(base_row, dict) else {}
+    if not isinstance(base_row, dict) or not base_row:
+        return copy.deepcopy(updated_row)
+
+    transient_error = bool(str(updated_row.get("error") or "").strip()) and not _usage_row_has_observed_values(updated_row)
+    if not transient_error:
+        return copy.deepcopy(updated_row)
+
+    merged = copy.deepcopy(base_row)
+    for key in ("name", "email", "account_id", "same_principal", "saved_at", "auto_switch_eligible"):
+        if key in updated_row:
+            merged[key] = copy.deepcopy(updated_row.get(key))
+    merged["is_current"] = bool(updated_row.get("is_current", base_row.get("is_current")))
+    return merged
+
+
+def _merge_cached_usage_payload(base_payload: dict | None, updated_payload: dict | None, list_rows: list[dict] | None = None) -> dict:
+    base = copy.deepcopy(base_payload) if isinstance(base_payload, dict) else {}
+    updates = updated_payload if isinstance(updated_payload, dict) else {}
+    base_rows = base.get("profiles") if isinstance(base.get("profiles"), list) else []
+    update_rows = updates.get("profiles") if isinstance(updates.get("profiles"), list) else []
+
+    by_name: dict[str, dict] = {}
+    for row in base_rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if name:
+            by_name[name] = copy.deepcopy(row)
+    for row in update_rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        by_name[name] = _merge_cached_usage_row(by_name.get(name), row)
+
+    ordered_names: list[str] = []
+    source_list = list_rows if isinstance(list_rows, list) else []
+    for row in source_list:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if name and name not in ordered_names:
+            ordered_names.append(name)
+    if not ordered_names:
+        for row in [*base_rows, *update_rows]:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if name and name not in ordered_names:
+                ordered_names.append(name)
+    else:
+        for row in update_rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if name and name not in ordered_names:
+                ordered_names.append(name)
+
+    current_profile = str((updates.get("current_profile") or base.get("current_profile") or "")).strip() or None
+    if current_profile and current_profile not in ordered_names and current_profile in by_name:
+        ordered_names.append(current_profile)
+
+    rows = []
+    for name in ordered_names:
+        row = copy.deepcopy(by_name.get(name) or {})
+        if not row:
+            continue
+        row["is_current"] = bool(current_profile and name == current_profile)
+        rows.append(row)
+
+    return {
+        "refreshed_at": updates.get("refreshed_at") or base.get("refreshed_at") or dt.datetime.now().isoformat(),
+        "current_profile": current_profile,
+        "profiles": rows,
     }
 
 
@@ -4160,6 +4297,7 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
     usage_cache: dict[str, object] = {
         "ts": 0.0,
         "payload": None,
+        "last_payload": None,
         "cfg_hash": None,
         "timeout": None,
         "epoch": 0,
@@ -4258,6 +4396,11 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
             payload = usage_cache.get("payload")
             return copy.deepcopy(payload) if isinstance(payload, dict) else None
 
+    def _usage_cache_last_payload_copy():
+        with usage_cache_lock:
+            payload = usage_cache.get("last_payload")
+            return copy.deepcopy(payload) if isinstance(payload, dict) else None
+
     def _seed_usage_payload(config: dict) -> dict:
         context = _build_usage_profile_context(config=config)
         rows = []
@@ -4292,57 +4435,26 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
 
     def _merge_usage_rows(base_payload: dict | None, updated_payload: dict | None, config: dict) -> dict:
         base = copy.deepcopy(base_payload) if isinstance(base_payload, dict) else _seed_usage_payload(config)
-        updates = updated_payload if isinstance(updated_payload, dict) else {}
-        base_rows = base.get("profiles") or []
-        update_rows = updates.get("profiles") or []
-        by_name = {}
-        order = []
-        for row in base_rows:
-            if not isinstance(row, dict):
-                continue
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            by_name[name] = copy.deepcopy(row)
-            order.append(name)
-        for row in update_rows:
-            if not isinstance(row, dict):
-                continue
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            if name not in by_name:
-                order.append(name)
-            by_name[name] = copy.deepcopy(row)
-        current_profile = str((updates.get("current_profile") or base.get("current_profile") or "")).strip() or None
-        rows = []
-        for name in order:
-            row = copy.deepcopy(by_name.get(name) or {})
-            row["is_current"] = bool(current_profile and name == current_profile)
-            rows.append(row)
-        merged = {
-            "refreshed_at": updates.get("refreshed_at") or base.get("refreshed_at") or dt.datetime.now().isoformat(),
-            "current_profile": current_profile,
-            "profiles": rows,
-        }
-        return merged
+        return _merge_cached_usage_payload(base, updated_payload, collect_list_data(config=config))
 
     def _store_usage_payload(payload: dict, config: dict, timeout_sec: int) -> dict:
-        merged = _merge_usage_rows(None, payload, config)
+        merged = _merge_usage_rows(_usage_cache_last_payload_copy(), payload, config)
         with usage_cache_lock:
             usage_cache["ts"] = time.time()
             usage_cache["payload"] = merged
+            usage_cache["last_payload"] = copy.deepcopy(merged)
             usage_cache["cfg_hash"] = _cfg_usage_cache_key(config if isinstance(config, dict) else {})
             usage_cache["timeout"] = timeout_sec
         return merged
 
     def refresh_usage_subset(profile_names: list[str], timeout_sec: int, config: dict) -> dict:
         partial = collect_usage_local_data(timeout_sec=timeout_sec, config=config, profile_names=profile_names)
-        cached = _usage_cache_payload_copy()
+        cached = _usage_cache_payload_copy() or _usage_cache_last_payload_copy()
         merged = _merge_usage_rows(cached, partial, config)
         with usage_cache_lock:
             usage_cache["ts"] = time.time()
             usage_cache["payload"] = merged
+            usage_cache["last_payload"] = copy.deepcopy(merged)
             usage_cache["cfg_hash"] = _cfg_usage_cache_key(config if isinstance(config, dict) else {})
             usage_cache["timeout"] = timeout_sec
         return merged

@@ -67,6 +67,7 @@
   --duration-fast: 100ms;
   --duration-base: 160ms;
   --duration-slow: 260ms;
+  --duration-spinner: 960ms;
 
   --layout-sidebar-expanded: 220px;
   --layout-sidebar-collapsed: 56px;

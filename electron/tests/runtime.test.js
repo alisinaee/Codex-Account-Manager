@@ -200,6 +200,47 @@ test("resolveRuntimeStatus uses the stored command path when PATH lookup is stal
   assert.equal(runtime.core.commandPath, "/Users/test/.local/bin/codex-account");
 });
 
+test("resolveRuntimeStatus keeps the explicit dev core command over doctor path hints", async () => {
+  const runtime = await resolveRuntimeStatus({
+    env: { CAM_ELECTRON_CORE_COMMAND: "/repo/bin/codex-account" },
+    loadStoredRuntimeState: () => ({ commandPath: "/Users/test/.local/bin/codex-account" }),
+    detectPython: async () => ({
+      available: true,
+      supported: true,
+      version: "3.11.9",
+      path: "/usr/bin/python3",
+      command: "/usr/bin/python3",
+    }),
+    runDoctor: async (commandPath) => {
+      if (commandPath !== "/repo/bin/codex-account") {
+        return null;
+      }
+      return {
+        python: { available: true, supported: true, version: "3.11.9", path: "/usr/bin/python3" },
+        core: {
+          installed: true,
+          version: "0.0.12",
+          command_path: "/Users/test/.local/bin/codex-account",
+          min_supported_version: "0.0.12",
+          meets_minimum_version: true,
+        },
+        ui_service: {
+          running: false,
+          healthy: false,
+          host: "127.0.0.1",
+          port: 4673,
+          base_url: "http://127.0.0.1:4673/",
+          token: "",
+        },
+        errors: [],
+      };
+    },
+  });
+
+  assert.equal(runtime.phase, "ready");
+  assert.equal(runtime.core.commandPath, "/repo/bin/codex-account");
+});
+
 test("resolveRuntimeStatus blocks outdated Python core versions", async () => {
   const runtime = await resolveRuntimeStatus({
     minCoreVersion: "0.0.12",

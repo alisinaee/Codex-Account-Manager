@@ -2,11 +2,13 @@
 
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, screen, shell } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, screen, shell } = require("electron");
 
 const { createApiClient } = require("./api-client");
 const { ensureBackendRunning, fetchCurrentUsage, getDefaultBackendState, runServiceCommand } = require("./backend");
-const { APP_ID, APP_NAME, getIconPath, getWindowIconPath } = require("./icons");
+const { shouldInvalidateDesktopStateForRequest } = require("./desktop-state-cache");
+const { downloadBackendExportArchive } = require("./export-download");
+const { APP_ID, APP_NAME, getIconPath, getWindowIconPath, resolveDesktopIdentity } = require("./icons");
 const { buildApplicationMenuTemplate, shouldQuitOnWindowAllClosed } = require("./menu");
 const { notificationsEnabled, sendUsageNotification } = require("./notifications");
 const {
@@ -23,15 +25,82 @@ const { buildUsageSummary } = require("./usage");
 const { applyWindowsTaskbarUsage, ensureWindowsNotificationShortcut } = require("./windows-integration");
 const { usageHexColor } = require("./usage-thresholds");
 
-app.setName(APP_NAME);
-app.name = APP_NAME;
-if (typeof app.setAppUserModelId === "function") {
-  app.setAppUserModelId(APP_ID);
+const desktopIdentity = resolveDesktopIdentity(process.env);
+const DESKTOP_APP_ID = desktopIdentity.appId || APP_ID;
+const DESKTOP_APP_NAME = desktopIdentity.appName || APP_NAME;
+const STARTUP_DEBUG_ENABLED = process.env.CAM_ELECTRON_STARTUP_DEBUG === "1";
+let pendingQuitContext = null;
+
+function startupDebugLog(event, details = {}) {
+  if (!STARTUP_DEBUG_ENABLED) {
+    return;
+  }
+  const payload = {
+    ts: new Date().toISOString(),
+    event,
+    pid: process.pid,
+    ppid: process.ppid,
+    appName: DESKTOP_APP_NAME,
+    appId: DESKTOP_APP_ID,
+    ...details,
+  };
+  console.error(`[cam-main] ${JSON.stringify(payload)}`);
 }
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) {
+
+function markQuitContext(reason, details = {}) {
+  pendingQuitContext = {
+    reason: String(reason || "").trim() || "unknown",
+    details: details && typeof details === "object" ? details : {},
+  };
+  startupDebugLog("quit-context", pendingQuitContext);
+}
+
+function requestAppQuit(reason, details = {}) {
+  markQuitContext(reason, details);
+  app.isQuitting = true;
   app.quit();
 }
+
+if (desktopIdentity.isDevShell) {
+  app.setPath("userData", path.join(app.getPath("appData"), DESKTOP_APP_NAME));
+}
+
+startupDebugLog("process-start", {
+  execPath: process.execPath,
+  cwd: process.cwd(),
+  argv: process.argv,
+  userDataPath: app.getPath("userData"),
+  launchContext: process.env.CAM_ELECTRON_APP_LAUNCH_CONTEXT || "",
+  isDevShell: desktopIdentity.isDevShell,
+});
+
+app.setName(DESKTOP_APP_NAME);
+app.name = DESKTOP_APP_NAME;
+if (typeof app.setAppUserModelId === "function") {
+  app.setAppUserModelId(DESKTOP_APP_ID);
+}
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+startupDebugLog("single-instance-lock", { acquired: hasSingleInstanceLock });
+if (!hasSingleInstanceLock) {
+  markQuitContext("single-instance-lock-failed");
+  startupDebugLog("single-instance-lock-failed", {});
+  app.quit();
+}
+
+process.on("uncaughtException", (error) => {
+  startupDebugLog("uncaught-exception", {
+    message: String(error?.message || error),
+    stack: String(error?.stack || ""),
+  });
+});
+process.on("unhandledRejection", (reason) => {
+  startupDebugLog("unhandled-rejection", {
+    reason: String(reason?.stack || reason?.message || reason || ""),
+  });
+});
+process.on("exit", (code) => {
+  startupDebugLog("process-exit", { code });
+});
 
 let mainWindow = null;
 let splashWindow = null;
@@ -52,6 +121,7 @@ let runtimeState = normalizeRuntimeStatus({
 });
 let runtimeProgress = [];
 let registeredIpcChannels = [];
+let devBackendRestarted = false;
 const MINI_METER_BASE_FONT_SIZE = 14;
 const ZOOM_FACTOR_MIN = 0.5;
 const ZOOM_FACTOR_MAX = 3.0;
@@ -558,6 +628,14 @@ function requestRendererRefresh() {
   focusMainWindow();
 }
 
+function syncDesktopUsageCache(nextState) {
+  if (!nextState || typeof nextState !== "object") {
+    return;
+  }
+  latestUsagePayload = nextState.usage || null;
+  applyTrayFromLatestUsage();
+}
+
 function toggleRendererSidebar() {
   if (mainWindow) {
     mainWindow.webContents.send("desktop:toggle-sidebar");
@@ -731,7 +809,7 @@ function createMainWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 560,
-    title: APP_NAME,
+    title: DESKTOP_APP_NAME,
     icon: iconPath,
     show: false,
     webPreferences: {
@@ -745,10 +823,10 @@ function createMainWindow() {
   if (process.platform === "win32" && typeof mainWindow.setAppDetails === "function") {
     try {
       mainWindow.setAppDetails({
-        appId: APP_ID,
+        appId: DESKTOP_APP_ID,
         appIconPath: iconPath,
         appIconIndex: 0,
-        relaunchDisplayName: APP_NAME,
+        relaunchDisplayName: DESKTOP_APP_NAME,
         relaunchCommand: process.execPath,
       });
     } catch (_) {
@@ -815,12 +893,18 @@ function createMainWindow() {
     mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
   }
   mainWindow.on("close", (event) => {
+    startupDebugLog("main-window-close", {
+      isQuitting: Boolean(app.isQuitting),
+      hasTray: Boolean(tray),
+      prevented: Boolean(!app.isQuitting && tray),
+    });
     if (!app.isQuitting && tray) {
       event.preventDefault();
       mainWindow.hide();
     }
   });
   mainWindow.on("closed", () => {
+    startupDebugLog("main-window-closed", {});
     mainWindow = null;
   });
   applyWindowsTaskbarUsage({
@@ -884,24 +968,36 @@ function notifySwitchIfEnabled(nextDesktopState, previousProfileName = "") {
   return sendUsageNotification(Notification, nextDesktopState?.usage, openProfilesFromNotification, getIconPath());
 }
 
+function openWebPanel() {
+  const targetUrl = String(backendState?.baseUrl || getDefaultBackendState().baseUrl || "http://127.0.0.1:4673/").trim();
+  if (!targetUrl) {
+    return;
+  }
+  shell.openExternal(targetUrl).catch(() => {});
+}
+
+function restartDesktopAppAndService() {
+  const coreCommand = runtimeState?.core?.commandPath ? { command: runtimeState.core.commandPath } : {};
+  runServiceCommand("restart", coreCommand);
+  markQuitContext("restart-desktop-app-and-service", { coreCommand: coreCommand.command || "" });
+  app.isQuitting = true;
+  app.relaunch();
+  app.exit(0);
+}
+
 function buildTrayActions() {
   return {
     onOpen: focusMainWindow,
+    onOpenWebPanel: openWebPanel,
     onRefresh: () => {
       refreshUsage().catch(() => {});
     },
     onNotify: () => {
       sendTestNotification().catch(() => {});
     },
-    onStartService: () => {
-      runServiceCommand("start");
-    },
-    onStopService: () => {
-      runServiceCommand("stop");
-    },
+    onRestartService: restartDesktopAppAndService,
     onQuit: () => {
-      app.isQuitting = true;
-      app.quit();
+      requestAppQuit("tray-quit");
     },
   };
 }
@@ -911,8 +1007,7 @@ function buildMenuActions() {
   const quitAppAndStopCore = () => {
     runServiceCommand("kill-all", coreCommand);
     runServiceCommand("stop", coreCommand);
-    app.isQuitting = true;
-    app.quit();
+    requestAppQuit("menu-quit-and-stop-core", { coreCommand: coreCommand.command || "" });
   };
 
   return {
@@ -939,8 +1034,7 @@ function buildMenuActions() {
     onZoomOut: () => adjustMainWindowZoom(-ZOOM_FACTOR_STEP),
     onZoomReset: () => setMainWindowZoomFactor(1),
     onQuit: () => {
-      app.isQuitting = true;
-      app.quit();
+      requestAppQuit("menu-quit");
     },
     onQuitAndStopCore: quitAppAndStopCore,
   };
@@ -1189,7 +1283,22 @@ function createMockApiClient() {
 }
 
 async function ensureReadyRuntimeBackend() {
-  backendState = await ensureBackendRunning({ command: runtimeState.core.commandPath || undefined });
+  const forceRestart = desktopIdentity.isDevShell && !devBackendRestarted;
+  if (forceRestart) {
+    devBackendRestarted = true;
+  }
+  startupDebugLog("backend-ensure-start", {
+    command: runtimeState.core.commandPath || "",
+    forceRestart,
+  });
+  backendState = await ensureBackendRunning({
+    command: runtimeState.core.commandPath || undefined,
+    forceRestart,
+  });
+  startupDebugLog("backend-ensure-complete", {
+    baseUrl: backendState.baseUrl,
+    running: Boolean(backendState.running),
+  });
   apiClient = createApiClient({ state: backendState });
   setRuntimeState({
     ...runtimeState,
@@ -1363,6 +1472,7 @@ function registerIpcHandlers() {
         await refreshBackendClient();
         desktopState = await apiClient.getDesktopState();
       }
+      syncDesktopUsageCache(desktopState);
     }
     return desktopState;
   });
@@ -1404,6 +1514,9 @@ function registerIpcHandlers() {
         }
         applyTrayFromLatestUsage();
       }
+      if (shouldInvalidateDesktopStateForRequest(path, options)) {
+        desktopState = null;
+      }
       return result;
     }
     throw new Error("desktop request API is unavailable");
@@ -1429,10 +1542,18 @@ function registerIpcHandlers() {
     if (!apiClient) {
       throw new Error(runtimeState.message || "Python core is not ready.");
     }
+    startupDebugLog("switch-profile-start", {
+      name: String(name || ""),
+      options: options || {},
+    });
     const previousProfileName = String(desktopState?.usage?.current_profile || desktopState?.current?.profile_name || "").trim();
     try {
       desktopState = await apiClient.switchProfile(String(name || ""), options || {});
     } catch (error) {
+      startupDebugLog("switch-profile-error", {
+        name: String(name || ""),
+        message: String(error?.message || error),
+      });
       if (!isInvalidSessionTokenError(error)) {
         throw error;
       }
@@ -1442,6 +1563,10 @@ function registerIpcHandlers() {
     latestUsagePayload = desktopState.usage;
     applyTrayFromLatestUsage();
     notifySwitchIfEnabled(desktopState, previousProfileName);
+    startupDebugLog("switch-profile-complete", {
+      name: String(name || ""),
+      currentProfile: String(desktopState?.usage?.current_profile || desktopState?.current?.profile_name || "").trim(),
+    });
     return desktopState;
   });
   handle("desktop:save-config", async (_event, patch) => {
@@ -1461,6 +1586,15 @@ function registerIpcHandlers() {
     applyTrayFromLatestUsage();
     return desktopState;
   });
+  handle("desktop:download-export", async (_event, exportId, filename) => {
+    return downloadBackendExportArchive({
+      backendState,
+      exportId,
+      filename,
+      dialogImpl: dialog,
+      windowRef: mainWindow,
+    });
+  });
   handle("desktop:list-displays", async () => {
     if (process.platform !== "win32") {
       return [];
@@ -1471,6 +1605,7 @@ function registerIpcHandlers() {
 }
 
 async function bootstrap() {
+  startupDebugLog("bootstrap-start", {});
   registerIpcHandlers();
   if (process.platform === "win32" && screen) {
     const reposition = () => positionWindowsMiniMeter(desktopState?.config || {});
@@ -1482,8 +1617,8 @@ async function bootstrap() {
     ensureWindowsNotificationShortcut({
       shell,
       app,
-      appId: APP_ID,
-      appName: APP_NAME,
+      appId: DESKTOP_APP_ID,
+      appName: DESKTOP_APP_NAME,
       iconPath: process.execPath,
     });
   } catch (error) {
@@ -1497,10 +1632,19 @@ async function bootstrap() {
     openProfilesFromNotification();
   }
   await checkRuntime({ activateBackend: true });
+  startupDebugLog("bootstrap-ready", {
+    mainWindowCreated: Boolean(mainWindow),
+    splashWindowCreated: Boolean(splashWindow),
+  });
 }
 
 app.whenReady().then(() => {
+  startupDebugLog("when-ready", {});
   bootstrap().catch((error) => {
+    startupDebugLog("bootstrap-failed", {
+      message: String(error?.message || error),
+      stack: String(error?.stack || ""),
+    });
     setRuntimeState({
       ...runtimeState,
       phase: "error",
@@ -1515,6 +1659,7 @@ app.whenReady().then(() => {
 });
 
 app.on("second-instance", (_event, argv) => {
+  startupDebugLog("second-instance", { argv });
   const activateFromNotification = () => {
     if (wasLaunchedFromWindowsNotification(argv)) {
       openProfilesFromNotification();
@@ -1530,6 +1675,7 @@ app.on("second-instance", (_event, argv) => {
 });
 
 app.on("activate", () => {
+  startupDebugLog("activate", { windowCount: BrowserWindow.getAllWindows().length });
   if (BrowserWindow.getAllWindows().length === 0) {
     createSplashWindow();
     createMainWindow();
@@ -1539,6 +1685,10 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
+  startupDebugLog("before-quit", {
+    windowCount: BrowserWindow.getAllWindows().length,
+    quitContext: pendingQuitContext,
+  });
   app.isQuitting = true;
   if (refreshTimer) {
     clearInterval(refreshTimer);
@@ -1550,8 +1700,38 @@ app.on("before-quit", () => {
   destroyWindowsMiniMeterWindow();
 });
 
+app.on("will-quit", () => {
+  startupDebugLog("will-quit", {});
+});
+
+app.on("quit", (_event, code) => {
+  startupDebugLog("quit", { code });
+});
+
 app.on("window-all-closed", () => {
+  startupDebugLog("window-all-closed", {
+    hasTray: Boolean(tray),
+    isQuitting: Boolean(app.isQuitting),
+  });
   if (shouldQuitOnWindowAllClosed({ hasTray: Boolean(tray), isQuitting: Boolean(app.isQuitting) })) {
-    app.quit();
+    requestAppQuit("window-all-closed");
   }
+});
+
+app.on("render-process-gone", (_event, webContents, details) => {
+  startupDebugLog("render-process-gone", {
+    url: webContents?.getURL?.() || "",
+    reason: details?.reason || "",
+    exitCode: details?.exitCode ?? null,
+  });
+});
+
+app.on("child-process-gone", (_event, details) => {
+  startupDebugLog("child-process-gone", {
+    type: details?.type || "",
+    reason: details?.reason || "",
+    name: details?.name || "",
+    serviceName: details?.serviceName || "",
+    exitCode: details?.exitCode ?? null,
+  });
 });

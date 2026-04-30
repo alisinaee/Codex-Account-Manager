@@ -105,10 +105,10 @@ test("buildTrayMenuTemplate includes readable color-coded desktop status actions
       trayTitle: "acc6 | 5H 48% | W 78%",
     },
     onOpen: () => {},
+    onOpenWebPanel: () => {},
     onRefresh: () => {},
     onNotify: () => {},
-    onStartService: () => {},
-    onStopService: () => {},
+    onRestartService: () => {},
     onQuit: () => {},
   });
   const labels = items.map((item) => item.label || item.type);
@@ -119,21 +119,24 @@ test("buildTrayMenuTemplate includes readable color-coded desktop status actions
   assert.deepEqual(labels.slice(3), [
     "separator",
     "Open Codex Account Manager",
+    "Web Panel",
     "Refresh Usage",
     "Send Test Notification",
     "separator",
-    "Start UI Service",
-    "Stop UI Service",
+    "Restart Service",
     "Quit",
   ]);
-  assert.equal(items[0].enabled, true);
+  assert.equal(items[0].enabled, false);
   assert.equal(items[1].icon, undefined);
   assert.equal(items[2].icon, undefined);
+  assert.equal(items[1].enabled, false);
+  assert.equal(items[2].enabled, false);
 });
 
-test("buildTrayMenuTemplate avoids data-url menu icons on macOS", () => {
+test("buildTrayMenuTemplate uses native macOS headers for status rows when supported", () => {
   const items = buildTrayMenuTemplate({
     platform: "darwin",
+    macSystemVersion: "14.4.0",
     summary: {
       available: true,
       profileName: "acc6",
@@ -141,38 +144,71 @@ test("buildTrayMenuTemplate avoids data-url menu icons on macOS", () => {
       weeklyPercent: 78,
     },
     onOpen: () => {},
+    onOpenWebPanel: () => {},
     onRefresh: () => {},
     onNotify: () => {},
-    onStartService: () => {},
-    onStopService: () => {},
+    onRestartService: () => {},
     onQuit: () => {},
   });
 
-  assert.equal(items[1].icon, undefined);
-  assert.equal(items[2].icon, undefined);
-  assert.match(items[1].label, /5H 48% left$/);
-  assert.match(items[2].label, /Weekly 78% left$/);
+  assert.deepEqual(
+    items.slice(0, 3).map((item) => ({ type: item.type, label: item.label })),
+    [
+      { type: "header", label: "Current acc6" },
+      { type: "header", label: "5H 48% left" },
+      { type: "header", label: "Weekly 78% left" },
+    ],
+  );
 });
 
-test("buildMacMenuBarTitle keeps the macOS fallback title compact and informative", () => {
+test("buildTrayMenuTemplate falls back to a grouped macOS submenu when header items are unavailable", () => {
+  const items = buildTrayMenuTemplate({
+    platform: "darwin",
+    macSystemVersion: "13.6.0",
+    summary: {
+      available: true,
+      profileName: "acc6",
+      fiveHourPercent: 48,
+      weeklyPercent: 78,
+    },
+    onOpen: () => {},
+    onOpenWebPanel: () => {},
+    onRefresh: () => {},
+    onNotify: () => {},
+    onRestartService: () => {},
+    onQuit: () => {},
+  });
+
+  assert.equal(items[0].label, "Status acc6");
+  assert.equal(Array.isArray(items[0].submenu), true);
+  assert.deepEqual(
+    items[0].submenu.map((item) => ({ label: item.label, enabled: item.enabled, icon: item.icon })),
+    [
+      { label: "🟠 5H 48% left", enabled: false, icon: undefined },
+      { label: "🟢 Weekly 78% left", enabled: false, icon: undefined },
+    ],
+  );
+});
+
+test("buildMacMenuBarTitle keeps the macOS fallback title compact and uses standard ansi colors", () => {
   assert.equal(
     buildMacMenuBarTitle({
       available: true,
       profileName: "acc6",
       fiveHourPercent: 9,
-      weeklyPercent: 48,
+      weeklyPercent: 70,
     }),
-    "acc6 5H \u001b[31m9%\u001b[0m W \u001b[33m48%\u001b[0m",
+    "acc6 5H \u001b[31m9%\u001b[0m W \u001b[33m70%\u001b[0m",
   );
 });
 
-test("applyTrayState uses macOS tray title with ansi-colored percentages", () => {
+test("applyTrayState uses macOS tray title with ansi-colored percentages and monospaced digits", () => {
   const calls = [];
   const summary = {
     available: true,
     profileName: "acc6",
     fiveHourPercent: 9,
-    weeklyPercent: 48,
+    weeklyPercent: 70,
     tooltip: "Codex Account Manager\nProfile acc6",
   };
   const tray = {
@@ -203,8 +239,8 @@ test("applyTrayState uses macOS tray title with ansi-colored percentages", () =>
   assert.deepEqual(calls[0], ["tooltip", "Codex Account Manager\nProfile acc6"]);
   assert.deepEqual(calls[1], [
     "title",
-    "acc6 5H \u001b[31m9%\u001b[0m W \u001b[33m48%\u001b[0m",
-    undefined,
+    "acc6 5H \u001b[31m9%\u001b[0m W \u001b[33m70%\u001b[0m",
+    { fontType: "monospacedDigit" },
   ]);
   assert.equal(calls[2][0], "menu");
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import iconUrl from "../../assets/codex-account-manager.svg";
 import "./styles.css";
@@ -19,11 +19,17 @@ import {
   UpdateIcon,
 } from "./icon-pack.jsx";
 import {
+  buildSwitchAnimationPreview,
+  buildRowsByNameOrder,
+  buildSwitchRowMotionPlans,
   buildProfileRowClassName,
   createSwitchController,
+  SWITCH_ROW_CLEANUP_BUFFER_MS,
+  SWITCH_ROW_MOTION_MS,
   usageTone,
 } from "./switch-state.mjs";
-import { appendSessionToken, buildAuthenticatedDownloadUrl } from "./request-paths.mjs";
+import { appendSessionToken } from "./request-paths.mjs";
+import { refreshProfilesAfterMutation } from "./post-mutation-refresh.mjs";
 import { buildDesktopLogEntry, mergeDebugLogs } from "./debug-logs.mjs";
 import SettingsView, { SystemInfoSettingsCard } from "./SettingsView.jsx";
 import {
@@ -45,13 +51,17 @@ import {
   usageColor,
 } from "./table-layout.mjs";
 import {
-  applyProfileSelection,
+  buildDesktopSwitchOptions,
   deepMerge,
+  formatUsageRefreshError,
   formatAutoSwitchCountdown,
   getAllRefreshIntervalMs,
   getCurrentRefreshIntervalMs,
+  isTimeoutErrorMessage,
+  shouldRunStartupAllAccountsRefresh,
   waitForServiceRestart,
 } from "./parity.mjs";
+import { triggerBlobDownload } from "./download-utils.mjs";
 import { mergeUsagePayload } from "./usage-merge.mjs";
 import { getNextThemeMode, normalizeThemeMode, watchThemePreference } from "./theme.mjs";
 import Badge from "./components/Badge.jsx";
@@ -242,7 +252,7 @@ function usageErrorLabel(rowError) {
   if (lower === "http 401") return "auth expired";
   if (lower === "http 403") return "access denied";
   if (lower.startsWith("http ")) return msg;
-  if (lower.includes("timed out")) return "timeout";
+  if (isTimeoutErrorMessage(msg)) return "timeout";
   if (lower.includes("missing access_token/account_id")) return "missing auth";
   return msg;
 }
@@ -256,7 +266,7 @@ function isUsageLoadingState(usage, rowError, rowLoading) {
   const pct = usagePercentNumberFromUsage(usage);
   if (!rowError) return false;
   const msg = String(rowError || "").toLowerCase();
-  let transient = msg.includes("request failed") || msg.includes("timed out");
+  let transient = msg.includes("request failed") || isTimeoutErrorMessage(msg);
   if (!transient && msg.startsWith("http ")) {
     const code = Number.parseInt(msg.slice(5).trim(), 10);
     if (Number.isFinite(code)) {
@@ -533,6 +543,35 @@ function formatAccountDetailValue(value) {
 function isInteractiveEventTarget(target) {
   if (!(target instanceof Element)) return false;
   return Boolean(target.closest("button, a, input, select, textarea, label, [data-no-row-open='true']"));
+}
+
+function escapeRowKey(value) {
+  const text = String(value || "");
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(text);
+  }
+  return text.replace(/["\\]/g, "\\$&");
+}
+
+function captureProfileTableRowRects(root = document) {
+  if (!root || typeof root.querySelectorAll !== "function") {
+    return {};
+  }
+  const rects = {};
+  const selector =
+    typeof root.matches === "function" && root.matches(".profiles-data-table")
+      ? "tbody tr[data-row-key]"
+      : ".profiles-data-table tbody tr[data-row-key]";
+  root.querySelectorAll(selector).forEach((row) => {
+    const name = String(row.getAttribute("data-row-key") || "").trim();
+    if (!name || typeof row.getBoundingClientRect !== "function") return;
+    const rect = row.getBoundingClientRect();
+    rects[name] = {
+      left: rect.left,
+      top: rect.top,
+    };
+  });
+  return rects;
 }
 
 function remainToneClass(ts) {
@@ -1097,6 +1136,7 @@ function AccountsTable({
   profiles,
   switching,
   activatedProfile,
+  switchMotion,
   visibleColumns,
   sort,
   onSort,
@@ -1109,6 +1149,79 @@ function AccountsTable({
   viewportSizeClass,
   shouldFlashUsageFn,
 }) {
+  const tableRef = useRef(null);
+  const lastMotionTokenRef = useRef("");
+
+  useLayoutEffect(() => {
+    const motion = switchMotion || {};
+    const motionToken = String(motion.token || "");
+    if (!motionToken || lastMotionTokenRef.current === motionToken || !tableRef.current) {
+      return undefined;
+    }
+    lastMotionTokenRef.current = motionToken;
+
+    const table = tableRef.current;
+    const afterRects = captureProfileTableRowRects(table);
+    let plans = buildSwitchRowMotionPlans(motion.fromRects || {}, afterRects);
+    if (Array.isArray(motion.affectedNames) && motion.affectedNames.length) {
+      const affectedNames = new Set(motion.affectedNames);
+      plans = plans.filter((plan) => affectedNames.has(plan.name));
+    }
+    if (!plans.length) {
+      return undefined;
+    }
+
+    const animatedRows = [];
+    plans.forEach((plan) => {
+      const row = table.querySelector(`tbody tr[data-row-key="${escapeRowKey(plan.name)}"]`);
+      if (!row) return;
+      row.classList.add("switch-row-moving");
+      if (plan.name === motion.target) {
+        row.classList.add("switch-row-picked");
+      }
+      row.style.transition = "none";
+      row.style.transform = `translate3d(${plan.dx}px, ${plan.dy}px, 0)`;
+      row.style.opacity = plan.name === motion.target ? "0.72" : "0.82";
+      row.style.zIndex = plan.name === motion.target ? "4" : "2";
+      animatedRows.push(row);
+    });
+
+    if (!animatedRows.length) {
+      return undefined;
+    }
+
+    const startAnimation = window.requestAnimationFrame(() => {
+      animatedRows.forEach((row) => {
+        row.classList.add("switch-row-settling");
+        row.style.transition = "";
+        row.style.transform = "translate3d(0, 0, 0)";
+        row.style.opacity = "1";
+      });
+    });
+
+    const cleanupTimer = window.setTimeout(() => {
+      animatedRows.forEach((row) => {
+        row.classList.remove("switch-row-moving", "switch-row-picked", "switch-row-settling");
+        row.style.transition = "";
+        row.style.transform = "";
+        row.style.opacity = "";
+        row.style.zIndex = "";
+      });
+    }, SWITCH_ROW_MOTION_MS + SWITCH_ROW_CLEANUP_BUFFER_MS);
+
+    return () => {
+      window.cancelAnimationFrame(startAnimation);
+      window.clearTimeout(cleanupTimer);
+      animatedRows.forEach((row) => {
+        row.classList.remove("switch-row-moving", "switch-row-picked", "switch-row-settling");
+        row.style.transition = "";
+        row.style.transform = "";
+        row.style.opacity = "";
+        row.style.zIndex = "";
+      });
+    };
+  }, [switchMotion?.token]);
+
   const columnTitleByKey = {
     cur: "Status. Active = green dot, Inactive = gray dot.",
     h5: "5h means the five-hour usage window.",
@@ -1134,6 +1247,7 @@ function AccountsTable({
       render: (profile) => {
         const quotaBlocked = (usageValue(profile, "usage_5h") ?? 1) <= 0 || (usageValue(profile, "usage_weekly") ?? 1) <= 0;
         const disableSwitch = profile.is_current || Boolean(switching);
+        const isSwitchingProfile = switching === profile.name;
         const noteText = String(profile.note || (profile.same_principal ? "same-principal" : "")).trim();
         const h5Loading = isUsageLoadingState(profile.usage_5h, profile.error, profile.loading_usage);
         const wLoading = isUsageLoadingState(profile.usage_weekly, profile.error, profile.loading_usage);
@@ -1228,14 +1342,14 @@ function AccountsTable({
                   <>
                     <Button
                       variant={quotaBlocked ? "danger" : "primary"}
-                      className={`actions-menu-btn actions-switch-btn ${disableSwitch ? "btn-disabled" : ""}`}
-                      loading={switching === profile.name}
+                      className={`actions-menu-btn actions-switch-btn ${disableSwitch ? "btn-disabled" : ""} ${isSwitchingProfile ? "switch-loading-btn" : ""}`}
+                      loading={isSwitchingProfile}
                       disabled={disableSwitch}
                       onClick={() => onSwitch(profile.name)}
                       aria-label={`Switch to ${profile.name}`}
-                      title={`Switch to ${profile.name}`}
+                      title={isSwitchingProfile ? `Switching to ${profile.name}` : `Switch to ${profile.name}`}
                     >
-                      ⇄
+                      {isSwitchingProfile ? <span className="visually-hidden">Switching</span> : "⇄"}
                     </Button>
                     <Button
                       className="actions-menu-btn"
@@ -1251,12 +1365,14 @@ function AccountsTable({
                   <>
                     <Button
                       variant={quotaBlocked ? "danger" : "primary"}
-                      className={disableSwitch ? "btn-disabled" : ""}
-                      loading={switching === profile.name}
+                      className={`${disableSwitch ? "btn-disabled" : ""} ${isSwitchingProfile ? "switch-loading-btn" : ""}`.trim()}
+                      loading={isSwitchingProfile}
                       disabled={disableSwitch}
                       onClick={() => onSwitch(profile.name)}
+                      aria-label={isSwitchingProfile ? `Switching to ${profile.name}` : `Switch to ${profile.name}`}
+                      title={isSwitchingProfile ? `Switching to ${profile.name}` : `Switch to ${profile.name}`}
                     >
-                      {switching === profile.name ? "Switching" : "Switch"}
+                      {isSwitchingProfile ? <span className="visually-hidden">Switching</span> : "Switch"}
                     </Button>
                     <Button
                       className="actions-menu-btn"
@@ -1280,6 +1396,7 @@ function AccountsTable({
   return (
     <DataTable
       className={`profiles-data-table ${wideMode ? "wide-columns" : ""} ${compactMode ? "compact-columns" : ""}`.trim()}
+      tableRef={tableRef}
       columns={columns}
       sort={sort}
       onSort={onSort}
@@ -1306,6 +1423,7 @@ function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions, o
         const rowErrorLabel = usageErrorLabel(profile.error);
         const quotaBlocked = (h5Value ?? 1) <= 0 || (weeklyValue ?? 1) <= 0;
         const switchDisabled = profile.is_current || Boolean(switching);
+        const isSwitchingProfile = switching === profile.name;
         const h5Tone = usageTone(h5Value);
         const weeklyTone = usageTone(weeklyValue);
 
@@ -1334,12 +1452,14 @@ function AccountsMobileList({ profiles, switching, onSwitch, onOpenRowActions, o
               <div className="mobile-actions">
                 <Button
                   variant={quotaBlocked ? "danger" : "primary"}
-                  className={switchDisabled ? "btn-disabled" : ""}
-                  loading={switching === profile.name}
+                  className={`${switchDisabled ? "btn-disabled" : ""} ${isSwitchingProfile ? "switch-loading-btn" : ""}`.trim()}
+                  loading={isSwitchingProfile}
                   disabled={switchDisabled}
                   onClick={() => onSwitch(profile.name)}
+                  aria-label={isSwitchingProfile ? `Switching to ${profile.name}` : `Switch to ${profile.name}`}
+                  title={isSwitchingProfile ? `Switching to ${profile.name}` : `Switch to ${profile.name}`}
                 >
-                  {switching === profile.name ? "Switching" : "Switch"}
+                  {isSwitchingProfile ? <span className="visually-hidden">Switching</span> : "Switch"}
                 </Button>
                 <Button className="actions-menu-btn" data-mobile-row-actions={profile.name} onClick={() => onOpenRowActions(profile)}>⋯</Button>
               </div>
@@ -1367,6 +1487,8 @@ function ProfilesView({
   state,
   switching,
   activatedProfile,
+  switchMotion,
+  profileDeckOrder,
   onSwitch,
   onAddAccount,
   onImportProfiles,
@@ -1383,7 +1505,8 @@ function ProfilesView({
   viewportSizeClass,
   shouldFlashUsageFn,
 }) {
-  const profiles = sortRows(buildProfileRows(state), sort);
+  const sortedProfiles = sortRows(buildProfileRows(state), sort);
+  const profiles = buildRowsByNameOrder(sortedProfiles, profileDeckOrder);
   const visibleColumnCount = Object.values(visibleColumns || {}).filter(Boolean).length;
   const wideMode = visibleColumnCount > 8;
   const activeColumnCount = columnDefs.filter((column) => visibleColumns?.[column.key]).length;
@@ -1420,6 +1543,7 @@ function ProfilesView({
             profiles={profiles}
             switching={switching}
             activatedProfile={activatedProfile}
+            switchMotion={switchMotion}
             visibleColumns={visibleColumns}
             wideMode={wideMode}
             compactMode={compactMode}
@@ -2376,6 +2500,8 @@ function AppContent() {
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState("");
   const [activatedProfile, setActivatedProfile] = useState("");
+  const [switchMotion, setSwitchMotion] = useState(null);
+  const [profileDeckOrder, setProfileDeckOrder] = useState([]);
   const [autoArrangeBusy, setAutoArrangeBusy] = useState(false);
   const [error, setErrorState] = useState("");
   const [columnPrefs, setColumnPrefs] = useState(loadStoredColumns());
@@ -2401,6 +2527,7 @@ function AppContent() {
   const sessionUsageCacheRef = useRef(null);
   const usageFlashUntilRef = useRef({});
   const restartInFlightRef = useRef(false);
+  const startupAllRefreshStartedRef = useRef(false);
   const currentRefreshTimerRef = useRef(null);
   const allRefreshTimerRef = useRef(null);
   const autoSwitchStateTimerRef = useRef(null);
@@ -2774,7 +2901,7 @@ function AppContent() {
         throw new Error("request failed");
       }
     } catch (err) {
-      setError((current) => current || `current usage: ${err?.message || String(err)}`);
+      setError((current) => current || formatUsageRefreshError(err, { scope: "current" }));
     } finally {
       currentRefreshRunningRef.current = false;
     }
@@ -2793,8 +2920,9 @@ function AppContent() {
         throw new Error("request failed");
       }
     } catch (err) {
-      setProfileLoadingState(target, false, err?.message || "request failed");
-      setError((current) => current || `usage(${target}): ${err?.message || String(err)}`);
+      const message = formatUsageRefreshError(err, { scope: "profile", profileName: target });
+      setProfileLoadingState(target, false, message);
+      setError((current) => current || message);
     }
   }
 
@@ -2828,7 +2956,7 @@ function AppContent() {
         await refreshProfileUsage(name, { timeoutSec });
       }
     } catch (err) {
-      setError((current) => current || `all usage: ${err?.message || String(err)}`);
+      setError((current) => current || formatUsageRefreshError(err, { scope: "all" }));
     } finally {
       allRefreshRunningRef.current = false;
     }
@@ -2993,6 +3121,11 @@ function AppContent() {
   async function switchProfile(name) {
     const target = String(name || "").trim();
     if (!target || switching) return;
+    const baseProfiles = sortRows(buildProfileRows(stateRef.current || state), sort);
+    const displayedProfiles = buildRowsByNameOrder(baseProfiles, profileDeckOrder);
+    const displayedNames = displayedProfiles.map((profile) => profile.name);
+    const { affectedNames, nextRows: nextProfiles } = buildSwitchAnimationPreview(displayedProfiles, target);
+    const fromRects = captureProfileTableRowRects();
     const promptManualMacRestart = shouldPromptManualMacRestartAfterSwitch(target);
     if (!switchControllerRef.current) {
       switchControllerRef.current = createSwitchController((profileName, options = {}) => desktop.switchProfile(profileName, options));
@@ -3000,25 +3133,22 @@ function AppContent() {
     setSwitching(target);
     setActivatedProfile("");
     setError("");
-    setState((current) => {
-      const nextState = applyProfileSelection(current, target);
-      stateRef.current = nextState;
-      return nextState;
+    setProfileDeckOrder(nextProfiles.map((profile) => profile.name));
+    setSwitchMotion({
+      token: `${Date.now()}-${target}`,
+      target,
+      affectedNames,
+      fromRects,
     });
     try {
-      const switchOptions = {
-        platform: String(desktop?.platform || "").toLowerCase(),
-      };
-      if (isMacDesktop) {
-        switchOptions.noRestart = Boolean(promptManualMacRestart);
-      }
+      const switchOptions = buildDesktopSwitchOptions({ platform: desktop?.platform });
       const next = await switchControllerRef.current.switchProfile(target, switchOptions);
       applyDesktopState(next);
       loadAll({ showLoading: false, clearUsageCache: true }).catch(() => {});
       setActivatedProfile(target);
       notifySuccess("Profile switched", `Current profile: ${target}`);
       maybeShowWindowsSwitchRestartDialog();
-      if (promptManualMacRestart) {
+      if (promptManualMacRestart && switchOptions.noRestart === true) {
         setModal({
           type: "mac-auth-expired-restart-warning",
           profileName: target,
@@ -3026,6 +3156,7 @@ function AppContent() {
       }
       setTimeout(() => setActivatedProfile((current) => (current === target ? "" : current)), 1100);
     } catch (err) {
+      setProfileDeckOrder(displayedNames);
       loadAll().catch(() => {});
       setError(err?.message || String(err));
     } finally {
@@ -3156,12 +3287,7 @@ function AppContent() {
         logs: debugLogs,
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `codex-account-debug-${Date.now()}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1200);
+      triggerBlobDownload(blob, `codex-account-debug-${Date.now()}.json`, { revokeDelayMs: 1200 });
       notifySuccess("Debug export ready", "Saved desktop debug snapshot.");
     } catch (err) {
       setError(err?.message || String(err));
@@ -3498,8 +3624,30 @@ function AppContent() {
       method: "POST",
       body: JSON.stringify({ analysis_id: analysis?.analysis_id, profiles: rows }),
     });
+    const { core, backend, extrasPromise } = await refreshProfilesAfterMutation({
+      desktop,
+      request,
+      appendSessionTokenFn: appendSessionToken,
+    });
+    applyDesktopState(core, { backend });
     setModal(null);
-    await loadAll();
+    extrasPromise.then((extras) => {
+      if (!extras || typeof extras !== "object") {
+        return;
+      }
+      if (extras.chain !== undefined) {
+        setAutoChain(normalizeChainPayload(extras.chain));
+      }
+      if (extras.update !== undefined) {
+        setUpdateStatus(extras.update);
+      }
+      if (extras.notes !== undefined) {
+        setReleaseNotes(extras.notes);
+      }
+      if (extras.logs !== undefined) {
+        setBackendDebugLogs(Array.isArray(extras.logs?.logs) ? extras.logs.logs : Array.isArray(extras.logs) ? extras.logs : []);
+      }
+    }).catch(() => {});
     notifySuccess("Import applied");
   }
 
@@ -3544,25 +3692,16 @@ function AppContent() {
       method: "POST",
       body: JSON.stringify({ scope: "selected", names, filename }),
     });
-    if (backendState?.baseUrl && backendState?.token) {
-      const href = buildAuthenticatedDownloadUrl(
-        backendState.baseUrl,
-        "/api/local/export/download",
-        backendState.token,
-        { id: payload.export_id },
-      );
-      const res = await fetch(href, { method: "GET", cache: "no-store", credentials: "same-origin" });
-      if (!res.ok) {
-        const detail = await readResponseErrorMessage(res, `download failed (${res.status})`);
-        throw new Error(detail);
-      }
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = payload.filename || `${filename || "profiles"}.camzip`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+    if (typeof desktop?.downloadExport !== "function") {
+      throw new Error("desktop export is unavailable");
+    }
+    const saved = await desktop.downloadExport(
+      payload.export_id,
+      payload.filename || `${filename || "profiles"}.camzip`,
+    );
+    if (saved?.canceled) {
+      setModal((current) => (current && current.type === "export" ? { ...current, exporting: false } : current));
+      return;
     }
     setModal(null);
     await loadAll();
@@ -3688,6 +3827,32 @@ function AppContent() {
     const timer = window.setInterval(() => setClockTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!shouldRunStartupAllAccountsRefresh({
+      runtimeStatus,
+      loading,
+      state,
+      alreadyStarted: startupAllRefreshStartedRef.current,
+    })) {
+      return undefined;
+    }
+    startupAllRefreshStartedRef.current = true;
+    const timer = window.setTimeout(() => {
+      refreshAllAccountsUsage({ timeoutSec: 7 }).catch(() => {});
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    loading,
+    runtimeStatus?.phase,
+    runtimeStatus?.python?.supported,
+    runtimeStatus?.core?.installed,
+    runtimeStatus?.uiService?.running,
+    state?.current?.profile_name,
+    state?.usage?.current_profile,
+    state?.list?.profiles?.length,
+    state?.usage?.profiles?.length,
+  ]);
 
   useEffect(() => {
     if (currentRefreshTimerRef.current) {
@@ -3898,6 +4063,8 @@ function AppContent() {
             state={state}
             switching={switching}
             activatedProfile={activatedProfile}
+            switchMotion={switchMotion}
+            profileDeckOrder={profileDeckOrder}
             onSwitch={switchProfile}
             onAddAccount={openAddAccount}
             onImportProfiles={openImportProfiles}
@@ -3912,7 +4079,10 @@ function AppContent() {
             compactMode={compactMode}
             viewportSizeClass={viewportSizeClass}
             shouldFlashUsageFn={(name, metric, loadingState) => shouldFlashUsage(usageFlashUntilRef.current, name, metric, loadingState)}
-            onSort={(key) => setSort((current) => ({ key, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" }))}
+            onSort={(key) => {
+              setProfileDeckOrder([]);
+              setSort((current) => ({ key, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" }));
+            }}
           />
         )}
         {activeView === "autoswitch" && (

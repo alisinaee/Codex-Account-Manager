@@ -125,18 +125,29 @@ async function waitForBackend(state, options = {}) {
 }
 
 async function ensureBackendRunning(options = {}) {
-  let state = readServiceState(options);
+  const readServiceStateImpl = options.readServiceStateImpl || readServiceState;
+  const runServiceCommandImpl = options.runServiceCommandImpl || runServiceCommand;
+  const fetchJsonImpl = options.fetchJsonImpl || fetchJson;
+  const waitForBackendImpl = options.waitForBackendImpl || waitForBackend;
+  if (options.forceRestart) {
+    const state = getDefaultBackendState();
+    runServiceCommandImpl("restart", options);
+    await waitForBackendImpl(state, options);
+    return readServiceStateImpl(options);
+  }
+
+  let state = readServiceStateImpl(options);
   if (state.running) {
     return state;
   }
   state = getDefaultBackendState();
   try {
-    await fetchJson(`${state.baseUrl}api/usage-local/current?timeout=1`, { timeoutMs: 1500 });
-    return readServiceState(options);
+    await fetchJsonImpl(`${state.baseUrl}api/usage-local/current?timeout=1`, { timeoutMs: 1500 });
+    return readServiceStateImpl(options);
   } catch (_) {
-    runServiceCommand("start", options);
-    await waitForBackend(state, options);
-    return readServiceState(options);
+    runServiceCommandImpl("start", options);
+    await waitForBackendImpl(state, options);
+    return readServiceStateImpl(options);
   }
 }
 

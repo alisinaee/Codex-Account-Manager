@@ -4,8 +4,25 @@ const path = require("node:path");
 
 const APP_ID = "com.codexaccountmanager.desktop";
 const APP_NAME = "Codex Account Manager";
+const DEV_APP_ID = `${APP_ID}.dev`;
+const DEV_APP_NAME = `${APP_NAME} Dev`;
 const ROOT_DIR = path.resolve(__dirname, "..");
 const REPO_DIR = path.resolve(ROOT_DIR, "..");
+
+function resolveDesktopIdentity(env = process.env) {
+  if (env?.CAM_ELECTRON_USE_DEV_SERVER === "1") {
+    return {
+      appId: DEV_APP_ID,
+      appName: DEV_APP_NAME,
+      isDevShell: true,
+    };
+  }
+  return {
+    appId: APP_ID,
+    appName: APP_NAME,
+    isDevShell: false,
+  };
+}
 
 function getProjectSourceIconPath() {
   return path.join(REPO_DIR, "codex_account_manager", "assets", "codex_account_manager.svg");
@@ -44,6 +61,8 @@ function getTrayIconPath() {
 module.exports = {
   APP_ID,
   APP_NAME,
+  DEV_APP_ID,
+  DEV_APP_NAME,
   getElectronAssetPath,
   getIconPath,
   getWindowIconPath,
@@ -51,4 +70,5 @@ module.exports = {
   getMacIconPath,
   getProjectSourceIconPath,
   getTrayIconPath,
+  resolveDesktopIdentity,
 };

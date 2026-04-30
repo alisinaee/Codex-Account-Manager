@@ -6,17 +6,35 @@ const path = require("node:path");
 const {
   APP_ID,
   APP_NAME,
+  DEV_APP_ID,
+  DEV_APP_NAME,
   getElectronAssetPath,
   getIconPath,
   getDockIconPath,
   getMacIconPath,
   getProjectSourceIconPath,
   getTrayIconPath,
+  resolveDesktopIdentity,
 } = require("../src/icons");
 
 test("Electron identity constants use Codex Account Manager branding", () => {
   assert.equal(APP_ID, "com.codexaccountmanager.desktop");
   assert.equal(APP_NAME, "Codex Account Manager");
+  assert.equal(DEV_APP_ID, "com.codexaccountmanager.desktop.dev");
+  assert.equal(DEV_APP_NAME, "Codex Account Manager Dev");
+});
+
+test("resolveDesktopIdentity isolates the dev shell from the packaged app", () => {
+  assert.deepEqual(resolveDesktopIdentity({}), {
+    appId: APP_ID,
+    appName: APP_NAME,
+    isDevShell: false,
+  });
+  assert.deepEqual(resolveDesktopIdentity({ CAM_ELECTRON_USE_DEV_SERVER: "1" }), {
+    appId: DEV_APP_ID,
+    appName: DEV_APP_NAME,
+    isDevShell: true,
+  });
 });
 
 test("Electron icon helper resolves project-owned assets", () => {
