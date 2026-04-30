@@ -22,6 +22,60 @@
 - Ensure like other Mac icons it should be a rounded icon.
 
 ## Recent Changes (Last 20)
+### 2026-04-30T16:08:33+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`, `electron/tests/sidebar-version.test.js`
+- Summary: Moved the sidebar version text into the About nav item, removed the 'App version' label, and reduced the font size.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:414b4cf5ac0e -->
+
+### 2026-04-30T15:17:09+03:30
+- Changed files: `pyproject.toml`, `config.json`, `uv.lock`, `electron/package.json`, `electron/package-lock.json`, `codex_account_manager/cli.py`, `electron/src/runtime.js`, `electron/src/main.js`, +5 more
+- Summary: Bumped Python core, web UI, and Electron version sources to 0.0.15 and added a small app-version label to the Electron sidebar account section.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:b5f2f5297da0 -->
+
+### 2026-04-30T15:06:32+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/tests/profiles-toolbar.test.js`
+- Summary: Removed the temporary 'test snak' toolbar button after using it to preview the bottom error banner behavior.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:401509946c53 -->
+
+### 2026-04-30T15:02:45+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/tests/profiles-toolbar.test.js`
+- Summary: Changed the temporary 'test snak' toolbar button to trigger the bottom error banner preview instead of the toast system.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:e24d76629eff -->
+
+### 2026-04-30T12:42:57+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/tests/profiles-toolbar.test.js`
+- Summary: Added a temporary 'test snak' button in the Profiles toolbar that triggers a warning toast preview.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:ae13460831cb -->
+
+### 2026-04-30T12:27:31+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/renderer/error-banner.mjs`, `electron/src/styles/components.css`, `electron/tests/error-banner.test.js`, `electron/tests/profile-column-resize-source.test.js`
+- Summary: Added a timed bottom error banner with a 30-second countdown and dialog-style manual close button.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:93844564a4b2 -->
+
+### 2026-04-30T11:46:37+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`, `electron/tests/profile-column-resize-source.test.js`
+- Summary: Made the column width controls row span the full columns dialog width and fixed width reset persistence by clearing saved overrides with null.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:0d1eff42f8bd -->
+
+### 2026-04-30T11:43:22+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/styles/components.css`, `electron/tests/profile-column-resize-source.test.js`
+- Summary: Added a width-only reset button beside the profile table column resize toggle in the columns dialog.
+- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
+<!-- fingerprint:e9d84ded4f28 -->
+
+### 2026-04-30T11:27:13+03:30
+- Changed files: `electron/src/renderer/App.jsx`, `electron/src/renderer/components/DataTable.jsx`, `electron/src/renderer/table-layout.mjs`, `electron/src/styles/components.css`, `electron/tests/table-layout.test.js`, `electron/tests/profile-column-resize-source.test.js`, `electron/tests/table-column-resize.test.js`
+- Summary: Added profile table column width resize mode with persisted overrides, header drag handles, reset-to-default behavior, and related tests.
+- Behavior impact: Recorded code-level deltas for future AI context.
+<!-- fingerprint:f106bbfd2e0c -->
+
 ### 2026-04-30T10:38:25+03:30
 - Changed files: `electron/src/main.js`, `electron/src/desktop-state-cache.js`, `electron/tests/desktop-state-cache.test.js`
 - Summary: Invalidate cached Electron desktop state after saved-profile mutations so loadAll fetches fresh list/current data after remove-all/remove/rename/import/save/add.
@@ -88,59 +142,5 @@
 - Behavior impact: Recorded code-level deltas for future AI context.
 <!-- fingerprint:61f4282a0e4a -->
 
-### 2026-04-29T19:25:00+03:30
-- Changed files: `electron/src/backend.js`, `electron/src/main.js`, `electron/tests/backend.test.js`
-- Summary: Fixed Electron dev mode reusing stale global UI services by force-restarting the backend once with the repo `bin/codex-account` before dev switch requests are sent.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:a92ef2c9156d -->
-
-### 2026-04-29T18:51:38+03:30
-- Changed files: `electron/scripts/dev.js`, `electron/src/main.js`, `electron/tests/dev-script.test.js`
-- Summary: Added dev-only startup diagnostics so `npm run dev` now prints Electron launch context, single-instance lock results, lifecycle events, and child exit details directly to the terminal.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:834e46303f4f -->
-
-### 2026-04-29T18:42:21+03:30
-- Changed files: `electron/src/icons.js`, `electron/src/main.js`, `electron/scripts/dev.js`, `electron/tests/dev-script.test.js`, `electron/tests/identity.test.js`
-- Summary: Isolated the Electron dev shell under a distinct app name, bundle id, and user-data path so macOS and Electron no longer treat it as the packaged Codex Account Manager instance during launch or restart flows.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:db7f25d21fb8 -->
-
-### 2026-04-29T18:06:13+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`, `electron/scripts/dev.js`, `electron/tests/dev-script.test.js`
-- Summary: Fixed macOS Codex restart targeting to use strict app bundle paths and made Electron dev sessions pin the repo checkout's Python core instead of a legacy installed codex-account binary.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:d1eef4f4a5cd -->
-
-### 2026-04-29T17:58:27+03:30
-- Changed files: `codex_account_manager/cli.py`, `tests/test_cli_core.py`
-- Summary: Fixed macOS Codex restart targeting to use strict app bundle paths instead of fuzzy app names, preventing Electron dev Account Manager sessions from being quit or relaunched during profile switches.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:35dafa443eee -->
-
-### 2026-04-29T17:39:21+03:30
-- Changed files: `electron/src/api-client.js`, `electron/src/renderer/App.jsx`, `electron/src/renderer/parity.mjs`, `electron/tests/api-client.test.js`, `electron/tests/parity.test.js`
-- Summary: Fixed Electron macOS switches to allow backend Codex restart again and preserved previous usage rows when the immediate forced post-switch usage refresh fails transiently.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:4655a2cb0c78 -->
-
-### 2026-04-29T17:05:00+03:30
-- Changed files: `electron/src/tray.js`, `electron/src/main.js`, `electron/tests/desktop.test.js`
-- Summary: Reworked the tray menu so macOS 14+ uses native non-action header rows for usage status, replaced start/stop service tray actions with `Web Panel` and a full `Restart Service` relaunch path, and kept an older-macOS submenu fallback.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:b8dd2734ab11 -->
-
-### 2026-04-29T16:50:04+03:30
-- Changed files: `electron/src/renderer/App.jsx`, `electron/src/renderer/parity.mjs`, `electron/tests/parity.test.js`
-- Summary: Map Electron usage refresh timeouts to friendly footer copy instead of showing raw desktop IPC timeout errors, and recognize request timeout after messages as timeout states.
-- Behavior impact: Added or refreshed 1 behavior rule(s) from user instructions.
-<!-- fingerprint:900a24bc18bc -->
-
-### 2026-04-29T16:50:00+03:30
-- Changed files: `electron/src/tray.js`, `electron/src/api-client.js`, `electron/src/renderer/App.jsx`, `electron/tests/desktop.test.js`, `electron/tests/api-client.test.js`
-- Summary: Fixed macOS desktop switches to stay on the no-restart backend path, made tray usage rows informational instead of actionable, and stabilized macOS tray-title percentage coloring with standard ANSI output plus monospaced digits.
-- Behavior impact: Recorded code-level deltas for future AI context.
-<!-- fingerprint:8283a6c25d0b -->
-
 ## Last Updated
-- 2026-04-30T10:38:25+03:30
+- 2026-04-30T16:08:33+03:30

@@ -7,6 +7,7 @@ import {
   ArrowRightIcon,
   AutoSwitchIcon,
   DebugIcon,
+  DialogCloseIcon,
   DoorClosedIcon,
   GuideIcon,
   PanelLeftCloseIcon,
@@ -40,12 +41,17 @@ import {
 import {
   arcDasharray,
   clampPercent,
+  clampProfileColumnWidthPx,
   buildProfileColumnWidths,
   formatFullDateFromSeconds,
   formatFullDateFromValue,
   formatShortDateFromSeconds,
   formatShortDateFromValue,
+  getProfileColumnResizeBounds,
+  isProfileColumnResizable,
+  normalizeProfileColumnWidthOverrides,
   remainToneFromResetEpochSeconds,
+  resolveProfileColumnWidths,
   truncateAccountId,
   truncateNote,
   usageColor,
@@ -62,6 +68,7 @@ import {
   waitForServiceRestart,
 } from "./parity.mjs";
 import { triggerBlobDownload } from "./download-utils.mjs";
+import { getErrorBannerCountdownSeconds } from "./error-banner.mjs";
 import { mergeUsagePayload } from "./usage-merge.mjs";
 import { getNextThemeMode, normalizeThemeMode, watchThemePreference } from "./theme.mjs";
 import Badge from "./components/Badge.jsx";
@@ -195,8 +202,44 @@ function saveStoredColumns(prefs) {
   } catch (_) {}
 }
 
+const COLUMN_WIDTH_RESIZE_ENABLED_PREF_KEY = "codex_table_column_width_resize_enabled";
+const COLUMN_WIDTH_OVERRIDES_PREF_KEY = "codex_table_column_width_overrides";
+
+function normalizeColumnWidthResizeEnabled(value) {
+  return value === true;
+}
+
+function loadStoredColumnWidthResizeEnabled() {
+  try {
+    return normalizeColumnWidthResizeEnabled(localStorage.getItem(COLUMN_WIDTH_RESIZE_ENABLED_PREF_KEY) === "1");
+  } catch (_) {
+    return false;
+  }
+}
+
+function saveStoredColumnWidthResizeEnabled(enabled) {
+  try {
+    localStorage.setItem(COLUMN_WIDTH_RESIZE_ENABLED_PREF_KEY, enabled ? "1" : "0");
+  } catch (_) {}
+}
+
+function loadStoredColumnWidthOverrides() {
+  try {
+    return normalizeProfileColumnWidthOverrides(JSON.parse(localStorage.getItem(COLUMN_WIDTH_OVERRIDES_PREF_KEY) || "{}"));
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveStoredColumnWidthOverrides(overrides) {
+  try {
+    localStorage.setItem(COLUMN_WIDTH_OVERRIDES_PREF_KEY, JSON.stringify(normalizeProfileColumnWidthOverrides(overrides)));
+  } catch (_) {}
+}
+
 const WINDOWS_SWITCH_RESTART_DIALOG_PREF_KEY = "codex_windows_switch_restart_dialog_suppressed";
 const DEBUG_CAPTURE_PREF_KEY = "codex_debug_capture_enabled";
+const ERROR_BANNER_AUTO_DISMISS_MS = 30_000;
 
 function loadWindowsSwitchRestartDialogPreference() {
   try {
@@ -957,6 +1000,8 @@ function SidebarUsageArc({ metric, value }) {
   );
 }
 
+const SIDEBAR_APP_VERSION_FALLBACK = "v0.0.15";
+
 function SidebarCurrentProfile({ state, mode }) {
   const summary = buildSidebarCurrentProfile(state);
 
@@ -979,8 +1024,9 @@ function SidebarCurrentProfile({ state, mode }) {
   );
 }
 
-function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate, updateAvailable, onExit }) {
+function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate, updateAvailable, version, onExit }) {
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const appVersion = String(version || SIDEBAR_APP_VERSION_FALLBACK).trim() || SIDEBAR_APP_VERSION_FALLBACK;
 
   useEffect(() => {
     if (!showExitConfirm) return undefined;
@@ -1035,6 +1081,7 @@ function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate,
           >
             <span className="nav-mark"><NavIcon id={view.icon} /></span>
             {mode === "fixed" && <span>{view.label}</span>}
+            {mode === "fixed" && view.id === "about" ? <span className="sidebar-about-version" title={appVersion}>{appVersion}</span> : null}
             {view.id === "update" && updateAvailable && <span className="nav-dot" aria-hidden="true" />}
           </Button>
         ))}
@@ -1138,12 +1185,15 @@ function AccountsTable({
   activatedProfile,
   switchMotion,
   visibleColumns,
+  columnWidthResizeEnabled,
+  columnWidthOverrides,
   sort,
   onSort,
   onSwitch,
   onOpenRowActions,
   onOpenAccountDetails,
   onToggleEligibility,
+  onColumnResize,
   wideMode,
   compactMode,
   viewportSizeClass,
@@ -1232,7 +1282,11 @@ function AccountsTable({
   };
   const visibleColumnDefs = columnDefs
     .filter((column) => visibleColumns[column.key] && isColumnVisibleForViewport(column.key, viewportSizeClass));
-  const profileColumnWidths = buildProfileColumnWidths(visibleColumnDefs.map((column) => column.key), viewportSizeClass);
+  const profileColumnWidths = resolveProfileColumnWidths(
+    visibleColumnDefs.map((column) => column.key),
+    viewportSizeClass,
+    columnWidthOverrides,
+  );
   const columns = visibleColumnDefs
     .map((column) => ({
       key: column.key,
@@ -1240,6 +1294,9 @@ function AccountsTable({
       title: columnTitleByKey[column.key],
       colClassName: tableColumnLayout[column.key]?.colClassName || "",
       width: profileColumnWidths[column.key] || tableColumnLayout[column.key]?.width,
+      resizable: columnWidthResizeEnabled && isProfileColumnResizable(column.key),
+      resizeMinWidth: getProfileColumnResizeBounds(column.key).min,
+      resizeMaxWidth: getProfileColumnResizeBounds(column.key).max,
       className: ["email", "id", "added", "note", "h5remain", "h5reset", "weeklyremain", "weeklyreset"].includes(column.key)
         ? `${column.key === "email" ? "email-cell" : ""} ${column.key === "id" ? "id-cell" : ""} ${column.key === "added" ? "added-cell" : ""} ${column.key === "note" ? "note-cell" : ""} ${column.key === "h5remain" || column.key === "h5reset" || column.key === "weeklyremain" || column.key === "weeklyreset" ? "reset-cell" : ""}`.trim()
         : "",
@@ -1400,6 +1457,7 @@ function AccountsTable({
       columns={columns}
       sort={sort}
       onSort={onSort}
+      onColumnResize={onColumnResize}
       rows={profiles}
       rowKey={(profile) => profile.name}
       rowClassName={(profile) => buildProfileRowClassName({
@@ -1499,8 +1557,11 @@ function ProfilesView({
   onOpenAccountDetails,
   onToggleEligibility,
   visibleColumns,
+  columnWidthResizeEnabled,
+  columnWidthOverrides,
   sort,
   onSort,
+  onColumnResize,
   compactMode,
   viewportSizeClass,
   shouldFlashUsageFn,
@@ -1545,12 +1606,15 @@ function ProfilesView({
             activatedProfile={activatedProfile}
             switchMotion={switchMotion}
             visibleColumns={visibleColumns}
+            columnWidthResizeEnabled={columnWidthResizeEnabled}
+            columnWidthOverrides={columnWidthOverrides}
             wideMode={wideMode}
             compactMode={compactMode}
             viewportSizeClass={viewportSizeClass}
             shouldFlashUsageFn={shouldFlashUsageFn}
             sort={sort}
             onSort={onSort}
+            onColumnResize={onColumnResize}
             onSwitch={onSwitch}
             onOpenRowActions={onOpenRowActions}
             onOpenAccountDetails={onOpenAccountDetails}
@@ -2504,7 +2568,10 @@ function AppContent() {
   const [profileDeckOrder, setProfileDeckOrder] = useState([]);
   const [autoArrangeBusy, setAutoArrangeBusy] = useState(false);
   const [error, setErrorState] = useState("");
+  const [errorDismissAt, setErrorDismissAt] = useState(0);
   const [columnPrefs, setColumnPrefs] = useState(loadStoredColumns());
+  const [columnWidthResizeEnabled, setColumnWidthResizeEnabled] = useState(loadStoredColumnWidthResizeEnabled());
+  const [columnWidthOverrides, setColumnWidthOverrides] = useState(loadStoredColumnWidthOverrides());
   const [windowsSwitchRestartDialogSuppressed, setWindowsSwitchRestartDialogSuppressed] = useState(loadWindowsSwitchRestartDialogPreference());
   const [sort, setSort] = useState({ key: "profile", dir: "asc" });
   const [modal, setModal] = useState(null);
@@ -2533,12 +2600,20 @@ function AppContent() {
   const autoSwitchStateTimerRef = useRef(null);
   const debugCaptureTimerRef = useRef(null);
   const desktopLogSigRef = useRef({ sig: "", ts: 0 });
-  const [, setClockTick] = useState(Date.now());
+  const [clockTick, setClockTick] = useState(Date.now());
   const debugLogs = useMemo(() => mergeDebugLogs(backendDebugLogs, desktopDebugLogs), [backendDebugLogs, desktopDebugLogs]);
 
   const activeTitle = useMemo(() => views.find((view) => view.id === activeView)?.label || "Profiles", [activeView]);
   const updateAvailable = !!updateStatus?.update_available;
   const visibleColumns = useMemo(() => normalizeColumns(columnPrefs), [columnPrefs]);
+  const normalizedColumnWidthOverrides = useMemo(
+    () => normalizeProfileColumnWidthOverrides(columnWidthOverrides),
+    [columnWidthOverrides],
+  );
+  const errorCountdownSeconds = useMemo(
+    () => (error ? getErrorBannerCountdownSeconds(errorDismissAt, clockTick) : 0),
+    [clockTick, error, errorDismissAt],
+  );
   const compactMode = viewportSizeClass === "size-compact";
   const effectiveSidebarMode = compactMode ? "minimal" : sidebarMode;
   const chainMetricsByName = useMemo(() => {
@@ -2601,14 +2676,29 @@ function AppContent() {
       if (message && message !== String(current || "").trim()) {
         appendDesktopLog("error", message, { source: "renderer:setError" });
       }
+      setErrorDismissAt(message ? Date.now() + ERROR_BANNER_AUTO_DISMISS_MS : 0);
       return next;
     });
+  }
+
+  function closeErrorBanner() {
+    setError("");
   }
 
   useEffect(() => {
     if (!error) return;
     showToast({ tone: "danger", title: "Action failed", description: error });
   }, [error, showToast]);
+
+  useEffect(() => {
+    if (!error || !errorDismissAt) {
+      return;
+    }
+    if (clockTick < errorDismissAt) {
+      return;
+    }
+    setError("");
+  }, [clockTick, error, errorDismissAt]);
 
   function openConfirmDialog({ title, body, confirmLabel = "Confirm", tone = "danger", onConfirm }) {
     setModal({
@@ -2632,8 +2722,15 @@ function AppContent() {
     if (chain !== undefined) {
       setAutoChain(normalizeChainPayload(chain));
     }
-    if (nextState?.config?.ui?.column_prefs) {
+    if (nextState?.config?.ui) {
       setColumnPrefs(normalizeColumns(nextState.config.ui.column_prefs));
+      const nextResizeEnabled = normalizeColumnWidthResizeEnabled(nextState.config.ui.column_width_resize_enabled);
+      const nextWidthOverrides = normalizeProfileColumnWidthOverrides(nextState.config.ui.column_width_overrides);
+      setColumnWidthResizeEnabled(nextResizeEnabled);
+      setColumnWidthOverrides(nextWidthOverrides);
+      saveStoredColumns(nextState.config.ui.column_prefs || defaultColumns);
+      saveStoredColumnWidthResizeEnabled(nextResizeEnabled);
+      saveStoredColumnWidthOverrides(nextWidthOverrides);
     }
   }
 
@@ -2647,10 +2744,16 @@ function AppContent() {
       stateRef.current = nextState;
       return nextState;
     });
-    if (nextConfig?.ui?.column_prefs) {
+    if (nextConfig?.ui) {
       const normalized = normalizeColumns(nextConfig.ui.column_prefs);
+      const nextResizeEnabled = normalizeColumnWidthResizeEnabled(nextConfig.ui.column_width_resize_enabled);
+      const nextWidthOverrides = normalizeProfileColumnWidthOverrides(nextConfig.ui.column_width_overrides);
       setColumnPrefs(normalized);
+      setColumnWidthResizeEnabled(nextResizeEnabled);
+      setColumnWidthOverrides(nextWidthOverrides);
       saveStoredColumns(normalized);
+      saveStoredColumnWidthResizeEnabled(nextResizeEnabled);
+      saveStoredColumnWidthOverrides(nextWidthOverrides);
     }
   }
 
@@ -3292,6 +3395,73 @@ function AppContent() {
     } catch (err) {
       setError(err?.message || String(err));
     }
+  }
+
+  function setColumnWidthResizeMode(nextValue, { persist = true } = {}) {
+    const normalized = normalizeColumnWidthResizeEnabled(nextValue);
+    setColumnWidthResizeEnabled(normalized);
+    saveStoredColumnWidthResizeEnabled(normalized);
+    if (persist) {
+      saveUiPatch({ ui: { column_width_resize_enabled: normalized } }).catch(() => {});
+    }
+  }
+
+  function applyColumnWidthOverrides(nextOverrides, { persist = false } = {}) {
+    const normalized = normalizeProfileColumnWidthOverrides(nextOverrides);
+    setColumnWidthOverrides(normalized);
+    saveStoredColumnWidthOverrides(normalized);
+    if (persist) {
+      saveUiPatch({
+        ui: {
+          column_width_overrides: Object.keys(normalized).length ? normalized : null,
+        },
+      }).catch(() => {});
+    }
+  }
+
+  function resetColumnWidthOverridesOnly() {
+    applyColumnWidthOverrides({}, { persist: true });
+  }
+
+  function resetColumnPreferencesToDefault() {
+    setColumnPrefs(defaultColumns);
+    saveStoredColumns(defaultColumns);
+    setColumnWidthResizeEnabled(false);
+    saveStoredColumnWidthResizeEnabled(false);
+    setColumnWidthOverrides({});
+    saveStoredColumnWidthOverrides({});
+    saveUiPatch({
+      ui: {
+        column_prefs: defaultColumns,
+        column_width_resize_enabled: false,
+        column_width_overrides: null,
+      },
+    }).catch(() => {});
+    setModal(null);
+  }
+
+  function handleColumnResize(columnKey, nextWidth, { commit = false } = {}) {
+    if (!columnWidthResizeEnabled) {
+      return;
+    }
+    const key = String(columnKey || "").trim();
+    if (!isProfileColumnResizable(key)) {
+      return;
+    }
+    const widthMatch = String(nextWidth || "").trim().match(/^([0-9]+(?:\.[0-9]+)?)px$/);
+    if (!widthMatch) {
+      return;
+    }
+    const clamped = clampProfileColumnWidthPx(key, Number(widthMatch[1]));
+    if (!Number.isFinite(clamped)) {
+      return;
+    }
+    const resolvedWidth = `${clamped}px`;
+    const nextOverrides = {
+      ...normalizedColumnWidthOverrides,
+      [key]: resolvedWidth,
+    };
+    applyColumnWidthOverrides(nextOverrides, { persist: commit });
   }
 
   async function openColumnsModal() {
@@ -4046,6 +4216,7 @@ function AppContent() {
         onModeChange={setSidebarMode}
         onNavigate={(view) => setActiveView(normalizeViewId(view))}
         updateAvailable={updateAvailable}
+        version={updateStatus?.current_version || SIDEBAR_APP_VERSION_FALLBACK}
         onExit={requestExit}
       />
       <div className="workspace">
@@ -4075,10 +4246,13 @@ function AppContent() {
             onOpenAccountDetails={openAccountDetails}
             onToggleEligibility={toggleEligibility}
             visibleColumns={visibleColumns}
+            columnWidthResizeEnabled={columnWidthResizeEnabled}
+            columnWidthOverrides={normalizedColumnWidthOverrides}
             sort={sort}
             compactMode={compactMode}
             viewportSizeClass={viewportSizeClass}
             shouldFlashUsageFn={(name, metric, loadingState) => shouldFlashUsage(usageFlashUntilRef.current, name, metric, loadingState)}
+            onColumnResize={handleColumnResize}
             onSort={(key) => {
               setProfileDeckOrder([]);
               setSort((current) => ({ key, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" }));
@@ -4122,7 +4296,25 @@ function AppContent() {
           />
         )}
         {activeView === "about" && <AboutView backendState={backendState} state={state} version={updateStatus?.current_version} onOpenExternal={(url) => desktop.openExternal(url)} />}
-        {error ? <div className="workspace-error" role="alert">{error}</div> : null}
+        {error ? (
+          <div className="workspace-error" role="alert">
+            <div className="workspace-error-content">
+              <p className="workspace-error-message">{error}</p>
+              <div className="workspace-error-actions">
+                <span className="workspace-error-timer">Dismiss in {errorCountdownSeconds}s</span>
+                <button
+                  type="button"
+                  className="dialog-close workspace-error-close"
+                  onClick={closeErrorBanner}
+                  aria-label="Close error"
+                  title="Close error"
+                >
+                  <DialogCloseIcon />
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {modal?.type === "confirm-action" && (
@@ -4194,11 +4386,24 @@ function AppContent() {
           onClose={() => setModal(null)}
           footer={(
             <>
-              <Button onClick={() => { setColumnPrefs(defaultColumns); saveStoredColumns(defaultColumns); setModal(null); }}>Reset defaults</Button>
+              <Button onClick={resetColumnPreferencesToDefault}>Reset to default</Button>
               <Button variant="primary" onClick={() => setModal(null)}>Done</Button>
             </>
           )}
         >
+          <div className="columns-grid column-resize-grid">
+            <div className="modal-check">
+              <span>Change columns width</span>
+              <div className="column-resize-actions">
+                <ToggleSwitch
+                  checked={columnWidthResizeEnabled}
+                  ariaLabel="Change columns width"
+                  onChange={(nextValue) => setColumnWidthResizeMode(nextValue)}
+                />
+                <Button onClick={resetColumnWidthOverridesOnly}>Reset width</Button>
+              </div>
+            </div>
+          </div>
           <div className="columns-grid">
             {columnDefs.filter((col) => !col.required).map((col) => (
               <label key={col.key} className="modal-check">
