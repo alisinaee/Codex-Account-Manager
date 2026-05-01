@@ -1000,7 +1000,7 @@ function SidebarUsageArc({ metric, value }) {
   );
 }
 
-const SIDEBAR_APP_VERSION_FALLBACK = "v0.0.20";
+const SIDEBAR_APP_VERSION_FALLBACK = "v0.0.21";
 
 function VersionDisplay({ version, updaterDevMode = false, className = "" }) {
   const appVersion = String(version || SIDEBAR_APP_VERSION_FALLBACK).trim() || SIDEBAR_APP_VERSION_FALLBACK;
@@ -1653,7 +1653,7 @@ function useCountdownText(dueAtText, dueAt) {
   return formatAutoSwitchCountdown(dueAtText, dueAt, now);
 }
 
-function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunSwitch, onRapidTest, onStopTests, onTestAutoSwitch, onAutoArrange, autoArrangeBusy = false }) {
+function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunSwitch, onRapidTest, onStopTests, onStopSwitch, onTestAutoSwitch, onAutoArrange, autoArrangeBusy = false }) {
   const autoState = state?.autoSwitch || {};
   const autoConfig = state?.config?.auto_switch || {};
   const countdownText = useCountdownText(autoState.pending_switch_due_at_text, autoState.pending_switch_due_at);
@@ -1700,6 +1700,7 @@ function AutoSwitchView({ state, autoChain, onSavePatch, onOpenChainEdit, onRunS
                 />
                 <Button onClick={onRapidTest}>Rapid test</Button>
                 <Button variant="dangerOutline" onClick={onStopTests}>Stop tests</Button>
+                <Button variant="dangerOutline" onClick={onStopSwitch} disabled={!pendingSwitch}>Stop switch</Button>
                 <Button onClick={onTestAutoSwitch}>Test auto switch</Button>
               </div>
             )}
@@ -3826,6 +3827,43 @@ function AppContent() {
     }
   }
 
+  async function testNotif() {
+    try {
+      await request("/api/auto-switch/test-notif", { method: "POST", body: JSON.stringify({}) });
+      await Promise.all([
+        refreshAutoSwitchState(),
+        loadAll(),
+      ]);
+      setActiveView("autoswitch");
+      notifySuccess("Notification test armed", "Pending auto-switch started. Use Stop switch to cancel before it runs.");
+    } catch (err) {
+      const msg = String(err?.message || err || "");
+      if (/endpoint not found/i.test(msg)) {
+        setError("Desktop backend is running old code. Restart UI service from Update/System, then run Test notif again.");
+        return;
+      }
+      setError(msg);
+    }
+  }
+
+  async function stopAutoSwitch() {
+    try {
+      await request("/api/auto-switch/stop", { method: "POST", body: JSON.stringify({}) });
+      await Promise.all([
+        refreshAutoSwitchState(),
+        loadAll(),
+      ]);
+      setModal({
+        type: "auto-switch-stopped-warning",
+        title: "Auto-switch disabled",
+        message: "Auto-switch has been disabled. Enable it again from Auto Switch rules when you want automatic switching to resume.",
+      });
+      setActiveView("autoswitch");
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
+  }
+
   async function testAutoSwitch() {
     try {
       await request("/api/auto-switch/test", { method: "POST", body: JSON.stringify({ timeout_sec: 30 }) });
@@ -4202,6 +4240,32 @@ function AppContent() {
         desktop.getUpdateStatus?.().then((next) => applyUpdateStatusPayload(next)).catch(() => {});
       }
     });
+    const offAutoSwitchStopped = desktop.onAutoSwitchStopped?.((payload) => {
+      const title = String(payload?.title || "Auto-switch disabled");
+      const message = String(
+        payload?.message
+          || "Auto-switch has been disabled. Enable it again from Auto Switch rules when you want automatic switching to resume.",
+      );
+      setModal({
+        type: "auto-switch-stopped-warning",
+        title,
+        message,
+      });
+      setActiveView("autoswitch");
+    });
+    const offAutoSwitchPending = desktop.onAutoSwitchPending?.((payload) => {
+      const title = String(payload?.title || "Auto-switch is pending");
+      const message = String(
+        payload?.message
+          || "Auto-switch is pending. Stop it now if you want to cancel this switch flow.",
+      );
+      setModal({
+        type: "auto-switch-pending-warning",
+        title,
+        message,
+      });
+      setActiveView("autoswitch");
+    });
     return () => {
       offNavigate?.();
       offSidebar?.();
@@ -4210,6 +4274,8 @@ function AppContent() {
       offRuntime?.();
       offProgress?.();
       offUpdateProgress?.();
+      offAutoSwitchStopped?.();
+      offAutoSwitchPending?.();
       if (resizeObserver) resizeObserver.disconnect();
       else window.removeEventListener("resize", syncViewportClasses);
       classList.remove(...WIDTH_CLASS_NAMES, ...HEIGHT_CLASS_NAMES);
@@ -4492,12 +4558,20 @@ function AppContent() {
             onRunSwitch={runAutoSwitch}
             onRapidTest={runRapidTest}
             onStopTests={stopTests}
+            onStopSwitch={stopAutoSwitch}
             onTestAutoSwitch={testAutoSwitch}
             onAutoArrange={autoArrange}
             autoArrangeBusy={autoArrangeBusy}
           />
         )}
-        {activeView === "settings" && <SettingsView state={state} onNotify={testNotification} onSavePatch={saveUiPatch} />}
+        {activeView === "settings" && (
+          <SettingsView
+            state={state}
+            onNotify={testNotification}
+            onTestAutoSwitchNotif={testNotif}
+            onSavePatch={saveUiPatch}
+          />
+        )}
         {activeView === "guide" && <GuideView isMacDesktop={isMacDesktop} />}
         {activeView === "update" && (
           <UpdateView
@@ -4616,6 +4690,50 @@ function AppContent() {
             This profile appears to have expired auth. After switching, close and reopen the Codex app manually so host connections reset cleanly.
           </p>
           {modal.profileName ? <p className="muted">Switched profile: {modal.profileName}</p> : null}
+        </Dialog>
+      )}
+
+      {modal?.type === "auto-switch-stopped-warning" && (
+        <Dialog
+          title={modal.title || "Auto-switch disabled"}
+          size="sm"
+          onClose={() => setModal(null)}
+          footer={<Button variant="primary" onClick={() => setModal(null)}>OK</Button>}
+        >
+          <p>{modal.message || "Auto-switch has been disabled. Enable it again from Auto Switch rules when you want automatic switching to resume."}</p>
+        </Dialog>
+      )}
+
+      {modal?.type === "auto-switch-pending-warning" && (
+        <Dialog
+          title={modal.title || "Auto-switch is pending"}
+          size="sm"
+          onClose={() => setModal(null)}
+          footer={(
+            <>
+              <Button onClick={() => setModal(null)}>Later</Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setModal(null);
+                  runAutoSwitch().catch((err) => setError(err?.message || String(err)));
+                }}
+              >
+                Continue
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  setModal(null);
+                  stopAutoSwitch().catch((err) => setError(err?.message || String(err)));
+                }}
+              >
+                Stop switch
+              </Button>
+            </>
+          )}
+        >
+          <p>{modal.message || "Auto-switch is pending. Stop it now if you want to cancel this switch flow."}</p>
         </Dialog>
       )}
 

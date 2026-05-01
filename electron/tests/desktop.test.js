@@ -95,6 +95,45 @@ test("sendUsageNotification keeps click callback active and invokes it on click"
   assert.equal(clicked, 1);
 });
 
+test("sendUsageNotification wires notification action callbacks", () => {
+  class NotificationMock {
+    static isSupported() { return true; }
+    constructor(options) {
+      this.options = options;
+      this.handlers = new Map();
+    }
+    on(event, handler) {
+      this.handlers.set(event, handler);
+    }
+    show() {}
+  }
+
+  const instance = new NotificationMock({});
+  let onAction;
+  instance.on = (event, handler) => {
+    if (event === "action") onAction = handler;
+  };
+
+  let actionIndexSeen = -1;
+  sendUsageNotification(
+    class InlineNotificationMock extends NotificationMock {
+      constructor(options) {
+        super(options);
+        return instance;
+      }
+    },
+    { current_profile: "work", profiles: [{ name: "work", usage_5h: { remaining_percent: 50 }, usage_weekly: { remaining_percent: 80 } }] },
+    () => {},
+    "",
+    {
+      actions: [{ type: "button", text: "Stop switch" }],
+      onAction: (index) => { actionIndexSeen = Number(index); },
+    },
+  );
+  onAction?.(0);
+  assert.equal(actionIndexSeen, 0);
+});
+
 test("buildTrayMenuTemplate includes readable color-coded desktop status actions", () => {
   const items = buildTrayMenuTemplate({
     platform: "linux",

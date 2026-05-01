@@ -6,6 +6,20 @@ This file tracks user-visible changes by version.
 
 No unreleased entries yet.
 
+## 0.0.21
+
+### Auto-Switch Notification Control
+
+- Added a stop control in the desktop auto-switch notification flow so users can halt a pending switch from the warning surface.
+- Added focused pending-switch dialog behavior with explicit actions to continue switching or stop the flow.
+- Updated notification click handling to focus the desktop app and route into the in-app confirmation flow.
+
+### Settings and Test Flow
+
+- Moved the notification test action to Settings under `Notifications`.
+- Renamed the action to `Test auto switch notif` and aligned its styling with standard settings actions.
+- Wired the test path through the real auto-switch pending-notification behavior so stop/continue flow can be validated end-to-end.
+
 ## 0.0.12
 
 ### Update Flow Fixes

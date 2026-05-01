@@ -78,7 +78,7 @@ function AutoRefreshSettingsCard({ state, onSavePatch }) {
   );
 }
 
-function NotificationsSettingsCard({ state, onNotify, onSavePatch }) {
+function NotificationsSettingsCard({ state, onNotify, onTestAutoSwitchNotif, onSavePatch }) {
   const notifications = state?.config?.notifications || {};
 
   return (
@@ -87,7 +87,12 @@ function NotificationsSettingsCard({ state, onNotify, onSavePatch }) {
       description="Choose when the desktop shell should warn you about usage thresholds."
       className="settings-card-notifications"
       testId="settings-card-notifications"
-      footer={<Button onClick={onNotify}>Test notification</Button>}
+      footer={(
+        <>
+          <Button onClick={onNotify}>Test notification</Button>
+          <Button onClick={onTestAutoSwitchNotif}>Test auto switch notif</Button>
+        </>
+      )}
     >
       <div className="settings-subsection-stack">
         <SettingsSubsection title="Desktop notifications">
@@ -288,7 +293,7 @@ export function SystemInfoSettingsCard({ platformName, ui }) {
   );
 }
 
-function SettingsView({ state, onNotify, onSavePatch }) {
+function SettingsView({ state, onNotify, onTestAutoSwitchNotif, onSavePatch }) {
   const ui = state?.config?.ui || {};
   const isMac = window.codexAccountDesktop?.platform === "darwin";
   const isWindows = window.codexAccountDesktop?.platform === "win32";
@@ -322,7 +327,12 @@ function SettingsView({ state, onNotify, onSavePatch }) {
       <div className="settings-layout">
         <div className="settings-card-stack settings-card-stack-main">
           <AutoRefreshSettingsCard state={state} onSavePatch={onSavePatch} />
-          <NotificationsSettingsCard state={state} onNotify={onNotify} onSavePatch={onSavePatch} />
+          <NotificationsSettingsCard
+            state={state}
+            onNotify={onNotify}
+            onTestAutoSwitchNotif={onTestAutoSwitchNotif}
+            onSavePatch={onSavePatch}
+          />
           {isMac ? (
             <MacStatusBarSettingsCard ui={ui} onSavePatch={onSavePatch} />
           ) : null}

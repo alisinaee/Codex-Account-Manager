@@ -1,6 +1,6 @@
 {
   "name": "codex-account-manager-electron",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "private": true,
   "productName": "Codex Account Manager",
   "description": "Optional Electron desktop shell for Codex Account Manager",

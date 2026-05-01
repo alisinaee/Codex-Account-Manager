@@ -9,13 +9,14 @@ function notificationsEnabled(config = {}) {
   return Boolean(config?.notifications?.enabled);
 }
 
-function buildNotificationOptions(usagePayload, iconPath = "") {
+function buildNotificationOptions(usagePayload, iconPath = "", overrides = {}) {
   const summary = buildUsageSummary(usagePayload);
   const options = {
     title: APP_TITLE,
     subtitle: summary.available ? `Profile ${summary.profileName}` : "",
     body: summary.notificationBody,
     silent: false,
+    ...overrides,
   };
   if (iconPath) {
     options.icon = iconPath;
@@ -23,11 +24,11 @@ function buildNotificationOptions(usagePayload, iconPath = "") {
   return options;
 }
 
-function sendUsageNotification(electronNotification, usagePayload, onClick, iconPath = "") {
+function sendUsageNotification(electronNotification, usagePayload, onClick, iconPath = "", options = {}) {
   if (!electronNotification?.isSupported?.()) {
     return { ok: false, reason: "Electron notifications are not supported on this platform." };
   }
-  const notification = new electronNotification(buildNotificationOptions(usagePayload, iconPath));
+  const notification = new electronNotification(buildNotificationOptions(usagePayload, iconPath, options));
   activeNotifications.add(notification);
   const release = () => activeNotifications.delete(notification);
   notification.on("close", release);
@@ -36,6 +37,15 @@ function sendUsageNotification(electronNotification, usagePayload, onClick, icon
     notification.on("click", (...args) => {
       try {
         onClick(...args);
+      } finally {
+        release();
+      }
+    });
+  }
+  if (typeof options?.onAction === "function") {
+    notification.on("action", (...args) => {
+      try {
+        options.onAction(...args);
       } finally {
         release();
       }

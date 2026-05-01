@@ -178,9 +178,9 @@ test("resolveRuntimeStatus uses the stored command path when PATH lookup is stal
         python: { available: true, supported: true, version: "3.11.9", path: "/usr/bin/python3" },
         core: {
           installed: true,
-          version: "0.0.20",
+          version: "0.0.21",
           command_path: "/Users/test/.local/bin/codex-account",
-          min_supported_version: "0.0.20",
+          min_supported_version: "0.0.21",
           meets_minimum_version: true,
         },
         ui_service: {
@@ -219,9 +219,9 @@ test("resolveRuntimeStatus keeps the explicit dev core command over doctor path 
         python: { available: true, supported: true, version: "3.11.9", path: "/usr/bin/python3" },
         core: {
           installed: true,
-          version: "0.0.20",
+          version: "0.0.21",
           command_path: "/Users/test/.local/bin/codex-account",
-          min_supported_version: "0.0.20",
+          min_supported_version: "0.0.21",
           meets_minimum_version: true,
         },
         ui_service: {
@@ -243,7 +243,7 @@ test("resolveRuntimeStatus keeps the explicit dev core command over doctor path 
 
 test("resolveRuntimeStatus blocks outdated Python core versions", async () => {
   const runtime = await resolveRuntimeStatus({
-    minCoreVersion: "0.0.20",
+    minCoreVersion: "0.0.21",
     loadStoredRuntimeState: () => ({}),
     detectPython: async () => ({
       available: true,
@@ -258,7 +258,7 @@ test("resolveRuntimeStatus blocks outdated Python core versions", async () => {
         installed: true,
         version: "0.0.10",
         command_path: "/Users/test/.local/bin/codex-account",
-        min_supported_version: "0.0.20",
+        min_supported_version: "0.0.21",
         meets_minimum_version: false,
       },
       ui_service: {

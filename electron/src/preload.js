@@ -71,4 +71,14 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
     ipcRenderer.on("desktop:update-progress", handler);
     return () => ipcRenderer.removeListener("desktop:update-progress", handler);
   },
+  onAutoSwitchStopped: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("desktop:auto-switch-stopped", handler);
+    return () => ipcRenderer.removeListener("desktop:auto-switch-stopped", handler);
+  },
+  onAutoSwitchPending: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("desktop:auto-switch-pending", handler);
+    return () => ipcRenderer.removeListener("desktop:auto-switch-pending", handler);
+  },
 });

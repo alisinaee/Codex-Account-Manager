@@ -6,7 +6,7 @@
 
 Desktop GUI for managing Codex accounts with local-first profile switching, usage tracking, native notifications, tray or menu-bar controls, and packaged app updates on macOS, Windows, and Linux.
 
-Current release: `v0.0.20`
+Current release: `v0.0.21`
 
 [![Latest Release](https://img.shields.io/github/v/release/alisinaee/Codex-Account-Manager?label=release)](https://github.com/alisinaee/Codex-Account-Manager/releases)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/alisinaee/Codex-Account-Manager/blob/main/pyproject.toml)

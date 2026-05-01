@@ -61,7 +61,7 @@ CAM_LOG_MAX_BYTES = 2 * 1024 * 1024
 CAM_LOG_BACKUPS = 4
 APP_CANDIDATES = ("Codex", "CodexBar")
 UI_BUILD_VERSION = hashlib.sha1(f"{Path(__file__).resolve()}:{Path(__file__).stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:12]
-DEFAULT_APP_VERSION = "0.0.20"
+DEFAULT_APP_VERSION = "0.0.21"
 AUTO_SWITCH_MIN_INTERNAL_COOLDOWN_SEC = 20
 PROFILE_ARCHIVE_VERSION = 1
 PROFILE_ARCHIVE_EXT = ".camzip"
@@ -4648,10 +4648,6 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     runtime["pending_switch_due_at"] = now + delay_sec
                     runtime["pending_switch_notice_sent_for_due_at"] = None
                     push_event("warning", f"usage threshold reached for '{current_name}'", detail)
-                    send_native_usage_notice(
-                        usage_payload,
-                        "Usage warning",
-                    )
                     runtime["last_eval_ok"] = True
                     runtime["stop_event"].wait(1.0)
                     continue
@@ -4660,10 +4656,6 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                     notice_at = due - 30.0
                     if now >= notice_at:
                         runtime["pending_switch_notice_sent_for_due_at"] = due
-                        send_native_usage_notice(
-                            usage_payload,
-                            "Auto switch starts in about 30 seconds",
-                        )
                 if now < due:
                     runtime["last_eval_ok"] = True
                     runtime["stop_event"].wait(1.0)
@@ -5056,6 +5048,44 @@ def cmd_ui_serve(host: str, port: int, no_open: bool, interval_sec: float, idle_
                 runtime["test_stop"].set()
                 push_event("auto-switch-stop-tests", "test flows stop requested")
                 return _json_ok({"stopped": True, "runtime": auto_switch_state_payload(load_cam_config())})
+            if self.command == "POST" and path == "/api/auto-switch/test-notif":
+                lead_sec = min(120, int_value(body.get("lead_sec"), 25, minimum=5))
+                cfg = config_service.patch({"auto_switch": {"enabled": True}})
+                invalidate_usage_cache("auto-switch-test-notif")
+                usage_payload = collect_usage_local_data(timeout_sec=7, config=cfg)
+                current_name = str(usage_payload.get("current_profile") or "").strip()
+                if not current_name:
+                    return _json_error("NO_CURRENT_PROFILE", "no current profile detected", 400)
+                candidate = _choose_auto_switch_candidate(usage_payload, cfg)
+                if not candidate:
+                    return _json_error("NO_CANDIDATE", "no target found in switch chain", 400)
+                target_name = str(candidate.get("name") or "").strip()
+                if not target_name:
+                    return _json_error("NO_CANDIDATE", "no target found in switch chain", 400)
+                now = time.time()
+                runtime["pending_warning"] = {
+                    "current": current_name,
+                    "detail": {"test_notif": True, "target": target_name, "lead_sec": lead_sec},
+                    "created_at": now,
+                }
+                runtime["pending_switch_due_at"] = now + lead_sec
+                # Desktop shell handles the warning notification for this flow.
+                runtime["pending_switch_notice_sent_for_due_at"] = runtime["pending_switch_due_at"]
+                push_event(
+                    "warning",
+                    f"auto-switch test armed for '{target_name}'",
+                    {"current": current_name, "target": target_name, "lead_sec": lead_sec},
+                )
+                return _json_ok(
+                    {
+                        "armed": True,
+                        "current": current_name,
+                        "target": target_name,
+                        "lead_sec": lead_sec,
+                        "runtime": auto_switch_state_payload(cfg),
+                        "config": cfg,
+                    }
+                )
             if self.command == "POST" and path == "/api/system/kill-all":
                 cfg = config_service.patch({"auto_switch": {"enabled": False}})
                 invalidate_usage_cache("system-kill-all")

@@ -151,6 +151,8 @@ const WINDOWS_NOTIFICATION_LAUNCH_ARG_PATTERNS = [
   "--notification-",
 ];
 let pendingOpenProfilesFromNotification = false;
+let lastAutoSwitchWarningDueAt = null;
+let autoSwitchStopInFlight = false;
 
 function windowsMiniMeterEnabled(config = {}) {
   return Boolean(config?.ui?.windows_mini_meter_enabled);
@@ -1052,6 +1054,119 @@ function openProfilesFromNotification() {
   setRendererView("profiles");
 }
 
+function openAutoSwitchWarningDialog() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createSplashWindow();
+    createMainWindow();
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  const sendDialog = () => {
+    mainWindow.webContents.send("desktop:auto-switch-stopped", {
+      title: "Auto-switch disabled",
+      message: "Auto-switch has been disabled. Enable it again from Auto Switch rules when you want automatic switching to resume.",
+    });
+    setRendererView("autoswitch");
+  };
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once("did-finish-load", sendDialog);
+    focusMainWindow();
+    return;
+  }
+  sendDialog();
+}
+
+function openAutoSwitchPendingDialog(remainingSec = 30) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createSplashWindow();
+    createMainWindow();
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  const safeRemainingSec = Math.max(0, Number.isFinite(Number(remainingSec)) ? Math.floor(Number(remainingSec)) : 30);
+  const sendDialog = () => {
+    mainWindow.webContents.send("desktop:auto-switch-pending", {
+      title: "Auto-switch is pending",
+      message: `Auto-switch starts in about ${safeRemainingSec} seconds. Stop it now if you want to cancel this switch flow.`,
+      remainingSec: safeRemainingSec,
+    });
+    setRendererView("autoswitch");
+  };
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once("did-finish-load", sendDialog);
+    focusMainWindow();
+    return;
+  }
+  sendDialog();
+}
+
+async function stopAutoSwitchFromNotificationAction() {
+  if (autoSwitchStopInFlight || !apiClient) {
+    return;
+  }
+  autoSwitchStopInFlight = true;
+  try {
+    await requestWithTokenRefresh("/api/auto-switch/stop", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    desktopState = await apiClient.getDesktopState();
+    syncDesktopUsageCache(desktopState);
+    latestUsagePayload = desktopState?.usage || latestUsagePayload;
+    applyTrayFromLatestUsage();
+  } catch (error) {
+    startupDebugLog("auto-switch-stop-action-failed", {
+      message: String(error?.message || error),
+    });
+  } finally {
+    autoSwitchStopInFlight = false;
+  }
+  openAutoSwitchWarningDialog();
+}
+
+function maybeNotifyPendingAutoSwitch(nextDesktopState) {
+  const autoState = nextDesktopState?.autoSwitch || {};
+  const config = nextDesktopState?.config || {};
+  const dueAt = Number(autoState?.pending_switch_due_at || 0);
+  if (!dueAt || !Number.isFinite(dueAt)) {
+    lastAutoSwitchWarningDueAt = null;
+    return;
+  }
+  const nowSec = Date.now() / 1000;
+  const remainingSec = Math.max(0, Math.floor(dueAt - nowSec));
+  if (remainingSec > 30) {
+    return;
+  }
+  if (!notificationsEnabled(config)) {
+    return;
+  }
+  if (!nextDesktopState?.usage) {
+    return;
+  }
+  const dueKey = String(Math.floor(dueAt));
+  if (lastAutoSwitchWarningDueAt === dueKey) {
+    return;
+  }
+  lastAutoSwitchWarningDueAt = dueKey;
+  sendUsageNotification(
+    Notification,
+    nextDesktopState.usage,
+    () => openAutoSwitchPendingDialog(remainingSec),
+    getIconPath(),
+    {
+      body: `Auto switch starts in ${remainingSec} seconds`,
+      actions: [{ type: "button", text: "Stop switch" }],
+      onAction: (actionIndex) => {
+        if (Number(actionIndex) === 0) {
+          stopAutoSwitchFromNotificationAction().catch(() => {});
+        }
+      },
+    },
+  );
+}
+
 function cycleRendererView(step = 1) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
@@ -1359,6 +1474,7 @@ async function refreshUsage() {
   try {
     if (apiClient) {
       desktopState = await apiClient.getDesktopState();
+      maybeNotifyPendingAutoSwitch(desktopState);
       latestUsagePayload = desktopState.usage;
     } else {
       latestUsagePayload = await fetchCurrentUsage(backendState);
@@ -1716,6 +1832,35 @@ function createMockApiClient() {
     if (method === "POST" && path === "/api/auto-switch/auto-arrange") return { chain: state.list.profiles.map((row) => row.name), items: [], manual_chain: state.list.profiles.map((row) => row.name), chain_text: "mock" };
     if (method === "POST" && path === "/api/auto-switch/run-switch") return { started: true };
     if (method === "POST" && path === "/api/auto-switch/rapid-test") return { started: true };
+    if (method === "POST" && path === "/api/auto-switch/test-notif") {
+      const nowSec = Math.floor(Date.now() / 1000);
+      desktopState = {
+        ...state,
+        autoSwitch: {
+          ...state.autoSwitch,
+          enabled: true,
+          pending_warning: {
+            current: state.usage.current_profile,
+            detail: { test_notif: true, target: state.list.profiles.find((row) => !row.is_current)?.name || "", lead_sec: 25 },
+            created_at: nowSec,
+          },
+          pending_switch_due_at: nowSec + 25,
+        },
+      };
+      return { armed: true, lead_sec: 25, current: state.usage.current_profile };
+    }
+    if (method === "POST" && path === "/api/auto-switch/stop") {
+      desktopState = {
+        ...state,
+        autoSwitch: {
+          ...state.autoSwitch,
+          enabled: false,
+          pending_switch_due_at: null,
+          pending_warning: null,
+        },
+      };
+      return desktopState.autoSwitch;
+    }
     if (method === "POST" && path === "/api/auto-switch/stop-tests") return { stopped: true };
     if (method === "POST" && path === "/api/auto-switch/test") return { switched: false, used_threshold_5h: body.threshold_5h ?? null, timeout_sec: body.timeout_sec ?? 30 };
     if (method === "POST" && path === "/api/auto-switch/account-eligibility") return { name: body.name, eligible: Boolean(body.eligible) };
@@ -1996,6 +2141,7 @@ function registerIpcHandlers() {
       }
       if (method === "GET" && path === "/api/auto-switch/state" && desktopState) {
         desktopState = { ...desktopState, autoSwitch: result };
+        maybeNotifyPendingAutoSwitch(desktopState);
       }
       if ((method === "GET" || method === "POST") && path === "/api/ui-config") {
         if (desktopState) {
@@ -2005,6 +2151,7 @@ function registerIpcHandlers() {
       }
       if (shouldInvalidateDesktopStateForRequest(path, options)) {
         desktopState = null;
+        lastAutoSwitchWarningDueAt = null;
       }
       return result;
     }
