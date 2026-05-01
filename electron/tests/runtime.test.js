@@ -21,7 +21,6 @@ test("buildBootstrapInstallPlan installs pipx and the Python core through the se
 
   assert.deepEqual(plan.map((step) => [step.label, step.command, step.args]), [
     ["Install pipx", "/usr/bin/python3", ["-m", "pip", "install", "--user", "--break-system-packages", "pipx"]],
-    ["Refresh pipx path", "/usr/bin/python3", ["-m", "pipx", "ensurepath"]],
     ["Install Codex Account Manager", "/usr/bin/python3", ["-m", "pipx", "install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"]],
   ]);
 });
@@ -46,6 +45,20 @@ test("buildPythonRuntimeInstallPlan uses winget on Windows", () => {
       "--accept-source-agreements",
       "--accept-package-agreements",
     ]],
+  ]);
+});
+
+test("buildPythonRuntimeInstallPlan uses apt on Linux", () => {
+  const plan = buildPythonRuntimeInstallPlan({
+    platform: "linux",
+    spawnSyncImpl: (command) => {
+      if (command === "apt-get") return { status: 0, stdout: "apt 2.8.3", stderr: "" };
+      return { status: 1, stdout: "", stderr: "missing" };
+    },
+  });
+  assert.deepEqual(plan.map((step) => [step.label, step.command, step.args]), [
+    ["Install Python 3 (apt)", "sudo", ["-n", "apt-get", "install", "-y", "python3", "python3-venv", "python3-pip"]],
+    ["Install Python 3 (apt, privileged)", "pkexec", ["apt-get", "install", "-y", "python3", "python3-venv", "python3-pip"]],
   ]);
 });
 
@@ -82,7 +95,6 @@ test("buildBootstrapInstallPlan skips pipx installation when a pipx binary is al
   });
 
   assert.deepEqual(plan.map((step) => [step.label, step.command, step.args]), [
-    ["Refresh pipx path", "/opt/homebrew/bin/pipx", ["ensurepath"]],
     ["Install Codex Account Manager", "/opt/homebrew/bin/pipx", ["install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"]],
   ]);
 });
@@ -115,7 +127,6 @@ test("buildBootstrapInstallPlan prefers Homebrew for pipx when pipx is missing o
 
   assert.deepEqual(plan.map((step) => [step.label, step.command, step.args]), [
     ["Install pipx", "/opt/homebrew/bin/brew", ["install", "pipx"]],
-    ["Refresh pipx path", "pipx", ["ensurepath"]],
     ["Install Codex Account Manager", "pipx", ["install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"]],
   ]);
 });
@@ -327,7 +338,6 @@ test("installPythonCore refreshes the Homebrew pipx command and streams progress
   });
 
   childFactories.push(makeChild({ stdout: "brew done\n" }));
-  childFactories.push(makeChild({ stdout: "ensurepath done\n" }));
   childFactories.push(makeChild({ stdout: "install done\n" }));
 
   await installPythonCore({
@@ -353,17 +363,14 @@ test("installPythonCore refreshes the Homebrew pipx command and streams progress
     },
   });
 
-  assert.equal(spawned.length, 3);
+  assert.equal(spawned.length, 2);
   assert.deepEqual(spawned.map(([, args]) => args), [
     ["install", "pipx"],
-    ["ensurepath"],
     ["install", "--force", "git+https://github.com/alisinaee/Codex-Account-Manager.git@main"],
   ]);
   assert.equal(spawned[0][0], "brew");
   assert.equal(spawned[1][0], "/opt/homebrew/bin/pipx");
-  assert.equal(spawned[2][0], "/opt/homebrew/bin/pipx");
   assert.ok(progress.some((event) => event.label === "Install pipx" && event.status === "running"));
-  assert.ok(progress.some((event) => event.label === "Refresh pipx path" && event.message === "ensurepath done"));
   assert.ok(progress.some((event) => event.label === "Install Codex Account Manager" && event.status === "done"));
 });
 
@@ -426,6 +433,34 @@ test("installPythonRuntime installs Python with winget and streams progress", as
   ]);
   assert.ok(progress.some((event) => event.label === "Install Python 3" && event.status === "running"));
   assert.ok(progress.some((event) => event.label === "Install Python 3" && event.status === "done"));
+});
+
+test("installPythonRuntime is a no-op when Linux already has a supported Python", async () => {
+  const progress = [];
+  const spawned = [];
+  const logs = await installPythonRuntime({
+    python: {},
+  }, {
+    platform: "linux",
+    onProgress: (event) => progress.push(event),
+    spawnSyncImpl: (command, args) => {
+      if (command === "python3" && args?.[0] === "--version") {
+        return { status: 0, stdout: "Python 3.12.3", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: "missing" };
+    },
+    spawnImpl: (command, args) => {
+      spawned.push([command, args]);
+      return {
+        stdout: { setEncoding() {}, on() {} },
+        stderr: { setEncoding() {}, on() {} },
+        on(event, handler) { if (event === "close") process.nextTick(() => handler(0)); },
+      };
+    },
+  });
+  assert.deepEqual(logs, []);
+  assert.equal(spawned.length, 0);
+  assert.ok(progress.some((event) => event.label === "Python runtime already available" && event.status === "done"));
 });
 
 test("formatRuntimeDiagnostics includes backend logs and runtime details", () => {

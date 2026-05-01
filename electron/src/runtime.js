@@ -190,6 +190,14 @@ function unique(items) {
   return [...new Set((items || []).filter(Boolean))];
 }
 
+function commandExists(command, { spawnSyncImpl = spawnSync } = {}) {
+  const result = spawnSyncImpl(command, ["--version"], {
+    encoding: "utf8",
+    timeout: 8000,
+  });
+  return !result.error && result.status === 0;
+}
+
 function detectPython({ platform = process.platform, env = process.env, spawnSyncImpl = spawnSync } = {}) {
   const candidates = [];
   if (env.CAM_ELECTRON_PYTHON) {
@@ -207,6 +215,8 @@ function detectPython({ platform = process.platform, env = process.env, spawnSyn
     candidates.push({ command: "python", args: [] });
   } else {
     candidates.push({ command: "python3", args: [] });
+    candidates.push({ command: "/usr/bin/python3", args: [] });
+    candidates.push({ command: "/usr/local/bin/python3", args: [] });
     candidates.push({ command: "python", args: [] });
   }
 
@@ -444,20 +454,17 @@ function buildBootstrapInstallPlan({ python, pipx, brew, packageName = DEFAULT_I
   const pythonArgs = Array.isArray(python?.args) ? python.args.map((item) => String(item)) : [];
   if (pipx?.available && pipx.command) {
     return [
-      { label: "Refresh pipx path", command: pipx.command, args: ["ensurepath"] },
       { label: "Install Codex Account Manager", command: pipx.command, args: ["install", "--force", packageName] },
     ];
   }
   if (brew?.available && brew.command) {
     return [
       { label: "Install pipx", command: brew.command, args: ["install", "pipx"] },
-      { label: "Refresh pipx path", command: "pipx", args: ["ensurepath"] },
       { label: "Install Codex Account Manager", command: "pipx", args: ["install", "--force", packageName] },
     ];
   }
   return [
     { label: "Install pipx", command: pythonCommand, args: [...pythonArgs, "-m", "pip", "install", "--user", "--break-system-packages", "pipx"] },
-    { label: "Refresh pipx path", command: pythonCommand, args: [...pythonArgs, "-m", "pipx", "ensurepath"] },
     { label: "Install Codex Account Manager", command: pythonCommand, args: [...pythonArgs, "-m", "pipx", "install", "--force", packageName] },
   ];
 }
@@ -481,13 +488,6 @@ function compareVersionArrays(left = [], right = []) {
   return 0;
 }
 
-function buildPythonRuntimeInstallPlan({ platform = process.platform } = {}) {
-  if (platform !== "win32") {
-    return [];
-  }
-  return [];
-}
-
 function resolveWindowsPythonWingetIds({ spawnSyncImpl = spawnSync } = {}) {
   const discovered = new Set();
   const query = spawnSyncImpl("winget", ["search", "Python.Python", "--source", "winget"], {
@@ -508,29 +508,97 @@ function resolveWindowsPythonWingetIds({ spawnSyncImpl = spawnSync } = {}) {
   return unique([...candidates, ...fallback]);
 }
 
-function buildPythonRuntimeInstallPlan({ platform = process.platform, packageIds = [] } = {}) {
-  if (platform !== "win32") {
+function buildPythonRuntimeInstallPlan({ platform = process.platform, packageIds = [], spawnSyncImpl = spawnSync } = {}) {
+  if (platform === "win32") {
+    return unique(packageIds).map((id, index) => ({
+      label: index === 0 ? "Install Python 3" : `Install Python 3 (fallback ${index})`,
+      command: "winget",
+      args: [
+        "install",
+        "-e",
+        "--id",
+        String(id),
+        "--source",
+        "winget",
+        "--scope",
+        "user",
+        "--silent",
+        "--disable-interactivity",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+      ],
+      timeoutMs: 600000,
+    }));
+  }
+
+  if (platform === "linux") {
+    if (commandExists("apt-get", { spawnSyncImpl })) {
+      return [
+        {
+          label: "Install Python 3 (apt)",
+          command: "sudo",
+          args: ["-n", "apt-get", "install", "-y", "python3", "python3-venv", "python3-pip"],
+          timeoutMs: 600000,
+        },
+        {
+          label: "Install Python 3 (apt, privileged)",
+          command: "pkexec",
+          args: ["apt-get", "install", "-y", "python3", "python3-venv", "python3-pip"],
+          timeoutMs: 600000,
+        },
+      ];
+    }
+    if (commandExists("dnf", { spawnSyncImpl })) {
+      return [
+        {
+          label: "Install Python 3 (dnf)",
+          command: "sudo",
+          args: ["-n", "dnf", "install", "-y", "python3", "python3-pip"],
+          timeoutMs: 600000,
+        },
+        {
+          label: "Install Python 3 (dnf, privileged)",
+          command: "pkexec",
+          args: ["dnf", "install", "-y", "python3", "python3-pip"],
+          timeoutMs: 600000,
+        },
+      ];
+    }
+    if (commandExists("pacman", { spawnSyncImpl })) {
+      return [
+        {
+          label: "Install Python 3 (pacman)",
+          command: "sudo",
+          args: ["-n", "pacman", "-S", "--noconfirm", "python", "python-pip"],
+          timeoutMs: 600000,
+        },
+      ];
+    }
+    if (commandExists("zypper", { spawnSyncImpl })) {
+      return [
+        {
+          label: "Install Python 3 (zypper)",
+          command: "sudo",
+          args: ["-n", "zypper", "--non-interactive", "install", "python3", "python3-pip"],
+          timeoutMs: 600000,
+        },
+      ];
+    }
     return [];
   }
-  return unique(packageIds).map((id, index) => ({
-    label: index === 0 ? "Install Python 3" : `Install Python 3 (fallback ${index})`,
-    command: "winget",
-    args: [
-      "install",
-      "-e",
-      "--id",
-      String(id),
-      "--source",
-      "winget",
-      "--scope",
-      "user",
-      "--silent",
-      "--disable-interactivity",
-      "--accept-source-agreements",
-      "--accept-package-agreements",
-    ],
-    timeoutMs: 600000,
-  }));
+
+  if (platform === "darwin" && commandExists("brew", { spawnSyncImpl })) {
+    return [
+      {
+        label: "Install Python 3 (Homebrew)",
+        command: "brew",
+        args: ["install", "python"],
+        timeoutMs: 600000,
+      },
+    ];
+  }
+
+  return [];
 }
 
 function stripAnsi(text) {
@@ -686,7 +754,7 @@ async function installPythonCore(runtimeState, {
       stderr: String(result.stderr || ""),
       status: result.status,
     });
-    if (step.label === "Install pipx" || step.label === "Refresh pipx path") {
+    if (step.label === "Install pipx") {
       pipx = detectPipx({ spawnSyncImpl });
     }
     onProgress({ type: "step", status: "done", label: step.label });
@@ -700,22 +768,26 @@ async function installPythonRuntime(runtimeState, {
   spawnSyncImpl = spawnSync,
   onProgress = () => {},
 } = {}) {
-  if (platform !== "win32") {
-    throw new Error("Automatic Python installation is currently supported only on Windows.");
+  const pythonStatus = detectPython({ platform, spawnSyncImpl });
+  if (pythonStatus.available && pythonStatus.supported) {
+    onProgress({ type: "step", status: "done", label: "Python runtime already available", message: pythonStatus.path || pythonStatus.command || "python3" });
+    return [];
   }
 
-  const wingetCheck = spawnSyncImpl("winget", ["--version"], {
-    encoding: "utf8",
-    timeout: 8000,
-  });
-  if (wingetCheck.error || wingetCheck.status !== 0) {
-    throw new Error("winget is not available. Install App Installer (Microsoft Store) and try again.");
+  if (platform === "win32") {
+    const wingetCheck = spawnSyncImpl("winget", ["--version"], {
+      encoding: "utf8",
+      timeout: 8000,
+    });
+    if (wingetCheck.error || wingetCheck.status !== 0) {
+      throw new Error("winget is not available. Install App Installer (Microsoft Store) and try again.");
+    }
   }
 
-  const packageIds = resolveWindowsPythonWingetIds({ spawnSyncImpl });
-  const plan = buildPythonRuntimeInstallPlan({ platform, runtimeState, packageIds });
+  const packageIds = platform === "win32" ? resolveWindowsPythonWingetIds({ spawnSyncImpl }) : [];
+  const plan = buildPythonRuntimeInstallPlan({ platform, runtimeState, packageIds, spawnSyncImpl });
   if (!plan.length) {
-    throw new Error("No compatible Python package was found in winget sources.");
+    throw new Error(`No automatic Python installer is configured for platform: ${platform}.`);
   }
 
   const logs = [];
