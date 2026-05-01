@@ -7,7 +7,7 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const { buildServiceRuntimeContract, getDefaultBackendState } = require("./backend");
 
-const DEFAULT_MIN_CORE_VERSION = "0.0.15";
+const DEFAULT_MIN_CORE_VERSION = "0.0.20";
 const DEFAULT_INSTALL_SPEC = "git+https://github.com/alisinaee/Codex-Account-Manager.git@main";
 const RUNTIME_STATE_FILE = "runtime-state.json";
 const WINGET_PYTHON_ID_PREFIX = "Python.Python.";

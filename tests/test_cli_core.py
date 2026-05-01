@@ -208,9 +208,9 @@ class CliCoreTests(unittest.TestCase):
         }
         mock_core.return_value = {
             "installed": True,
-            "version": "0.0.15",
+            "version": "0.0.20",
             "command_path": "/Users/test/.local/bin/codex-account",
-            "min_supported_version": "0.0.15",
+            "min_supported_version": "0.0.20",
             "meets_minimum_version": True,
         }
 
@@ -227,7 +227,7 @@ class CliCoreTests(unittest.TestCase):
     def test_cmd_doctor_prints_json_payload(self, mock_report):
         mock_report.return_value = {
             "python": {"available": True, "supported": True, "version": "3.11.9", "path": "/usr/bin/python3"},
-            "core": {"installed": True, "version": "0.0.15", "command_path": "/Users/test/.local/bin/codex-account"},
+            "core": {"installed": True, "version": "0.0.20", "command_path": "/Users/test/.local/bin/codex-account"},
             "ui_service": {"running": False, "healthy": False, "host": "127.0.0.1", "port": 4673, "base_url": "http://127.0.0.1:4673/", "token": ""},
             "errors": [],
         }
@@ -239,7 +239,7 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["python"]["version"], "3.11.9")
-        self.assertEqual(payload["core"]["version"], "0.0.15")
+        self.assertEqual(payload["core"]["version"], "0.0.20")
 
     @mock.patch("codex_account_manager.cli._subprocess_run")
     def test_cmd_electron_runs_npm_install_then_dev_when_deps_missing(self, mock_run):
@@ -556,13 +556,13 @@ class CliCoreTests(unittest.TestCase):
             "repo_url": cli.PROJECT_RELEASES_URL,
             "releases": [
                 {"tag": "v9.9.9-rc1", "version": "v9.9.9-rc1", "title": "v9.9.9-rc1", "published_at": "2026-04-23T10:00:00Z", "body": "rc", "highlights": [], "url": "", "is_prerelease": True, "is_draft": False, "is_current": False, "source": "github"},
-                {"tag": "v0.0.16", "version": "v0.0.16", "title": "v0.0.16", "published_at": "2026-04-22T10:00:00Z", "body": "stable", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": False, "source": "github"},
+                {"tag": "v0.0.21", "version": "v0.0.21", "title": "v0.0.21", "published_at": "2026-04-22T10:00:00Z", "body": "stable", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": False, "source": "github"},
             ],
         }
         status = cli.build_update_status_payload(payload)
         self.assertTrue(status["update_available"])
-        self.assertEqual(status["latest_version"], "v0.0.16")
-        self.assertEqual((status["latest_release"] or {}).get("tag"), "v0.0.16")
+        self.assertEqual(status["latest_version"], "v0.0.21")
+        self.assertEqual((status["latest_release"] or {}).get("tag"), "v0.0.21")
 
     def test_update_status_returns_no_update_when_versions_match(self):
         payload = {

@@ -4,6 +4,13 @@ This file mirrors the user-visible release stream for GitHub readers. GitHub Rel
 
 ## Unreleased
 
+## 0.0.20
+
+### Desktop Release
+
+- Merged the Electron desktop app into `main` with the Python core and web UI version aligned to `0.0.20`.
+- Updated packaged desktop release metadata for the `v0.0.20` GitHub release.
+
 ### GitHub Discoverability
 
 - Reworked the README for faster GitHub conversion with badges, quick start, comparison content, FAQ, and higher-visibility screenshots.

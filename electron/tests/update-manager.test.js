@@ -11,14 +11,14 @@ const {
 
 test("buildCoreInstallSpecForVersion pins pipx installs to the matching release tag", () => {
   assert.equal(
-    buildCoreInstallSpecForVersion("0.0.15"),
-    "git+https://github.com/alisinaee/Codex-Account-Manager.git@v0.0.15",
+    buildCoreInstallSpecForVersion("0.0.20"),
+    "git+https://github.com/alisinaee/Codex-Account-Manager.git@v0.0.20",
   );
 });
 
 test("buildUnifiedUpdateStatus uses the Electron bundle version as current version and flags core sync separately", () => {
   const status = buildUnifiedUpdateStatus({
-    appVersion: "0.0.15",
+    appVersion: "0.0.20",
     runtimeState: {
       core: {
         installed: true,
@@ -30,13 +30,13 @@ test("buildUnifiedUpdateStatus uses the Electron bundle version as current versi
       status_text: "Synced from GitHub",
       core_install_spec: "git+file:///tmp/cam-real-update/src/codex_account_manager_0_0_16@v0.0.16",
       releases: [
-        { tag: "v0.0.15", published_at: "2026-04-30T10:00:00Z" },
+        { tag: "v0.0.20", published_at: "2026-04-30T10:00:00Z" },
       ],
     },
   });
 
-  assert.equal(status.current_version, "v0.0.15");
-  assert.equal(status.latest_version, "v0.0.15");
+  assert.equal(status.current_version, "v0.0.20");
+  assert.equal(status.latest_version, "v0.0.20");
   assert.equal(status.desktop_update_needed, false);
   assert.equal(status.core_update_needed, true);
   assert.equal(status.update_available, true);
@@ -60,7 +60,7 @@ test("buildUnifiedUpdateStatus treats a newer desktop release as a desktop app u
       status: "synced",
       status_text: "Synced from GitHub",
       releases: [
-        { tag: "v0.0.15", published_at: "2026-04-30T10:00:00Z" },
+        { tag: "v0.0.20", published_at: "2026-04-30T10:00:00Z" },
       ],
     },
   });
@@ -68,7 +68,7 @@ test("buildUnifiedUpdateStatus treats a newer desktop release as a desktop app u
   assert.equal(status.desktop_update_needed, true);
   assert.equal(status.core_update_needed, false);
   assert.equal(status.update_available, true);
-  assert.equal(status.target_version, "v0.0.15");
+  assert.equal(status.target_version, "v0.0.20");
 });
 
 test("fetchGitHubReleaseNotes preserves localhost feed metadata and marks the source as custom", async () => {
@@ -122,7 +122,7 @@ test("fetchGitHubReleaseNotes preserves localhost feed metadata and marks the so
 
 test("buildUnifiedUpdateStatus makes system python required when runtime python is missing", () => {
   const status = buildUnifiedUpdateStatus({
-    appVersion: "0.0.15",
+    appVersion: "0.0.20",
     runtimeState: {
       python: {
         available: false,
@@ -144,7 +144,7 @@ test("buildUnifiedUpdateStatus makes system python required when runtime python 
         install_url: "https://python.example/download",
       },
       releases: [
-        { tag: "v0.0.15", published_at: "2026-04-30T10:00:00Z" },
+        { tag: "v0.0.20", published_at: "2026-04-30T10:00:00Z" },
       ],
     },
     updaterDevMode: true,
@@ -161,7 +161,7 @@ test("buildUnifiedUpdateStatus makes system python required when runtime python 
 
 test("buildUnifiedUpdateStatus exposes optional system python updates when the current python is already supported", () => {
   const status = buildUnifiedUpdateStatus({
-    appVersion: "0.0.15",
+    appVersion: "0.0.20",
     runtimeState: {
       python: {
         available: true,
@@ -171,7 +171,7 @@ test("buildUnifiedUpdateStatus exposes optional system python updates when the c
       },
       core: {
         installed: true,
-        version: "0.0.15",
+        version: "0.0.20",
       },
     },
     releaseNotes: {
@@ -183,7 +183,7 @@ test("buildUnifiedUpdateStatus exposes optional system python updates when the c
         install_url: "https://python.example/download",
       },
       releases: [
-        { tag: "v0.0.15", published_at: "2026-04-30T10:00:00Z" },
+        { tag: "v0.0.20", published_at: "2026-04-30T10:00:00Z" },
       ],
     },
     platform: "darwin",
@@ -199,32 +199,32 @@ test("buildUnifiedUpdateStatus exposes optional system python updates when the c
 test("selectReleaseAsset picks the matching macOS arm64 DMG from release assets", () => {
   const asset = selectReleaseAsset({
     release: {
-      tag: "v0.0.15",
+      tag: "v0.0.20",
       assets: [
-        { name: "Codex.Account.Manager-0.0.15-mac.zip", browser_download_url: "https://example.test/mac.zip" },
-        { name: "Codex.Account.Manager-0.0.15-arm64.dmg", browser_download_url: "https://example.test/arm64.dmg" },
-        { name: "Codex.Account.Manager-0.0.15-x64.dmg", browser_download_url: "https://example.test/x64.dmg" },
+        { name: "Codex.Account.Manager-0.0.20-mac.zip", browser_download_url: "https://example.test/mac.zip" },
+        { name: "Codex.Account.Manager-0.0.20-arm64.dmg", browser_download_url: "https://example.test/arm64.dmg" },
+        { name: "Codex.Account.Manager-0.0.20-x64.dmg", browser_download_url: "https://example.test/x64.dmg" },
       ],
     },
     platform: "darwin",
     arch: "arm64",
   });
 
-  assert.equal(asset.name, "Codex.Account.Manager-0.0.15-arm64.dmg");
+  assert.equal(asset.name, "Codex.Account.Manager-0.0.20-arm64.dmg");
 });
 
 test("shouldResumePendingCoreSync resumes only after the new app version is installed and the core still lags", () => {
   assert.equal(
     shouldResumePendingCoreSync({
-      pendingUpdate: { targetVersion: "v0.0.15", awaitingDesktopInstall: true },
-      appVersion: "0.0.15",
+      pendingUpdate: { targetVersion: "v0.0.20", awaitingDesktopInstall: true },
+      appVersion: "0.0.20",
       runtimeState: { core: { version: "0.0.12", installed: true } },
     }),
     true,
   );
   assert.equal(
     shouldResumePendingCoreSync({
-      pendingUpdate: { targetVersion: "v0.0.15", awaitingDesktopInstall: true },
+      pendingUpdate: { targetVersion: "v0.0.20", awaitingDesktopInstall: true },
       appVersion: "0.0.12",
       runtimeState: { core: { version: "0.0.12", installed: true } },
     }),
@@ -233,11 +233,11 @@ test("shouldResumePendingCoreSync resumes only after the new app version is inst
   assert.equal(
     shouldResumePendingCoreSync({
       pendingUpdate: {
-        targetVersion: "v0.0.15",
+        targetVersion: "v0.0.20",
         awaitingDesktopInstall: true,
         systemPythonRequired: true,
       },
-      appVersion: "0.0.15",
+      appVersion: "0.0.20",
       runtimeState: {
         python: { available: false, supported: false, version: "" },
         core: { version: "0.0.12", installed: true },
@@ -248,11 +248,11 @@ test("shouldResumePendingCoreSync resumes only after the new app version is inst
   assert.equal(
     shouldResumePendingCoreSync({
       pendingUpdate: {
-        targetVersion: "v0.0.15",
+        targetVersion: "v0.0.20",
         awaitingDesktopInstall: true,
         systemPythonRequired: true,
       },
-      appVersion: "0.0.15",
+      appVersion: "0.0.20",
       runtimeState: {
         python: { available: true, supported: true, version: "3.14.4" },
         core: { version: "0.0.12", installed: true },
