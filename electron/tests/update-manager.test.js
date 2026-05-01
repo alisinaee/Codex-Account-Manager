@@ -43,7 +43,7 @@ test("buildUnifiedUpdateStatus uses the Electron bundle version as current versi
   assert.equal(status.core_version, "v0.0.12");
   assert.equal(
     status.core_install_spec,
-    "git+file:///tmp/cam-real-update/src/codex_account_manager_0_0_16@v0.0.16",
+    "git+https://github.com/alisinaee/Codex-Account-Manager.git@v0.0.20",
   );
 });
 
@@ -69,6 +69,71 @@ test("buildUnifiedUpdateStatus treats a newer desktop release as a desktop app u
   assert.equal(status.core_update_needed, false);
   assert.equal(status.update_available, true);
   assert.equal(status.target_version, "v0.0.20");
+});
+
+test("buildUnifiedUpdateStatus ignores release feed versions older than the installed app", () => {
+  const status = buildUnifiedUpdateStatus({
+    appVersion: "0.0.20",
+    runtimeState: {
+      core: {
+        installed: true,
+        version: "0.0.16",
+      },
+    },
+    releaseNotes: {
+      status: "synced",
+      status_text: "Synced from stale GitHub cache",
+      core_install_spec: "git+https://github.com/alisinaee/Codex-Account-Manager.git@v0.0.12",
+      releases: [
+        { tag: "v0.0.12", published_at: "2026-04-23T10:00:00Z" },
+      ],
+    },
+  });
+
+  assert.equal(status.current_version, "v0.0.20");
+  assert.equal(status.latest_version, "v0.0.20");
+  assert.equal(status.desktop_update_needed, false);
+  assert.equal(status.core_update_needed, true);
+  assert.equal(status.target_version, "v0.0.20");
+  assert.equal(
+    status.core_install_spec,
+    "git+https://github.com/alisinaee/Codex-Account-Manager.git@v0.0.20",
+  );
+});
+
+test("buildUnifiedUpdateStatus clears stale pending desktop update after current app and core match", () => {
+  const status = buildUnifiedUpdateStatus({
+    appVersion: "0.0.20",
+    runtimeState: {
+      python: {
+        available: true,
+        supported: true,
+        version: "3.14.4",
+      },
+      core: {
+        installed: true,
+        version: "0.0.20",
+      },
+    },
+    pendingUpdate: {
+      targetVersion: "v0.0.20",
+      awaitingDesktopInstall: true,
+    },
+    releaseNotes: {
+      status: "synced",
+      status_text: "Synced from GitHub",
+      releases: [
+        { tag: "v0.0.20", published_at: "2026-05-01T10:00:00Z" },
+      ],
+    },
+  });
+
+  assert.equal(status.status, "up_to_date");
+  assert.equal(status.update_available, false);
+  assert.equal(status.desktop_update_needed, false);
+  assert.equal(status.core_update_needed, false);
+  assert.equal(status.current_version, "v0.0.20");
+  assert.equal(status.latest_version, "v0.0.20");
 });
 
 test("fetchGitHubReleaseNotes preserves localhost feed metadata and marks the source as custom", async () => {

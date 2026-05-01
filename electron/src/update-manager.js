@@ -191,14 +191,23 @@ function buildUnifiedUpdateStatus({
   const currentVersion = withVersionPrefix(appVersion);
   const currentCoreVersion = withVersionPrefix(runtimeState?.core?.version);
   const latestRelease = latestStableRelease(releaseNotes?.releases || []);
-  const latestVersion = String(latestRelease?.tag || "").trim();
-  const desktopUpdateNeeded = latestVersion ? compareVersions(latestVersion, currentVersion) > 0 : false;
+  const releaseVersion = withVersionPrefix(latestRelease?.tag || "");
+  const releaseIsNewerThanCurrent = releaseVersion ? compareVersions(releaseVersion, currentVersion) > 0 : false;
+  const latestVersion = releaseIsNewerThanCurrent ? releaseVersion : currentVersion;
+  const desktopUpdateNeeded = releaseIsNewerThanCurrent;
   const pending = pendingUpdate && typeof pendingUpdate === "object" ? pendingUpdate : null;
   const pendingTarget = withVersionPrefix(pending?.targetVersion);
   const coreVersionMatchesApp = Boolean(currentCoreVersion) && compareVersions(currentCoreVersion, currentVersion) === 0;
   const coreInstalled = Boolean(runtimeState?.core?.installed);
   const coreUpdateNeeded = !desktopUpdateNeeded && (!coreInstalled || !coreVersionMatchesApp);
   const installerAwaiting = Boolean(pending?.awaitingDesktopInstall);
+  const pendingDesktopInstallStillNeeded = installerAwaiting
+    && Boolean(pendingTarget)
+    && compareVersions(pendingTarget, currentVersion) > 0;
+  const pendingCoreSyncStillNeeded = installerAwaiting
+    && Boolean(pendingTarget)
+    && compareVersions(pendingTarget, currentVersion) === 0
+    && !coreVersionMatchesApp;
   const runtimePython = runtimeState?.python || {};
   const currentPythonVersion = normalizeVersion(runtimePython.version);
   const releasePython = normalizeSystemPythonMeta(releaseNotes?.system_python);
@@ -231,7 +240,7 @@ function buildUnifiedUpdateStatus({
   let status = "up_to_date";
   let statusText = String(releaseNotes?.status_text || releaseNotes?.status || "Up to date");
 
-  if (installerAwaiting && pendingTarget && compareVersions(pendingTarget, currentVersion) > 0) {
+  if (pendingDesktopInstallStillNeeded) {
     status = "awaiting_desktop_install";
     statusText = `Installer ready for ${pendingTarget}. Finish installation and relaunch the app.`;
   } else if (desktopUpdateNeeded) {
@@ -250,7 +259,7 @@ function buildUnifiedUpdateStatus({
   } else if (systemPythonOptional) {
     status = "system_python_optional";
     statusText = `Optional System Python ${recommendedPythonVersion} is available.`;
-  } else if (installerAwaiting && pendingTarget && compareVersions(pendingTarget, currentVersion) === 0) {
+  } else if (pendingCoreSyncStillNeeded) {
     status = "core_sync_pending";
     statusText = `Desktop update installed. Finishing Python core sync for ${currentVersion}.`;
   } else if (!latestVersion && !statusText) {
@@ -266,18 +275,21 @@ function buildUnifiedUpdateStatus({
     update_available: desktopUpdateNeeded
       || coreUpdateNeeded
       || systemPython.update_available
-      || (installerAwaiting && Boolean(pendingTarget)),
+      || pendingDesktopInstallStillNeeded
+      || pendingCoreSyncStillNeeded,
     desktop_update_needed: desktopUpdateNeeded,
     core_update_needed: coreUpdateNeeded,
     core_version: currentCoreVersion || "-",
     target_version: latestVersion || pendingTarget || currentVersion || "",
-    latest_release: latestRelease || null,
+    latest_release: releaseIsNewerThanCurrent ? latestRelease : null,
     status,
     status_text: statusText,
     source: String(releaseNotes?.source || ""),
     repo_url: String(releaseNotes?.repo_url || PROJECT_RELEASES_URL),
     fetched_at: releaseNotes?.fetched_at || "",
-    core_install_spec: normalizeCoreInstallSpec(releaseNotes?.core_install_spec),
+    core_install_spec: releaseIsNewerThanCurrent
+      ? normalizeCoreInstallSpec(releaseNotes?.core_install_spec)
+      : buildCoreInstallSpecForVersion(currentVersion),
     pending_update: pending,
     system_python: systemPython,
     release_notes: releaseNotes,
