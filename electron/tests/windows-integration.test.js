@@ -38,6 +38,8 @@ test("buildWindowsTrayUsageDataUrl emits compact svg data for tray usage", () =>
 });
 
 test("applyWindowsTaskbarUsage sets a taskbar overlay when enabled", () => {
+  const previousDevServer = process.env.CAM_ELECTRON_USE_DEV_SERVER;
+  delete process.env.CAM_ELECTRON_USE_DEV_SERVER;
   const calls = [];
   const windowLike = {
     setOverlayIcon(icon, description) {
@@ -50,17 +52,25 @@ test("applyWindowsTaskbarUsage sets a taskbar overlay when enabled", () => {
     },
   };
 
-  const applied = applyWindowsTaskbarUsage({
-    platform: "win32",
-    windowLike,
-    nativeImage,
-    summary: { available: true, profileName: "acc4", fiveHourPercent: 74, weeklyPercent: 55 },
-    config: { ui: { windows_taskbar_usage_enabled: true } },
-  });
+  try {
+    const applied = applyWindowsTaskbarUsage({
+      platform: "win32",
+      windowLike,
+      nativeImage,
+      summary: { available: true, profileName: "acc4", fiveHourPercent: 74, weeklyPercent: 55 },
+      config: { ui: { windows_taskbar_usage_enabled: true } },
+    });
 
-  assert.equal(applied, true);
-  assert.match(calls[0][0].dataUrl, /^data:image\/svg\+xml;base64,/);
-  assert.match(calls[0][1], /Current acc4: 5H 74% left, Weekly 55% left/);
+    assert.equal(applied, true);
+    assert.match(calls[0][0].dataUrl, /^data:image\/svg\+xml;base64,/);
+    assert.match(calls[0][1], /Current acc4: 5H 74% left, Weekly 55% left/);
+  } finally {
+    if (previousDevServer === undefined) {
+      delete process.env.CAM_ELECTRON_USE_DEV_SERVER;
+    } else {
+      process.env.CAM_ELECTRON_USE_DEV_SERVER = previousDevServer;
+    }
+  }
 });
 
 test("applyWindowsTaskbarUsage clears overlay when disabled", () => {

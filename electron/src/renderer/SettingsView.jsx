@@ -135,6 +135,36 @@ function NotificationsSettingsCard({ state, onNotify, onSavePatch }) {
   );
 }
 
+function MacStatusBarSettingsCard({ ui, onSavePatch }) {
+  return (
+    <SettingsCardShell
+      title="Status bar"
+      description="Control whether Codex Account Manager stays visible in the macOS menu bar."
+      className="settings-card-status-bar"
+      testId="settings-card-status-bar"
+    >
+      <div className="settings-subsection-stack">
+        <SettingsSubsection title="macOS menu bar item">
+          <div className="setting-row">
+            <SettingCopy
+              label="Enabled"
+              helper="Show the desktop app in the macOS menu bar so you can reopen it quickly."
+              title="Turning this off removes the status bar item until you open the main window again."
+            />
+            <div className="setting-control">
+              <ToggleSwitch
+                checked={ui.macos_status_bar_enabled !== false}
+                onChange={(nextValue) => onSavePatch({ ui: { macos_status_bar_enabled: nextValue } })}
+                ariaLabel="Show Codex Account Manager in the macOS menu bar"
+              />
+            </div>
+          </div>
+        </SettingsSubsection>
+      </div>
+    </SettingsCardShell>
+  );
+}
+
 function WindowsIntegrationSettingsCard({ ui, displayTargets, onSavePatch }) {
   return (
     <SettingsCardShell
@@ -260,6 +290,7 @@ export function SystemInfoSettingsCard({ platformName, ui }) {
 
 function SettingsView({ state, onNotify, onSavePatch }) {
   const ui = state?.config?.ui || {};
+  const isMac = window.codexAccountDesktop?.platform === "darwin";
   const isWindows = window.codexAccountDesktop?.platform === "win32";
   const [displayTargets, setDisplayTargets] = useState([]);
   const desktop = window.codexAccountDesktop;
@@ -292,6 +323,9 @@ function SettingsView({ state, onNotify, onSavePatch }) {
         <div className="settings-card-stack settings-card-stack-main">
           <AutoRefreshSettingsCard state={state} onSavePatch={onSavePatch} />
           <NotificationsSettingsCard state={state} onNotify={onNotify} onSavePatch={onSavePatch} />
+          {isMac ? (
+            <MacStatusBarSettingsCard ui={ui} onSavePatch={onSavePatch} />
+          ) : null}
           {isWindows ? (
             <WindowsIntegrationSettingsCard ui={ui} displayTargets={displayTargets} onSavePatch={onSavePatch} />
           ) : null}

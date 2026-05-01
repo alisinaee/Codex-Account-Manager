@@ -32,3 +32,26 @@ test("workspace error banner source includes a dismiss countdown and close butto
   assert.match(source, /Dismiss in \{errorCountdownSeconds\}s/);
   assert.match(source, /dialog-close workspace-error-close/);
 });
+
+test("update view source uses a unified update progress dialog and desktop update status wiring", () => {
+  const source = fs.readFileSync(appSourcePath, "utf8");
+
+  assert.match(source, /Update progress/);
+  assert.match(source, /desktop\.getUpdateStatus/);
+  assert.match(source, /desktop\.runUnifiedUpdate/);
+  assert.match(source, /desktop\.onUpdateProgress/);
+  assert.match(source, /update-status-summary/);
+  assert.match(source, /update-source-row/);
+  assert.match(source, /update-source-pill/);
+  assert.match(source, /update-layer-item/);
+  assert.match(source, /update-layer-item-label/);
+  assert.match(source, /update-layer-item-value/);
+  assert.match(source, /isInstallerHandoff = modal\?\.phase === "awaiting_installer" && modal\?\.status === "awaiting-user"/);
+  assert.match(source, /update-progress-detail-warning/);
+  assert.match(source, /dismissible: \["done", "failed"\]\.includes\(String\(progress\?\.status \|\| ""\)\)/);
+  assert.doesNotMatch(source, /dismissible: \["done", "failed", "awaiting-user"\]/);
+  assert.doesNotMatch(source, /LabelValueRow label="Current version"/);
+  assert.doesNotMatch(source, /LabelValueRow label="Latest version"/);
+  assert.doesNotMatch(source, /update-status-note/);
+  assert.match(source, /compactStatusSummary/);
+});

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
   getState: () => ipcRenderer.invoke("desktop:get-state"),
   getBackendState: () => ipcRenderer.invoke("desktop:get-backend-state"),
   getRuntimeStatus: () => ipcRenderer.invoke("desktop:get-runtime-status"),
+  getUpdateStatus: (options) => ipcRenderer.invoke("desktop:get-update-status", options),
   copyRuntimeDiagnostics: () => ipcRenderer.invoke("desktop:copy-runtime-diagnostics"),
   retryRuntimeCheck: () => ipcRenderer.invoke("desktop:retry-runtime-check"),
   installPythonRuntime: () => ipcRenderer.invoke("desktop:install-python-runtime"),
@@ -24,6 +25,7 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
   },
   startBackendService: () => ipcRenderer.invoke("desktop:start-backend-service"),
   stopBackendService: () => ipcRenderer.invoke("desktop:stop-backend-service"),
+  runUnifiedUpdate: (options) => ipcRenderer.invoke("desktop:run-unified-update", options),
   openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
   refresh: () => ipcRenderer.invoke("desktop:refresh"),
   switchProfile: (name, options) => ipcRenderer.invoke("desktop:switch-profile", name, options),
@@ -63,5 +65,10 @@ contextBridge.exposeInMainWorld("codexAccountDesktop", {
     const handler = (_event, progress) => callback(progress);
     ipcRenderer.on("desktop:runtime-progress", handler);
     return () => ipcRenderer.removeListener("desktop:runtime-progress", handler);
+  },
+  onUpdateProgress: (callback) => {
+    const handler = (_event, progress) => callback(progress);
+    ipcRenderer.on("desktop:update-progress", handler);
+    return () => ipcRenderer.removeListener("desktop:update-progress", handler);
   },
 });

@@ -1002,6 +1002,16 @@ function SidebarUsageArc({ metric, value }) {
 
 const SIDEBAR_APP_VERSION_FALLBACK = "v0.0.15";
 
+function VersionDisplay({ version, updaterDevMode = false, className = "" }) {
+  const appVersion = String(version || SIDEBAR_APP_VERSION_FALLBACK).trim() || SIDEBAR_APP_VERSION_FALLBACK;
+  return (
+    <span className={["version-display", className].filter(Boolean).join(" ")}>
+      <span className="version-display-text" title={appVersion}>{appVersion}</span>
+      {updaterDevMode ? <span className="sidebar-dev-badge" title="Dev/test updater mode">D</span> : null}
+    </span>
+  );
+}
+
 function SidebarCurrentProfile({ state, mode }) {
   const summary = buildSidebarCurrentProfile(state);
 
@@ -1024,9 +1034,8 @@ function SidebarCurrentProfile({ state, mode }) {
   );
 }
 
-function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate, updateAvailable, version, onExit }) {
+function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate, updateAvailable, version, updaterDevMode = false, onExit }) {
   const [showExitConfirm, setShowExitConfirm] = useState(false);
-  const appVersion = String(version || SIDEBAR_APP_VERSION_FALLBACK).trim() || SIDEBAR_APP_VERSION_FALLBACK;
 
   useEffect(() => {
     if (!showExitConfirm) return undefined;
@@ -1079,10 +1088,10 @@ function Sidebar({ state, activeView, mode, canToggle, onModeChange, onNavigate,
             title={view.label}
             aria-label={view.label}
           >
-            <span className="nav-mark"><NavIcon id={view.icon} /></span>
+            <span className={`nav-mark ${mode === "minimal" && view.id === "update" && updateAvailable ? "nav-mark-update-alert" : ""}`}><NavIcon id={view.icon} /></span>
             {mode === "fixed" && <span>{view.label}</span>}
-            {mode === "fixed" && view.id === "about" ? <span className="sidebar-about-version" title={appVersion}>{appVersion}</span> : null}
-            {view.id === "update" && updateAvailable && <span className="nav-dot" aria-hidden="true" />}
+            {mode === "fixed" && view.id === "about" ? <VersionDisplay version={version} updaterDevMode={updaterDevMode} className="sidebar-about-version" /> : null}
+            {view.id === "update" && updateAvailable && mode !== "minimal" ? <span className="nav-dot" aria-hidden="true" /> : null}
           </Button>
         ))}
       </nav>
@@ -1938,43 +1947,114 @@ function GuideView({ isMacDesktop = false }) {
   );
 }
 
-function UpdateView({ releaseNotes, updateStatus, checking, onCheck, onRunUpdate, onRefreshReleaseNotes }) {
+function UpdateView({
+  releaseNotes,
+  updateStatus,
+  currentVersion,
+  updaterDevMode = false,
+  checking,
+  updating,
+  systemPythonSelection = "skip",
+  onCheck,
+  onRunUpdate,
+  onRefreshReleaseNotes,
+  onSystemPythonSelectionChange,
+}) {
   const notes = Array.isArray(releaseNotes?.releases) ? releaseNotes.releases : [];
   const updateAvailable = !!updateStatus?.update_available;
+  const systemPython = updateStatus?.system_python || {};
+  const updateTone = updateStatus?.desktop_update_needed
+    || updateStatus?.core_update_needed
+    || systemPython.required
+    ? "danger"
+    : systemPython.optional
+      ? "warning"
+      : "good";
+  const currentTone = updateAvailable ? "danger" : "good";
+  const desktopAppTone = updateStatus?.desktop_update_needed ? "danger" : "good";
+  const coreTone = updateStatus?.core_update_needed ? "danger" : "good";
+  const systemPythonTone = systemPython.required ? "danger" : (systemPython.optional ? "warning" : "good");
+  const compactStatusSummary = systemPython.required
+    ? "Python required"
+    : updateStatus?.desktop_update_needed
+      ? "Desktop update"
+      : updateStatus?.core_update_needed
+        ? "Core sync"
+        : systemPython.optional
+          ? "Optional Python"
+          : "Up to date";
+  const systemPythonSummary = systemPython.required
+    ? "Required before Python core sync can finish."
+    : systemPython.optional
+      ? `Optional update to Python ${systemPython.recommended_version || "latest supported"}`
+      : systemPython.supported
+        ? `Detected Python ${systemPython.version || "supported"}`
+        : "Not detected";
 
   return (
     <section className="view update-view">
       <div className="sparse-page-layout">
-        <SectionCard className="settings-card update-panel">
+        <SectionCard className="settings-card update-panel update-status-card">
           <div className="group-title">Update status</div>
-          <LabelValueRow label="Current version" value={updateStatus?.current_version || "-"} />
-          <LabelValueRow label="Latest version" value={updateStatus?.latest_version || "-"} />
-          <LabelValueRow label="Status" value={updateStatus?.status_text || updateStatus?.status || "Unknown"} />
+          <div className="update-status-summary">
+            <div className={`update-status-pill tone-${currentTone}`}>
+              <span className="update-status-pill-label">Current</span>
+              <VersionDisplay version={currentVersion || "-"} updaterDevMode={updaterDevMode} />
+            </div>
+            <div className="update-status-pill">
+              <span className="update-status-pill-label">Latest</span>
+              <span>{updateStatus?.latest_version || "-"}</span>
+            </div>
+            <div className={`update-status-pill strong tone-${updateTone}`}>
+              <span className="update-status-pill-label">Status</span>
+              <span>{compactStatusSummary}</span>
+            </div>
+          </div>
+          <div className="update-source-row">
+            <div className="update-status-pill update-source-pill">
+              <span className="update-status-pill-label">Source</span>
+              <span>{updateStatus?.status_text || updateStatus?.status || "Unknown"}</span>
+            </div>
+          </div>
+          <div className="update-layer-grid">
+            <div className={`update-layer-item tone-${desktopAppTone}`}>
+              <span className="update-layer-item-label">Desktop app</span>
+              <span className="update-layer-item-value">{updateStatus?.desktop_update_needed ? `Update ${updateStatus?.latest_version || "available"}` : "Current build installed"}</span>
+            </div>
+            <div className={`update-layer-item tone-${coreTone}`}>
+              <span className="update-layer-item-label">Python core</span>
+              <span className="update-layer-item-value">{updateStatus?.core_update_needed ? `Sync to ${updateStatus?.target_version || updateStatus?.current_version || "current build"}` : `Core ${updateStatus?.core_version || "-"}`}</span>
+            </div>
+            <div className={`update-layer-item tone-${systemPythonTone} ${systemPython.required ? "required" : ""}`}>
+              <span className="update-layer-item-label">System Python</span>
+              <span className="update-layer-item-value">{systemPythonSummary}</span>
+            </div>
+          </div>
+          {systemPython.optional ? (
+            <label className="update-optional-toggle" data-no-row-open="true">
+              <input
+                type="checkbox"
+                checked={systemPythonSelection === "update"}
+                onChange={(event) => onSystemPythonSelectionChange?.(event.target.checked ? "update" : "skip")}
+              />
+              <span>Update System Python too{systemPython.recommended_version ? ` (${systemPython.recommended_version})` : ""}</span>
+            </label>
+          ) : null}
+          {systemPython.required ? (
+            <div className="workspace-error-inline">
+              System Python 3.11+ is required before the Python core update can finish.
+              {!systemPython.auto_update_supported ? " This platform uses a manual installer handoff." : ""}
+            </div>
+          ) : null}
           {checking ? <div className="update-inline-loading" role="status" aria-live="polite">Checking for updates…</div> : null}
           <div className="settings-inline-actions">
             <Button loading={checking} onClick={onCheck} disabled={checking}>Check for updates</Button>
-            <Button variant={updateAvailable ? "primary" : "secondary"} onClick={onRunUpdate} disabled={!updateAvailable || checking}>Update now</Button>
+            <Button variant={updateAvailable ? "primary" : "secondary"} loading={updating} onClick={onRunUpdate} disabled={!updateAvailable || checking || updating}>
+              {updating ? "Updating" : "Update now"}
+            </Button>
           </div>
         </SectionCard>
-        <SectionCard className="settings-card sparse-secondary-card">
-          <div className="group-title">Release stream</div>
-          <p className="muted">Desktop updates include renderer fixes, runtime bootstrap improvements, and parity updates with the web panel.</p>
-          <div className="tech-pill-row">
-            <span className="chip chip-neutral">Electron</span>
-            <span className="chip chip-neutral">Python Core</span>
-            <span className="chip chip-neutral">Local API</span>
-          </div>
-        </SectionCard>
-        <SectionCard className="settings-card sparse-bottom-fill">
-          <div className="group-title">Recent update guidance</div>
-          <p className="muted">When an update is available, run it from this page and keep this window open until status changes to ready.</p>
-          <div className="update-guidance-list" aria-label="What gets updated">
-            <LabelValueRow label="Renderer" value="Desktop screens, layout fixes, dialogs, and table behavior." />
-            <LabelValueRow label="Python core" value="Account switching, usage collection, and local command logic." />
-            <LabelValueRow label="Local API" value="The private service bridge used by the Electron shell." />
-          </div>
-        </SectionCard>
-        <SectionCard className="settings-card guide-changelog-card sparse-bottom-fill">
+        <SectionCard className="settings-card guide-changelog-card sparse-bottom-fill update-changelog-card">
           <div className="group-title">Changelog</div>
           <div className="settings-inline-actions">
             <Button onClick={onRefreshReleaseNotes}>Reload release notes</Button>
@@ -2011,6 +2091,65 @@ function UpdateView({ releaseNotes, updateStatus, checking, onCheck, onRunUpdate
         </SectionCard>
       </div>
     </section>
+  );
+}
+
+function UpdateProgressDialog({ modal, onClose, onRetry }) {
+  const progressPercent = Number.isFinite(Number(modal?.percent)) ? Math.max(0, Math.min(100, Math.round(Number(modal.percent)))) : 5;
+  const progressWidthClass = `progress-width-${progressPercent}`;
+  const progressTone = modal?.status === "failed" ? "danger" : (modal?.status === "running" ? "active" : "default");
+  const progressLabel = modal?.status === "failed"
+    ? "Update failed"
+    : modal?.status === "awaiting-user"
+      ? "Waiting for install"
+      : modal?.status === "done"
+        ? "Update complete"
+        : `${progressPercent}% complete`;
+  const logs = Array.isArray(modal?.logs) ? modal.logs : [];
+  const isInstallerHandoff = modal?.phase === "awaiting_installer" && modal?.status === "awaiting-user";
+  const detailClassName = `update-progress-detail${isInstallerHandoff ? " update-progress-detail-warning" : ""}`;
+
+  return (
+    <Dialog
+      title="Update progress"
+      size="md"
+      onClose={modal?.dismissible ? onClose : undefined}
+      footer={(
+        <>
+          {modal?.status === "failed" ? <Button onClick={onRetry}>Retry</Button> : null}
+          <Button variant="primary" onClick={onClose} disabled={!modal?.dismissible}>
+            {modal?.status === "awaiting-user" ? "Done" : "Close"}
+          </Button>
+        </>
+      )}
+    >
+      <div className="update-progress-dialog">
+        <section className="runtime-progress" aria-label="Update progress">
+          <div className="runtime-progress-head">
+            <strong>{modal?.label || "Preparing update"}</strong>
+            <span>{progressLabel}</span>
+          </div>
+          <div className={`runtime-progress-bar ${progressTone}`} aria-hidden="true">
+            <span className={progressWidthClass} />
+          </div>
+        </section>
+        {modal?.detail ? <p className={detailClassName}>{modal.detail}</p> : null}
+        {modal?.targetVersion ? (
+          <div className="update-progress-meta">
+            <LabelValueRow label="Target version" value={modal.targetVersion} />
+          </div>
+        ) : null}
+        {modal?.error ? <div className="workspace-error-inline">{modal.error}</div> : null}
+        <div className="update-progress-log" aria-label="Update steps">
+          {logs.length ? logs.slice(-10).map((entry, index) => (
+            <div key={`${entry.ts || index}-${entry.label || entry.phase || "step"}`} className="update-progress-log-row">
+              <strong>{entry.label || entry.phase || "Step"}</strong>
+              <span>{entry.detail || entry.message || entry.error || entry.status || "-"}</span>
+            </div>
+          )) : <div className="muted">No update steps recorded yet.</div>}
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -2151,7 +2290,7 @@ function DebugView({ debugLogs, captureEnabled, onStartCapture, onStopCapture, o
   );
 }
 
-function AboutView({ backendState, state, version, onOpenExternal }) {
+function AboutView({ backendState, state, version, updaterDevMode = false, onOpenExternal }) {
   const backendUrl = String(backendState?.baseUrl || "http://127.0.0.1:4673/").trim();
   const projectUrl = "https://github.com/alisinaee/Codex-Account-Manager";
   const authorGithubUrl = "https://github.com/alisinaee";
@@ -2175,7 +2314,7 @@ function AboutView({ backendState, state, version, onOpenExternal }) {
                 <div>
                   <h2>Codex Account Manager</h2>
                   <p>Electron desktop shell with Python API backend.</p>
-                  <span>Version {version || "unknown"}</span>
+                  <span>Version <VersionDisplay version={version || "unknown"} updaterDevMode={updaterDevMode} /></span>
                 </div>
               </header>
 
@@ -2482,25 +2621,29 @@ function RuntimeSetupView({
                 </section>
 
                 <div className="runtime-action-row">
-                  <Button
-                    variant="primary"
-                    loading={busy}
-                    onClick={primaryAction.onClick}
-                    disabled={primaryAction.disabled}
-                  >
-                    {primaryAction.label}
-                  </Button>
-                  <Button
-                    type="button"
-                    className="runtime-text-button btn-ghost"
-                    onClick={() => setDetailsOpen((value) => !value)}
-                    aria-expanded={detailsOpen}
-                    data-testid="runtime-details-toggle"
-                  >
-                    {detailsOpen ? "Hide details" : "Show details"}
-                  </Button>
-                  {showRetry ? <Button onClick={onRetry} disabled={busy}>Retry</Button> : null}
-                  {copyState ? <span className="runtime-copy-state" role="status" aria-live="polite">{copyState}</span> : null}
+                  <div className="runtime-action-primary">
+                    <Button
+                      variant="primary"
+                      loading={busy}
+                      onClick={primaryAction.onClick}
+                      disabled={primaryAction.disabled}
+                    >
+                      {primaryAction.label}
+                    </Button>
+                  </div>
+                  <div className="runtime-action-meta">
+                    <Button
+                      type="button"
+                      className="runtime-text-button btn-ghost"
+                      onClick={() => setDetailsOpen((value) => !value)}
+                      aria-expanded={detailsOpen}
+                      data-testid="runtime-details-toggle"
+                    >
+                      {detailsOpen ? "Hide details" : "Show details"}
+                    </Button>
+                    {showRetry ? <Button onClick={onRetry} disabled={busy}>Retry</Button> : null}
+                    {copyState ? <span className="runtime-copy-state" role="status" aria-live="polite">{copyState}</span> : null}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2557,7 +2700,11 @@ function AppContent() {
   const [backendState, setBackendState] = useState(null);
   const [releaseNotes, setReleaseNotes] = useState(null);
   const [updateStatus, setUpdateStatus] = useState(null);
+  const [desktopVersion, setDesktopVersion] = useState(SIDEBAR_APP_VERSION_FALLBACK);
+  const [updaterDevMode, setUpdaterDevMode] = useState(false);
   const [checkingUpdateStatus, setCheckingUpdateStatus] = useState(false);
+  const [updateRunning, setUpdateRunning] = useState(false);
+  const [systemPythonSelection, setSystemPythonSelection] = useState("skip");
   const [backendDebugLogs, setBackendDebugLogs] = useState([]);
   const [desktopDebugLogs, setDesktopDebugLogs] = useState([]);
   const [debugCaptureEnabled, setDebugCaptureEnabled] = useState(loadDebugCapturePreference());
@@ -2757,6 +2904,30 @@ function AppContent() {
     }
   }
 
+  function applyUpdateStatusPayload(nextStatus) {
+    if (!nextStatus || typeof nextStatus !== "object") {
+      return;
+    }
+    setUpdateStatus(nextStatus);
+    setUpdaterDevMode(Boolean(nextStatus.updater_dev_mode));
+    if (nextStatus.release_notes) {
+      setReleaseNotes(nextStatus.release_notes);
+    }
+    const nextVersion = String(nextStatus.current_version || "").trim();
+    if (nextVersion) {
+      setDesktopVersion(nextVersion);
+    }
+    setSystemPythonSelection((current) => {
+      if (nextStatus?.system_python?.required) {
+        return "update";
+      }
+      if (nextStatus?.system_python?.optional) {
+        return current === "update" ? "update" : "skip";
+      }
+      return "skip";
+    });
+  }
+
   function applyUsageState(nextUsage, { showLoading = false } = {}) {
     const prevUsageForFlash = (!showLoading
       && sessionUsageCacheRef.current
@@ -2926,6 +3097,7 @@ function AppContent() {
     const runOpts = opts || {};
     const showLoading = !!runOpts.showLoading;
     const clearUsageCache = !!runOpts.clearUsageCache;
+    const forceReleaseNotes = !!runOpts.forceReleaseNotes;
     refreshRunningRef.current = true;
     setLoading(true);
     setError("");
@@ -2964,9 +3136,8 @@ function AppContent() {
         desktop.getState(),
         desktop.getBackendState(),
       ]);
-      const [update, notes, logs, chain] = await Promise.all([
-        request("/api/app-update-status", {}),
-        request("/api/release-notes", {}),
+      const [update, logs, chain] = await Promise.all([
+        desktop.getUpdateStatus({ force: forceReleaseNotes }),
         request(appendSessionToken("/api/debug/logs?tail=240", backend?.token), {}),
         request("/api/auto-switch/chain", {}),
       ]);
@@ -2974,8 +3145,7 @@ function AppContent() {
       if (core?.usage && !core.usage.__error) {
         sessionUsageCacheRef.current = core.usage;
       }
-      setUpdateStatus(update);
-      setReleaseNotes(notes);
+      applyUpdateStatusPayload(update);
       setBackendDebugLogs(Array.isArray(logs?.logs) ? logs.logs : Array.isArray(logs) ? logs : []);
     } catch (err) {
       reportAppError(err, { action: "loadAll" });
@@ -3356,8 +3526,8 @@ function AppContent() {
   async function checkForUpdates() {
     setCheckingUpdateStatus(true);
     try {
-      const next = await request("/api/app-update-status?force=true", {});
-      setUpdateStatus(next);
+      const next = await desktop.getUpdateStatus({ force: true });
+      applyUpdateStatusPayload(next);
       setActiveView("update");
       notifySuccess("Update check complete", next?.status_text || "Status refreshed.");
     } catch (err) {
@@ -3368,14 +3538,43 @@ function AppContent() {
   }
 
   async function runUpdate() {
+    setModal({
+      type: "update-progress",
+      phase: "checking_updates",
+      label: "Checking updates",
+      status: "running",
+      percent: 5,
+      targetVersion: updateStatus?.latest_version || desktopVersion,
+      detail: "Preparing the unified desktop update flow.",
+      logs: [],
+      dismissible: false,
+      error: "",
+    });
+    setUpdateRunning(true);
     try {
-      const next = await request("/api/system/update", { method: "POST", body: JSON.stringify({}) });
-      setUpdateStatus(next.update_status || updateStatus);
-      await loadAll();
+      const next = await desktop.runUnifiedUpdate({ systemPythonSelection });
+      applyUpdateStatusPayload(next);
+      if (!next?.desktop_update_needed) {
+        await loadAll({ showLoading: false, clearUsageCache: true });
+      }
       setActiveView("update");
-      notifySuccess("Update started", "The update command has been sent.");
     } catch (err) {
-      setError(err?.message || String(err));
+      setModal((current) => (
+        current?.type === "update-progress"
+          ? {
+            ...current,
+            phase: "failed",
+            label: "Update failed",
+            status: "failed",
+            percent: 100,
+            detail: err?.message || String(err),
+            error: err?.message || String(err),
+            dismissible: true,
+          }
+          : current
+      ));
+    } finally {
+      setUpdateRunning(false);
     }
   }
 
@@ -3809,9 +4008,11 @@ function AppContent() {
         setAutoChain(normalizeChainPayload(extras.chain));
       }
       if (extras.update !== undefined) {
-        setUpdateStatus(extras.update);
-      }
-      if (extras.notes !== undefined) {
+        applyUpdateStatusPayload({
+          ...extras.update,
+          release_notes: extras.notes || extras.update?.release_notes || releaseNotes,
+        });
+      } else if (extras.notes !== undefined) {
         setReleaseNotes(extras.notes);
       }
       if (extras.logs !== undefined) {
@@ -3879,8 +4080,8 @@ function AppContent() {
   }
 
   async function loadReleaseNotes(force = false) {
-    const notes = await request(force ? "/api/release-notes?force=true" : "/api/release-notes", {});
-    setReleaseNotes(notes);
+    const next = await desktop.getUpdateStatus({ force });
+    applyUpdateStatusPayload(next);
   }
 
   async function loadDebugLogs() {
@@ -3980,6 +4181,27 @@ function AppContent() {
     const offProgress = desktop.onRuntimeProgress((progress) => {
       setRuntimeProgress((current) => [...current, progress]);
     });
+    const offUpdateProgress = desktop.onUpdateProgress?.((progress) => {
+      setModal((current) => (
+        current?.type === "update-progress"
+          ? {
+            ...current,
+            phase: progress?.phase || current.phase,
+            label: progress?.label || current.label,
+            status: progress?.status || current.status,
+            percent: Number.isFinite(Number(progress?.percent)) ? Number(progress.percent) : current.percent,
+            detail: progress?.detail || progress?.message || current.detail,
+            targetVersion: progress?.targetVersion || current.targetVersion,
+            error: progress?.error || current.error,
+            dismissible: ["done", "failed"].includes(String(progress?.status || "")),
+            logs: [...(current.logs || []), progress],
+          }
+          : current
+      ));
+      if (["done", "failed", "awaiting-user"].includes(String(progress?.status || ""))) {
+        desktop.getUpdateStatus?.().then((next) => applyUpdateStatusPayload(next)).catch(() => {});
+      }
+    });
     return () => {
       offNavigate?.();
       offSidebar?.();
@@ -3987,6 +4209,7 @@ function AppContent() {
       offRefreshRequested?.();
       offRuntime?.();
       offProgress?.();
+      offUpdateProgress?.();
       if (resizeObserver) resizeObserver.disconnect();
       else window.removeEventListener("resize", syncViewportClasses);
       classList.remove(...WIDTH_CLASS_NAMES, ...HEIGHT_CLASS_NAMES);
@@ -4092,7 +4315,7 @@ function AppContent() {
 
   useEffect(() => {
     if (activeView === "debug" && debugCaptureEnabled) loadDebugLogs().catch(() => {});
-    if (activeView === "update") loadAll().catch(() => {});
+    if (activeView === "update") loadAll({ forceReleaseNotes: true }).catch(() => {});
   }, [activeView, debugCaptureEnabled]);
 
   useEffect(() => {
@@ -4216,7 +4439,8 @@ function AppContent() {
         onModeChange={setSidebarMode}
         onNavigate={(view) => setActiveView(normalizeViewId(view))}
         updateAvailable={updateAvailable}
-        version={updateStatus?.current_version || SIDEBAR_APP_VERSION_FALLBACK}
+        version={desktopVersion}
+        updaterDevMode={updaterDevMode}
         onExit={requestExit}
       />
       <div className="workspace">
@@ -4279,10 +4503,15 @@ function AppContent() {
           <UpdateView
             releaseNotes={releaseNotes}
             updateStatus={updateStatus}
+            currentVersion={desktopVersion}
+            updaterDevMode={updaterDevMode}
             checking={checkingUpdateStatus || loading}
+            updating={updateRunning}
+            systemPythonSelection={systemPythonSelection}
             onCheck={checkForUpdates}
             onRunUpdate={runUpdate}
             onRefreshReleaseNotes={() => loadReleaseNotes(true).catch(() => {})}
+            onSystemPythonSelectionChange={setSystemPythonSelection}
           />
         )}
         {activeView === "debug" && (
@@ -4295,7 +4524,7 @@ function AppContent() {
             onExport={onExportDebug}
           />
         )}
-        {activeView === "about" && <AboutView backendState={backendState} state={state} version={updateStatus?.current_version} onOpenExternal={(url) => desktop.openExternal(url)} />}
+        {activeView === "about" && <AboutView backendState={backendState} state={state} version={desktopVersion} updaterDevMode={updaterDevMode} onOpenExternal={(url) => desktop.openExternal(url)} />}
         {error ? (
           <div className="workspace-error" role="alert">
             <div className="workspace-error-content">
@@ -4340,6 +4569,17 @@ function AppContent() {
         >
           <p>{modal.body || "Are you sure you want to continue?"}</p>
         </Dialog>
+      )}
+
+      {modal?.type === "update-progress" && (
+        <UpdateProgressDialog
+          modal={modal}
+          onClose={() => setModal((current) => (current?.type === "update-progress" && current.dismissible ? null : current))}
+          onRetry={() => {
+            setModal(null);
+            runUpdate().catch(() => {});
+          }}
+        />
       )}
 
       {modal?.type === "switch-restart-warning" && (

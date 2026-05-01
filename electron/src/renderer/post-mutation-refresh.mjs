@@ -19,13 +19,13 @@ export async function refreshProfilesAfterMutation({
   ]);
 
   const extrasPromise = Promise.all([
-    request("/api/app-update-status", {}),
-    request("/api/release-notes", {}),
+    typeof desktop.getUpdateStatus === "function" ? desktop.getUpdateStatus() : request("/api/app-update-status", {}),
+    typeof desktop.getUpdateStatus === "function" ? desktop.getUpdateStatus() : request("/api/release-notes", {}),
     request(appendSessionTokenFn("/api/debug/logs?tail=240", backend?.token), {}),
     request("/api/auto-switch/chain", {}),
-  ]).then(([update, notes, logs, chain]) => ({
-    update,
-    notes,
+  ]).then(([updatePayload, notesPayload, logs, chain]) => ({
+    update: updatePayload,
+    notes: notesPayload?.release_notes || notesPayload,
     logs,
     chain,
   }));

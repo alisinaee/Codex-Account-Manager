@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, screen, shell } = require("electron");
@@ -20,7 +21,21 @@ const {
   resolveRuntimeStatus,
   saveStoredRuntimeState,
 } = require("./runtime");
-const { applyTrayState, createTray } = require("./tray");
+const { applyTrayState, createTray, statusBarEnabled } = require("./tray");
+const {
+  PROJECT_RELEASES_API_URL,
+  PROJECT_RELEASES_URL,
+  buildCoreInstallSpecForVersion,
+  buildUnifiedUpdateStatus,
+  clearPendingUpdateState,
+  downloadReleaseAsset,
+  fetchGitHubReleaseNotes,
+  loadPendingUpdateState,
+  savePendingUpdateState,
+  selectReleaseAsset,
+  shouldResumePendingCoreSync,
+  withVersionPrefix,
+} = require("./update-manager");
 const { buildUsageSummary } = require("./usage");
 const { applyWindowsTaskbarUsage, ensureWindowsNotificationShortcut } = require("./windows-integration");
 const { usageHexColor } = require("./usage-thresholds");
@@ -120,6 +135,10 @@ let runtimeState = normalizeRuntimeStatus({
   uiService: getDefaultBackendState(),
 });
 let runtimeProgress = [];
+let updateProgress = [];
+let updateStatusCache = null;
+let updateRunPromise = null;
+let pendingUpdateState = null;
 let registeredIpcChannels = [];
 let devBackendRestarted = false;
 const MINI_METER_BASE_FONT_SIZE = 14;
@@ -500,6 +519,33 @@ function pushRuntimeProgress(progress) {
   emitToRenderer("desktop:runtime-progress", runtimeProgress[runtimeProgress.length - 1]);
 }
 
+function pushUpdateProgress(progress) {
+  updateProgress = [...updateProgress, { ts: Date.now(), ...progress }];
+  emitToRenderer("desktop:update-progress", updateProgress[updateProgress.length - 1]);
+}
+
+function updaterReleaseApiUrl() {
+  return String(process.env.CAM_ELECTRON_RELEASES_API_URL || "").trim() || PROJECT_RELEASES_API_URL;
+}
+
+function updaterReleaseRepoUrl() {
+  return String(process.env.CAM_ELECTRON_RELEASES_REPO_URL || "").trim() || PROJECT_RELEASES_URL;
+}
+
+function updaterDevModeEnabled() {
+  return desktopIdentity.isDevShell
+    || Boolean(String(process.env.CAM_ELECTRON_RELEASES_API_URL || "").trim())
+    || Boolean(String(process.env.CAM_ELECTRON_RELEASES_REPO_URL || "").trim());
+}
+
+function shouldSimulateDesktopInstaller({ updateStatus, asset } = {}) {
+  return Boolean(
+    asset?.simulate_open
+      || updateStatus?.release_notes?.simulation_mode
+      || updateStatus?.latest_release?.simulation_mode,
+  );
+}
+
 async function collectRuntimeDiagnostics() {
   let backendLogs = [];
   let fetchError = "";
@@ -518,6 +564,400 @@ async function collectRuntimeDiagnostics() {
     backendLogs,
     fetchError,
   };
+}
+
+async function loadReleaseNotesForDesktop({ force = false } = {}) {
+  const cacheAgeMs = Number(process.env.CAM_ELECTRON_RELEASE_CACHE_MS || 300000);
+  if (!force && updateStatusCache?.release_notes?.fetched_at) {
+    const ageMs = Date.now() - Date.parse(updateStatusCache.release_notes.fetched_at);
+    if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < cacheAgeMs) {
+      return updateStatusCache.release_notes;
+    }
+  }
+
+  try {
+    return await fetchGitHubReleaseNotes({
+      apiUrl: updaterReleaseApiUrl(),
+      repoUrl: updaterReleaseRepoUrl(),
+    });
+  } catch (error) {
+    if (apiClient) {
+      try {
+        const path = force ? "/api/release-notes?force=true" : "/api/release-notes";
+        const payload = await requestWithTokenRefresh(path, {});
+        return {
+          ...payload,
+          source: payload?.source || "backend-fallback",
+        };
+      } catch (_) {}
+    }
+    return {
+      status: "error",
+      status_text: String(error?.message || error || "Unable to load release notes."),
+      source: "desktop",
+      repo_url: updaterReleaseRepoUrl(),
+      fetched_at: new Date().toISOString(),
+      error: String(error?.message || error || ""),
+      system_python: updateStatusCache?.release_notes?.system_python || null,
+      releases: updateStatusCache?.release_notes?.releases || [],
+    };
+  }
+}
+
+async function getUnifiedUpdateStatus({ force = false } = {}) {
+  const releaseNotes = await loadReleaseNotesForDesktop({ force });
+  const status = buildUnifiedUpdateStatus({
+    appVersion: app.getVersion(),
+    runtimeState,
+    releaseNotes,
+    pendingUpdate: pendingUpdateState,
+    updaterDevMode: updaterDevModeEnabled(),
+    platform: process.platform,
+  });
+  updateStatusCache = status;
+  return status;
+}
+
+function pendingUpdateDownloadDir() {
+  return path.join(app.getPath("userData"), "updates");
+}
+
+function pendingCoreInstallSpec() {
+  return String(pendingUpdateState?.coreInstallSpec || "").trim();
+}
+
+async function syncCoreToAppVersion({ targetVersion = app.getVersion(), coreInstallSpec = "" } = {}) {
+  if (!runtimeState.python.available || !runtimeState.python.supported) {
+    throw new Error("Python 3.11+ must be installed before the core can be updated.");
+  }
+  pushUpdateProgress({
+    phase: "syncing_python_core",
+    label: `Sync Python core to ${targetVersion}`,
+    status: "running",
+    percent: 5,
+    targetVersion: `v${targetVersion}`,
+    detail: `Preparing Python core ${targetVersion}.`,
+  });
+  await installPythonCore(runtimeState, {
+    packageName: process.env.CAM_ELECTRON_CORE_INSTALL_SPEC
+      || String(coreInstallSpec || "").trim()
+      || pendingCoreInstallSpec()
+      || buildCoreInstallSpecForVersion(targetVersion),
+    onProgress: (event) => {
+      pushUpdateProgress({
+        phase: "syncing_python_core",
+        label: event.label || "Sync Python core",
+        status: event.status || "running",
+        percent: event.status === "done" ? 90 : null,
+        targetVersion: `v${targetVersion}`,
+        detail: event.message || "",
+      });
+    },
+  });
+  await checkRuntime({ activateBackend: true });
+}
+
+function persistPendingUpdateState(nextPending) {
+  pendingUpdateState = nextPending && typeof nextPending === "object" ? nextPending : null;
+  if (pendingUpdateState) {
+    savePendingUpdateState(pendingUpdateState, { appLike: app, fsImpl: fs });
+    return;
+  }
+  clearPendingUpdateState({ appLike: app, fsImpl: fs });
+}
+
+async function runSystemPythonStep({ updateStatus, systemPythonSelection = "skip" } = {}) {
+  const pythonStatus = updateStatus?.system_python || {};
+  if (!pythonStatus.update_available) {
+    return { awaitingUser: false, performed: false };
+  }
+  const required = Boolean(pythonStatus.required);
+  const selected = required || String(systemPythonSelection || "").trim().toLowerCase() === "update";
+  if (!selected) {
+    return { awaitingUser: false, performed: false, skipped: true };
+  }
+
+  const targetVersion = updateStatus?.target_version || updateStatus?.current_version || `v${app.getVersion()}`;
+  pushUpdateProgress({
+    phase: "updating_system_python",
+    label: required ? "Install System Python" : "Update System Python",
+    status: "running",
+    percent: 10,
+    targetVersion,
+    detail: required ? "Preparing a supported System Python runtime." : "Preparing the optional System Python update.",
+  });
+
+  if (process.platform === "win32") {
+    await installPythonRuntime(runtimeState, {
+      onProgress: (event) => {
+        pushUpdateProgress({
+          phase: "updating_system_python",
+          label: event.label || (required ? "Install System Python" : "Update System Python"),
+          status: event.status || "running",
+          percent: event.status === "done" ? 90 : null,
+          targetVersion,
+          detail: event.message || "",
+        });
+      },
+    });
+    await checkRuntime({ activateBackend: true });
+    persistPendingUpdateState({
+      ...(pendingUpdateState || {}),
+      targetVersion,
+      systemPythonRequired: required,
+      systemPythonSelected: selected,
+      systemPythonSkipped: false,
+      awaitingSystemPythonInstall: false,
+      systemPythonCompleted: true,
+    });
+    return { awaitingUser: false, performed: true };
+  }
+
+  const installUrl = String(pythonStatus.install_url || "").trim();
+  persistPendingUpdateState({
+    ...(pendingUpdateState || {}),
+    targetVersion,
+    systemPythonRequired: required,
+    systemPythonSelected: selected,
+    systemPythonSkipped: false,
+    awaitingSystemPythonInstall: true,
+    systemPythonCompleted: false,
+    systemPythonInstallUrl: installUrl,
+  });
+  if (installUrl) {
+    await shell.openExternal(installUrl);
+  }
+  pushUpdateProgress({
+    phase: "awaiting_system_python",
+    label: required ? "Install System Python" : "Optional System Python update",
+    status: "awaiting-user",
+    percent: 100,
+    targetVersion,
+    detail: required
+      ? "Install Python 3.11+ from the opened page, then relaunch the app to continue the update."
+      : "Install the optional System Python update from the opened page, then relaunch the app if you want to use it.",
+  });
+  return { awaitingUser: true, performed: false };
+}
+
+async function runUnifiedUpdateFlow(options = {}) {
+  updateProgress = [];
+  const initialStatus = await getUnifiedUpdateStatus({ force: true });
+  const normalizedPythonSelection = String(options?.systemPythonSelection || "").trim().toLowerCase() === "update" ? "update" : "skip";
+  pushUpdateProgress({
+    phase: "checking_updates",
+    label: "Checking updates",
+    status: "running",
+    percent: 5,
+    targetVersion: initialStatus.target_version || initialStatus.latest_version || initialStatus.current_version,
+    detail: initialStatus.status_text || "Checking desktop and core versions.",
+  });
+
+  if (!initialStatus.update_available) {
+    pushUpdateProgress({
+      phase: "ready",
+      label: "Up to date",
+      status: "done",
+      percent: 100,
+      targetVersion: initialStatus.current_version,
+      detail: "Desktop app and Python core are already aligned.",
+    });
+    return initialStatus;
+  }
+
+  if (initialStatus.desktop_update_needed) {
+    const asset = selectReleaseAsset({
+      release: initialStatus.latest_release,
+      platform: process.platform,
+      arch: process.arch,
+    });
+    if (!asset) {
+      throw new Error("No compatible desktop installer asset was found for this release.");
+    }
+    pushUpdateProgress({
+      phase: "downloading_desktop_update",
+      label: `Downloading ${asset.name}`,
+      status: "running",
+      percent: 10,
+      targetVersion: initialStatus.latest_version,
+      detail: "Downloading the desktop installer.",
+    });
+    const filePath = await downloadReleaseAsset({
+      asset,
+      destinationDir: pendingUpdateDownloadDir(),
+      fsImpl: fs,
+      onProgress: (progress) => {
+        pushUpdateProgress({
+          ...progress,
+          label: `Downloading ${asset.name}`,
+          targetVersion: initialStatus.latest_version,
+        });
+      },
+    });
+    persistPendingUpdateState({
+      targetVersion: initialStatus.latest_version,
+      awaitingDesktopInstall: true,
+      assetName: asset.name,
+      assetPath: filePath,
+      downloadedAt: new Date().toISOString(),
+      simulatedDesktopInstaller: shouldSimulateDesktopInstaller({ updateStatus: initialStatus, asset }),
+      coreInstallSpec: String(initialStatus.core_install_spec || "").trim(),
+      systemPythonRequired: Boolean(initialStatus.system_python?.required),
+      systemPythonSelected: Boolean(initialStatus.system_python?.required) || normalizedPythonSelection === "update",
+      systemPythonSkipped: Boolean(initialStatus.system_python?.optional) && normalizedPythonSelection !== "update",
+      awaitingSystemPythonInstall: false,
+      systemPythonCompleted: false,
+      systemPythonInstallUrl: String(initialStatus.system_python?.install_url || "").trim(),
+    });
+    if (shouldSimulateDesktopInstaller({ updateStatus: initialStatus, asset })) {
+      if (typeof shell.showItemInFolder === "function") {
+        shell.showItemInFolder(filePath);
+      }
+      pushUpdateProgress({
+        phase: "awaiting_installer",
+        label: "Simulation asset downloaded",
+        status: "awaiting-user",
+        percent: 100,
+        targetVersion: initialStatus.latest_version,
+        detail: "Local simulation feed downloaded the desktop asset. Replace it with a real installer if you want a full install test, then relaunch the app manually to continue.",
+      });
+      return getUnifiedUpdateStatus({ force: false });
+    }
+    const openResult = await shell.openPath(filePath);
+    if (openResult) {
+      throw new Error(openResult);
+    }
+    pushUpdateProgress({
+      phase: "awaiting_installer",
+      label: "Installer opened",
+      status: "awaiting-user",
+      percent: 100,
+      targetVersion: initialStatus.latest_version,
+      detail: "Finish installing the new desktop app from the opened DMG, then relaunch this app to complete the Python core sync.",
+    });
+    return getUnifiedUpdateStatus({ force: false });
+  }
+
+  if (initialStatus.system_python?.update_available) {
+    if (initialStatus.system_python?.required || normalizedPythonSelection === "update") {
+      persistPendingUpdateState({
+        ...(pendingUpdateState || {}),
+        targetVersion: initialStatus.target_version || initialStatus.current_version,
+        awaitingDesktopInstall: false,
+        systemPythonRequired: Boolean(initialStatus.system_python?.required),
+        systemPythonSelected: initialStatus.system_python?.required || normalizedPythonSelection === "update",
+        systemPythonSkipped: false,
+        awaitingSystemPythonInstall: false,
+        systemPythonCompleted: false,
+        systemPythonInstallUrl: String(initialStatus.system_python?.install_url || "").trim(),
+        coreInstallSpec: String(initialStatus.core_install_spec || "").trim(),
+      });
+      const pythonStep = await runSystemPythonStep({
+        updateStatus: initialStatus,
+        systemPythonSelection: normalizedPythonSelection,
+      });
+      if (pythonStep.awaitingUser) {
+        return getUnifiedUpdateStatus({ force: false });
+      }
+    } else {
+      persistPendingUpdateState({
+        ...(pendingUpdateState || {}),
+        targetVersion: initialStatus.target_version || initialStatus.current_version,
+        awaitingDesktopInstall: false,
+        systemPythonRequired: false,
+        systemPythonSelected: false,
+        systemPythonSkipped: true,
+        awaitingSystemPythonInstall: false,
+        systemPythonCompleted: false,
+        systemPythonInstallUrl: String(initialStatus.system_python?.install_url || "").trim(),
+        coreInstallSpec: String(initialStatus.core_install_spec || "").trim(),
+      });
+    }
+  }
+
+  const postPythonStatus = await getUnifiedUpdateStatus({ force: true });
+
+  if (postPythonStatus.core_update_needed) {
+    await syncCoreToAppVersion({
+      targetVersion: app.getVersion(),
+      coreInstallSpec: postPythonStatus.core_install_spec,
+    });
+    persistPendingUpdateState(null);
+    const finalStatus = await getUnifiedUpdateStatus({ force: true });
+    pushUpdateProgress({
+      phase: "ready",
+      label: "Update complete",
+      status: "done",
+      percent: 100,
+      targetVersion: finalStatus.current_version,
+      detail: "Desktop app and Python core are now aligned.",
+    });
+    return finalStatus;
+  }
+
+  pushUpdateProgress({
+    phase: "ready",
+    label: "Update complete",
+    status: "done",
+    percent: 100,
+    targetVersion: postPythonStatus.current_version,
+    detail: postPythonStatus.system_python?.update_available
+      ? "Selected update steps completed."
+      : "Desktop app and Python core are aligned.",
+  });
+  return postPythonStatus;
+}
+
+async function maybeResumePendingUpdate() {
+  pendingUpdateState = loadPendingUpdateState({ appLike: app, fsImpl: fs });
+  if (pendingUpdateState?.awaitingSystemPythonInstall) {
+    if (!runtimeState?.python?.available || !runtimeState?.python?.supported) {
+      return;
+    }
+    persistPendingUpdateState({
+      ...pendingUpdateState,
+      awaitingSystemPythonInstall: false,
+      systemPythonCompleted: true,
+    });
+  }
+  if (!shouldResumePendingCoreSync({
+    pendingUpdate: pendingUpdateState,
+    appVersion: app.getVersion(),
+    runtimeState,
+  })) {
+    if (pendingUpdateState && pendingUpdateState.targetVersion && String(pendingUpdateState.targetVersion).trim() === app.getVersion()) {
+      if (!pendingUpdateState.awaitingSystemPythonInstall) {
+        persistPendingUpdateState(null);
+      }
+    }
+    return;
+  }
+  try {
+    await syncCoreToAppVersion({
+      targetVersion: app.getVersion(),
+      coreInstallSpec: pendingCoreInstallSpec(),
+    });
+    persistPendingUpdateState(null);
+    await getUnifiedUpdateStatus({ force: true });
+    pushUpdateProgress({
+      phase: "ready",
+      label: "Update complete",
+      status: "done",
+      percent: 100,
+      targetVersion: `v${app.getVersion()}`,
+      detail: "Resumed pending update and synced the Python core.",
+    });
+  } catch (error) {
+    pushUpdateProgress({
+      phase: "syncing_python_core",
+      label: "Python core sync failed",
+      status: "failed",
+      percent: 100,
+      targetVersion: `v${app.getVersion()}`,
+      error: String(error?.message || error),
+      detail: String(error?.message || error),
+    });
+  }
 }
 
 function isInvalidSessionTokenError(error) {
@@ -927,18 +1367,14 @@ async function refreshUsage() {
     latestUsagePayload = null;
   }
   const summary = buildUsageSummary(latestUsagePayload);
-  if (tray) {
-    applyTrayState({ tray, Menu, summary, actions: buildTrayActions(), nativeImage });
-  }
+  syncDesktopTray(summary, desktopState?.config);
   syncWindowsMiniMeter({ summary, config: desktopState?.config });
   return summary;
 }
 
 function applyTrayFromLatestUsage() {
   const summary = buildUsageSummary(latestUsagePayload);
-  if (tray) {
-    applyTrayState({ tray, Menu, summary, actions: buildTrayActions(), nativeImage });
-  }
+  syncDesktopTray(summary, desktopState?.config);
   applyWindowsTaskbarUsage({
     windowLike: mainWindow,
     nativeImage,
@@ -1049,6 +1485,9 @@ function installApplicationMenu() {
 }
 
 function createDesktopTray() {
+  if (tray) {
+    return tray;
+  }
   const summary = buildUsageSummary(latestUsagePayload);
   tray = createTray({
     Tray,
@@ -1057,6 +1496,34 @@ function createDesktopTray() {
     summary,
     actions: buildTrayActions(),
   });
+  return tray;
+}
+
+function destroyDesktopTray() {
+  if (!tray) {
+    return;
+  }
+  if (typeof tray.destroy === "function") {
+    tray.destroy();
+  }
+  tray = null;
+}
+
+function syncDesktopTray(summary = buildUsageSummary(latestUsagePayload), config = desktopState?.config) {
+  if (process.env.CAM_ELECTRON_DISABLE_TRAY === "1") {
+    destroyDesktopTray();
+    return;
+  }
+  if (!statusBarEnabled(config, process.platform)) {
+    destroyDesktopTray();
+    return;
+  }
+  if (!tray) {
+    createDesktopTray();
+  }
+  if (tray) {
+    applyTrayState({ tray, Menu, summary, actions: buildTrayActions(), nativeImage });
+  }
 }
 
 function createMockDesktopState() {
@@ -1082,6 +1549,7 @@ function createMockDesktopState() {
         current_refresh_interval_sec: 5,
         all_auto_refresh_enabled: true,
         all_refresh_interval_min: 5,
+        macos_status_bar_enabled: true,
         windows_taskbar_usage_enabled: false,
         windows_mini_meter_enabled: false,
         windows_mini_meter_drag_enabled: false,
@@ -1316,9 +1784,6 @@ async function ensureTrayRefreshLoop() {
   if (process.env.CAM_ELECTRON_DISABLE_TRAY === "1") {
     return;
   }
-  if (!tray) {
-    createDesktopTray();
-  }
   await refreshUsage();
   if (!refreshTimer) {
     refreshTimer = setInterval(() => {
@@ -1391,6 +1856,7 @@ function registerIpcHandlers() {
     mainFile: __filename,
   }));
   handle("desktop:get-runtime-status", async () => runtimeState);
+  handle("desktop:get-update-status", async (event, options = {}) => getUnifiedUpdateStatus({ force: Boolean(options?.force) }));
   handle("desktop:copy-runtime-diagnostics", async () => {
     const payload = await collectRuntimeDiagnostics();
     const text = formatRuntimeDiagnostics(payload);
@@ -1405,6 +1871,7 @@ function registerIpcHandlers() {
     try {
       pushRuntimeProgress({ type: "run", status: "starting", label: "Bootstrap Python core" });
       await installPythonCore(runtimeState, {
+        packageName: process.env.CAM_ELECTRON_CORE_INSTALL_SPEC || buildCoreInstallSpecForVersion(app.getVersion()),
         onProgress: (event) => pushRuntimeProgress(event),
       });
       pushRuntimeProgress({ type: "run", status: "done", label: "Bootstrap Python core" });
@@ -1440,6 +1907,28 @@ function registerIpcHandlers() {
       });
       throw error;
     }
+  });
+  handle("desktop:run-unified-update", async (_event, options = {}) => {
+    if (updateRunPromise) {
+      return updateRunPromise;
+    }
+    updateRunPromise = runUnifiedUpdateFlow(options)
+      .catch((error) => {
+        pushUpdateProgress({
+          phase: "failed",
+          label: "Update failed",
+          status: "failed",
+          percent: 100,
+          targetVersion: withVersionPrefix(app.getVersion()),
+          error: String(error?.message || error),
+          detail: String(error?.message || error),
+        });
+        throw error;
+      })
+      .finally(() => {
+        updateRunPromise = null;
+      });
+    return updateRunPromise;
   });
   handle("desktop:start-backend-service", async () => checkRuntime({ activateBackend: true }));
   handle("desktop:stop-backend-service", async () => {
@@ -1606,6 +2095,7 @@ function registerIpcHandlers() {
 
 async function bootstrap() {
   startupDebugLog("bootstrap-start", {});
+  pendingUpdateState = loadPendingUpdateState({ appLike: app, fsImpl: fs });
   registerIpcHandlers();
   if (process.platform === "win32" && screen) {
     const reposition = () => positionWindowsMiniMeter(desktopState?.config || {});
@@ -1632,6 +2122,7 @@ async function bootstrap() {
     openProfilesFromNotification();
   }
   await checkRuntime({ activateBackend: true });
+  await maybeResumePendingUpdate();
   startupDebugLog("bootstrap-ready", {
     mainWindowCreated: Boolean(mainWindow),
     splashWindowCreated: Boolean(splashWindow),

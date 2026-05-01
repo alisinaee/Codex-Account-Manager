@@ -118,6 +118,13 @@ function buildMacMenuBarTitle(summary = {}) {
   return `${profileName} ${colorizeMacTitleValue("5H", summary.fiveHourPercent)} ${colorizeMacTitleValue("W", summary.weeklyPercent)}`;
 }
 
+function statusBarEnabled(config = {}, platform = process.platform) {
+  if (platform !== "darwin") {
+    return true;
+  }
+  return config?.ui?.macos_status_bar_enabled !== false;
+}
+
 function applyTrayState({ tray, Menu, summary, actions, nativeImage }) {
   if (!tray || !Menu) {
     return;
@@ -174,4 +181,5 @@ module.exports = {
   getIconPath,
   prepareTrayIcon,
   resolveTrayIconPath,
+  statusBarEnabled,
 };

@@ -10,6 +10,7 @@ const {
   buildTrayMenuTemplate,
   prepareTrayIcon,
   resolveTrayIconPath,
+  statusBarEnabled,
 } = require("../src/tray");
 
 test("buildNotificationOptions formats current usage for Electron notifications", () => {
@@ -243,6 +244,13 @@ test("applyTrayState uses macOS tray title with ansi-colored percentages and mon
     { fontType: "monospacedDigit" },
   ]);
   assert.equal(calls[2][0], "menu");
+});
+
+test("statusBarEnabled defaults on for macOS and respects the explicit desktop setting", () => {
+  assert.equal(statusBarEnabled({}, "darwin"), true);
+  assert.equal(statusBarEnabled({ ui: { macos_status_bar_enabled: true } }, "darwin"), true);
+  assert.equal(statusBarEnabled({ ui: { macos_status_bar_enabled: false } }, "darwin"), false);
+  assert.equal(statusBarEnabled({ ui: { macos_status_bar_enabled: false } }, "win32"), true);
 });
 
 test("buildStatusTone colors usage by remaining percentage", () => {
