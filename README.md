@@ -27,15 +27,13 @@ Helpful links:
 
 Recommended path: use the packaged desktop app from [GitHub Releases](https://github.com/alisinaee/Codex-Account-Manager/releases).
 
-Use the latest release page for one-click package access:
+Direct package download links for the current release (`v0.0.21`):
 
 | Platform | Preferred package | Latest package link |
 | --- | --- | --- |
-| macOS | `.dmg` | [Open latest macOS package](https://github.com/alisinaee/Codex-Account-Manager/releases/latest) |
-| Windows | `.exe` installer | [Open latest Windows package](https://github.com/alisinaee/Codex-Account-Manager/releases/latest) |
-| Linux | `.AppImage`, `.deb`, or `.rpm` | [Open latest Linux package](https://github.com/alisinaee/Codex-Account-Manager/releases/latest) |
-
-GitHub always keeps the latest release page stable, so this table stays current even when release tag names change.
+| macOS | `.dmg` | [Download Codex.Account.Manager-0.0.21-arm64.dmg](https://github.com/alisinaee/Codex-Account-Manager/releases/download/v0.0.21/Codex.Account.Manager-0.0.21-arm64.dmg) |
+| Windows | `.exe` installer | Not published for `v0.0.21` yet |
+| Linux | `.AppImage` | [Download Codex.Account.Manager-0.0.21-arm64.AppImage](https://github.com/alisinaee/Codex-Account-Manager/releases/download/v0.0.21/Codex.Account.Manager-0.0.21-arm64.AppImage) |
 
 Requirements:
 
