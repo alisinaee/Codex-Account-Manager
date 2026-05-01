@@ -11,7 +11,6 @@ This folder contains maintainable technical documentation for the `codex-account
 - `development.md`: packaging, local development workflow, CI, and release checklist.
 - `troubleshooting.md`: practical troubleshooting and platform-specific notes.
 - `release-notes.md`: versioned user-visible changes and release highlights.
-- `agent-rules.md`: AI-oriented project memory maintained with the `auto-docs` skill.
 
 ## Quick Orientation
 
@@ -34,3 +33,5 @@ This folder contains maintainable technical documentation for the `codex-account
 5. `development.md`
 6. `release-notes.md`
 7. `troubleshooting.md`
+
+Private owner-specific AI workflow files are intentionally excluded from the public repository.
