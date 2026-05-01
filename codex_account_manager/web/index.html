@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0d8a44" />
+  <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
+  <link rel="apple-touch-icon" href="/app-icon.svg" />
+  <title>Codex Account Manager</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<main class="container">
+  <section class="app-header">
+    <div class="app-title-wrap">
+      <img src="/app-icon.svg" alt="Codex Account Manager" class="app-brand-icon" />
+      <div class="app-title">Codex Account Manager</div>
+      <div class="app-version">v__UI_VERSION__</div>
+      <div id="appUpdateBadge" class="app-update-pill">Update available</div>
+      <span id="saveSpinner" class="save-spinner" aria-label="Saving" title="Saving"></span>
+    </div>
+    <div class="app-header-right">
+      <button id="appUpdateBtn" class="btn-primary" type="button" style="display:none" title="Review the latest release notes and update this app.">Update</button>
+      <button id="themeIconBtn" class="header-icon-btn" type="button" title="Cycle theme mode between auto, dark, and light." aria-label="Cycle theme">◐</button>
+      <button id="debugIconBtn" class="header-icon-btn" type="button" title="Toggle debug mode to show System.Out logs and advanced diagnostics." aria-label="Toggle debug mode">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M1.8 2.2h12.4c.66 0 1.2.54 1.2 1.2v9.2c0 .66-.54 1.2-1.2 1.2H1.8c-.66 0-1.2-.54-1.2-1.2V3.4c0-.66.54-1.2 1.2-1.2z"/>
+          <path d="M4.1 5.1l2.2 2-2.2 2v-4z" fill="var(--surface-highest)"/>
+          <rect x="7.4" y="8.4" width="4.4" height="1.3" rx="0.65" fill="var(--surface-highest)"/>
+        </svg>
+      </button>
+      <button id="settingsToggleBtn" class="settings-toggle-btn" type="button" title="Show or hide the settings panels to free up screen space." aria-label="Toggle settings" aria-pressed="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.46 1.46 0 0 1-2.105.872l-.31-.17c-1.25-.69-2.65.71-1.96 1.96l.17.31a1.46 1.46 0 0 1-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.46 1.46 0 0 1 .872 2.105l-.17.31c-.69 1.25.71 2.65 1.96 1.96l.31-.17a1.46 1.46 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.46 1.46 0 0 1 2.105-.872l.31.17c1.25.69 2.65-.71 1.96-1.96l-.17-.31a1.46 1.46 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.46 1.46 0 0 1-.872-2.105l.17-.31c.69-1.25-.71-2.65-1.96-1.96l-.31.17a1.46 1.46 0 0 1-2.105-.872l-.1-.34zM8 10.3A2.3 2.3 0 1 1 8 5.7a2.3 2.3 0 0 1 0 4.6z"/>
+        </svg>
+      </button>
+    </div>
+  </section>
+  <select id="themeSelect" style="display:none"><option value="auto">Auto</option><option value="dark">Dark</option><option value="light">Light</option></select>
+  <input id="debugToggle" type="checkbox" style="display:none" />
+  <div id="fatalBanner" class="fatal"></div>
+  <div id="inAppNoticeStack" class="inapp-notice-stack" aria-live="polite" aria-atomic="false"></div>
+
+  <section id="settingsSection" data-settings-section="1" class="section toolbar">
+    <div class="controls-grid">
+      <section class="control-card settings-card">
+        <div class="group-title">Panel Controls</div>
+        <div class="setting-row inset-row refresh-setting-row">
+          <span class="setting-label" title="Automatically refresh usage for only the current active account.">Current Account Auto Refresh</span>
+          <div class="field-block refresh-setting-controls">
+            <div class="stepper compact refresh-inline-stepper" data-stepper title="Set how often the current active account refreshes, in seconds."><button id="currentIntervalDec" data-stepper-dec type="button" title="Decrease current-account refresh interval by 1 second.">-</button><input id="currentIntervalInput" type="number" min="1" max="3600" step="1" value="__INTERVAL_INT__" title="Current-account auto refresh interval in seconds." /><button id="currentIntervalInc" data-stepper-inc type="button" title="Increase current-account refresh interval by 1 second.">+</button><span class="label" title="Seconds">sec</span></div>
+            <label class="toggle refresh-setting-toggle" title="Enable or disable automatic refresh for the current active account only."><input id="currentAutoToggle" type="checkbox" title="Enable or disable automatic refresh for the current active account only." /></label>
+          </div>
+        </div>
+        <div class="setting-row inset-row refresh-setting-row">
+          <span class="setting-label" title="Periodically refresh all saved accounts one by one in the background.">Auto Refresh All</span>
+          <div class="field-block refresh-setting-controls">
+            <div class="stepper compact refresh-inline-stepper" data-stepper title="Set how often all saved accounts are refreshed in the background, in minutes."><button id="allIntervalDec" data-stepper-dec type="button" title="Decrease all-accounts refresh interval by 1 minute.">-</button><input id="allIntervalInput" type="number" min="1" max="60" step="1" value="5" title="All-accounts background refresh interval in minutes." /><button id="allIntervalInc" data-stepper-inc type="button" title="Increase all-accounts refresh interval by 1 minute.">+</button><span class="label" title="Minutes">min</span></div>
+            <label class="toggle refresh-setting-toggle" title="Enable or disable background refresh for all saved accounts."><input id="allAutoToggle" type="checkbox" title="Enable or disable background refresh for all saved accounts." /></label>
+          </div>
+        </div>
+        <div class="settings-footer-actions">
+          <button id="refreshBtn" class="btn btn-block settings-footer-btn btn-primary" title="Refresh config, current account state, and usage for all accounts right now.">Refresh</button>
+          <button id="restartBtn" class="btn btn-block settings-footer-btn btn-warning" title="Restart the local UI service without opening a new browser tab.">Restart</button>
+          <button id="killAllBtn" class="btn btn-block settings-footer-btn btn-primary-danger" title="Stop running background Codex account processes. Use only when you need a hard reset.">Kill All</button>
+        </div>
+      </section>
+
+      <section class="control-card notify-card settings-card">
+        <div class="group-title">Notification</div>
+        <div class="setting-row inset-row">
+          <span class="setting-label" title="Turn native warning notifications on or off.">Enable notifications</span>
+          <label class="toggle" title="Turn native warning notifications on or off."><input id="alarmToggle" type="checkbox" title="Turn native warning notifications on or off." /></label>
+        </div>
+        <div class="metric-pair-grid">
+          <div class="setting-row metric inset-row">
+            <span class="setting-label" title="Trigger a notification when 5-hour remaining usage falls below this percentage.">5H notify %</span>
+            <div class="stepper compact" data-stepper title="5-hour warning threshold percentage."><button data-stepper-dec type="button" title="Decrease 5-hour notification threshold by 1 percent.">-</button><input id="alarm5h" type="number" min="0" max="100" step="1" title="5-hour warning threshold percentage." /><button data-stepper-inc type="button" title="Increase 5-hour notification threshold by 1 percent.">+</button></div>
+          </div>
+          <div class="setting-row metric inset-row">
+            <span class="setting-label" title="Trigger a notification when weekly remaining usage falls below this percentage.">Weekly notify %</span>
+            <div class="stepper compact" data-stepper title="Weekly warning threshold percentage."><button data-stepper-dec type="button" title="Decrease weekly notification threshold by 1 percent.">-</button><input id="alarmWeekly" type="number" min="0" max="100" step="1" title="Weekly warning threshold percentage." /><button data-stepper-inc type="button" title="Increase weekly notification threshold by 1 percent.">+</button></div>
+          </div>
+        </div>
+        <div class="alarm-actions">
+          <button id="testAlarmBtn" class="btn-warning btn-block" type="button" title="Send a native notification test using the current profile usage.">Test Notification</button>
+        </div>
+      </section>
+
+      <section class="control-card settings-card control-card-full profiles-panel">
+        <div class="group-title">Profiles</div>
+        <div class="profiles-panel-body">
+          <div class="profiles-panel-head">
+            <p class="migration-note">Move saved local profiles between systems. Exported files include sensitive auth data, so keep archives private and only import from sources you trust.</p>
+            <div class="migration-actions">
+              <button id="importProfilesBtn" class="btn-primary" type="button" title="Choose a migration archive, analyze its profiles, and review changes before importing.">Import</button>
+              <button id="exportProfilesBtn" class="btn-warning" type="button" title="Choose saved profiles to package into a private migration archive.">Export</button>
+            </div>
+          </div>
+          <div class="migration-file" id="importFileLabel"></div>
+        </div>
+        <input id="importProfilesInput" type="file" accept=".camzip,application/zip" style="display:none" />
+      </section>
+    </div>
+  </section>
+
+  <section id="autoSwitchRulesSection" data-settings-section="1" class="section card" style="padding:12px;">
+    <div class="auto-switch-head">
+      <div class="k" style="margin-bottom:0;" title="Rules that decide when and how the app should switch accounts automatically.">Auto-Switch Rules</div>
+      <div id="asPendingCountdown" class="auto-switch-countdown" title="Shows how long until the next scheduled automatic switch attempt.">Switch in 00:00</div>
+    </div>
+    <div class="rules-grid">
+      <div class="rules-col settings-card">
+        <div class="rules-title">Execution</div>
+        <div class="setting-row">
+          <span class="setting-label" title="Allow the app to switch accounts automatically when rules are met.">Enabled</span>
+          <label class="toggle" title="Enable or disable automatic account switching."><input id="asEnabled" type="checkbox" title="Enable or disable automatic account switching." /></label>
+        </div>
+        <div class="setting-row metric inset-row">
+          <span class="setting-label" title="Wait this many seconds after a rule is triggered before switching accounts.">Delay (sec)</span>
+          <div class="stepper compact" data-stepper title="Delay before an automatic switch executes."><button data-stepper-dec type="button" title="Decrease auto-switch delay by 1 second.">-</button><input id="asDelay" type="number" min="0" step="1" title="Auto-switch delay in seconds." /><button data-stepper-inc type="button" title="Increase auto-switch delay by 1 second.">+</button></div>
+        </div>
+        <div class="exec-actions">
+          <button id="asRunSwitchBtn" class="btn btn-block settings-footer-btn btn-primary" title="Run the next switch immediately using the current chain and rules.">Run Switch</button>
+          <button id="asRapidTestBtn" class="btn btn-block settings-footer-btn" title="Run a fast diagnostic pass to test switching behavior.">Rapid Test</button>
+          <button id="asForceStopBtn" class="btn btn-block settings-footer-btn btn-danger" title="Stop running auto-switch test jobs.">Stop Tests</button>
+          <button id="asTestAutoSwitchBtn" class="btn btn-block settings-footer-btn" title="Start a controlled auto-switch test using the current thresholds.">Test Auto Switch</button>
+        </div>
+      </div>
+      <div class="rules-col settings-card">
+        <div class="rules-title">Selection Policy</div>
+        <div class="setting-field"><span class="setting-label" title="Choose how candidate accounts are ranked before switching.">Ranking</span><select id="asRanking" title="Select the account ranking mode used for automatic switching."><option value="balanced">balanced</option><option value="max_5h">max_5h</option><option value="max_weekly">max_weekly</option><option value="manual">manual</option></select></div>
+        <div class="metric-pair-grid">
+          <div class="setting-row metric inset-row">
+            <span class="setting-label" title="Consider switching when 5-hour remaining usage falls below this percentage.">5H switch %</span>
+            <div class="stepper compact" data-stepper title="5-hour switching threshold percentage."><button data-stepper-dec type="button" title="Decrease 5-hour switch threshold by 1 percent.">-</button><input id="as5h" type="number" min="0" max="100" step="1" title="5-hour switch threshold percentage." /><button data-stepper-inc type="button" title="Increase 5-hour switch threshold by 1 percent.">+</button></div>
+          </div>
+          <div class="setting-row metric inset-row">
+            <span class="setting-label" title="Consider switching when weekly remaining usage falls below this percentage.">Weekly switch %</span>
+            <div class="stepper compact" data-stepper title="Weekly switching threshold percentage."><button data-stepper-dec type="button" title="Decrease weekly switch threshold by 1 percent.">-</button><input id="asWeekly" type="number" min="0" max="100" step="1" title="Weekly switch threshold percentage." /><button data-stepper-inc type="button" title="Increase weekly switch threshold by 1 percent.">+</button></div>
+          </div>
+        </div>
+        <div id="asAutoArrangeRow" class="field-row rules-actions"><button id="asAutoArrangeBtn" class="btn-primary" title="Rebuild the switch chain automatically from current usage and ranking rules.">Auto Arrange</button></div>
+      </div>
+    </div>
+    <div id="asChainPanel" class="chain-panel">
+      <div class="chain-head">
+        <div class="chain-title" title="Preview of the current account order used for automatic switching.">Switch Chain Preview</div>
+        <button id="asChainEditBtn" class="btn" type="button" title="Edit the switch chain order manually.">Edit</button>
+      </div>
+      <div id="asChainPreview" class="chain-track" title="Current auto-switch chain order.">-</div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="accounts-toolbar">
+      <div class="k" style="margin:0">Accounts</div>
+      <div class="spacer"></div>
+      <div class="accounts-actions">
+        <button id="addAccountBtn" class="btn-primary" title="Create a new saved profile and start login.">Add Account</button>
+        <button id="removeAllBtn" class="btn btn-primary-danger" title="Remove every saved account profile from this app.">Remove All</button>
+        <button id="colSettingsBtn" class="btn" title="Choose which table columns are visible.">Columns</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-col="cur" data-sort="current" title="Current account status. Green dot means this profile is active.">STS</th><th data-col="profile" data-sort="name" title="Saved profile name. Click the header to sort.">Profile</th><th data-col="email" data-sort="email" title="Email linked to the saved account.">Email</th><th data-col="h5" data-sort="usage5" title="Remaining 5-hour usage percentage.">5H Usage</th><th data-col="h5remain" data-sort="usage5remain" title="Time remaining until the 5-hour window resets.">5H Remain</th><th data-col="h5reset" data-sort="usage5reset" title="Exact reset time for the 5-hour window.">5H Reset At</th><th data-col="weekly" data-sort="usageW" title="Remaining weekly usage percentage.">Weekly</th><th data-col="weeklyremain" data-sort="usageWremain" title="Time remaining until the weekly window resets.">W Remain</th><th data-col="weeklyreset" data-sort="usageWreset" title="Exact reset time for the weekly window.">Weekly Reset At</th><th data-col="plan" data-sort="planType" title="Detected account plan type.">Plan</th><th data-col="paid" data-sort="isPaid" title="Whether the account appears to be paid.">Paid</th><th data-col="id" data-sort="id" title="Account identifier or principal.">ID</th><th data-col="added" data-sort="savedAt" title="When this profile was added to the app.">Added</th><th data-col="note" class="note-col" data-sort="note" title="Extra account notes, such as same-principal markers.">Note</th><th data-col="auto" class="no-sort" title="Include this profile in automatic switching.">Auto</th><th data-col="actions" class="no-sort" title="Switch, rename, or remove this profile.">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="mobileRows" class="mobile-list"></div>
+    </div>
+  </section>
+  <div id="error" class="error"></div>
+
+  <section id="debugRuntimeSection" class="section" style="display:none;">
+    <div class="card terminal-card" style="padding:12px;">
+      <div class="terminal-head">
+        <div class="k">System.Out</div>
+        <button id="exportLogsBtn" class="btn" type="button" title="Download recent debug logs as JSON for troubleshooting.">Export Debug Logs</button>
+      </div>
+      <pre id="debugOut" class="out system-out"></pre>
+    </div>
+  </section>
+
+  <section id="advancedCard" class="section card" style="display:none;padding:12px;">
+      <div class="k">Advanced Actions</div>
+      <div class="grid-2"><div><button id="advStatusBtn">Status</button><button id="advListBtn">List</button><label class="small"><input id="advListDebug" type="checkbox"/> debug</label></div><div><label class="small"><input id="advLoginDevice" type="checkbox"/> device-auth</label><button id="advLoginBtn">Login</button></div></div>
+      <hr/>
+      <div class="grid-2"><div><input id="advQuery" placeholder="query"/><button id="advSwitchBtn">switch-adv</button><button id="advRemoveBtn">remove-adv</button><label class="small"><input id="advRemoveAll" type="checkbox"/> all</label></div><div><select id="advScope"><option value="auto">auto</option><option value="api">api</option></select><select id="advAction"><option value="">(no action)</option><option value="enable">enable</option><option value="disable">disable</option></select><div class="stepper compact" data-stepper><button data-stepper-dec type="button">-</button><input id="adv5h" type="number" placeholder="5h" min="0" step="1"/><button data-stepper-inc type="button">+</button></div><div class="stepper compact" data-stepper><button data-stepper-dec type="button">-</button><input id="advWeekly" type="number" placeholder="weekly" min="0" step="1"/><button data-stepper-inc type="button">+</button></div><button id="advConfigBtn">config</button></div></div>
+      <hr/>
+      <div class="grid-2"><div><div class="small muted">Advanced import</div><input id="advImportPath" placeholder="/path/to/auth.json or dir"/><input id="advImportAlias" placeholder="alias (optional)"/><label class="small"><input id="advImportCpa" type="checkbox"/> cpa</label><label class="small"><input id="advImportPurge" type="checkbox"/> purge</label><button id="advImportBtn">import</button></div><div><div class="small muted">Maintenance</div><button id="advDaemonOnceBtn">daemon --once</button><button id="advDaemonWatchBtn">daemon --watch</button><button id="advCleanBtn">clean</button></div></div>
+      <hr/>
+      <div><div class="small muted">Raw auth args</div><input id="advAuthArgs" placeholder="list --debug"/><button id="advAuthBtn">run auth</button></div>
+  </section>
+
+  <details id="guideDetails" class="guide card">
+    <summary>
+      <svg class="guide-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+      <span class="guide-title">Guide & Help</span>
+    </summary>
+    <div class="guide-body">
+      <p class="guide-intro">Use this panel to manage profiles through the Python core API, monitor live usage, import or export saved profiles, tune notification and auto-switch behavior, review release notes, and run updates from one local control surface.</p>
+      <div class="guide-grid">
+        <section class="guide-block">
+          <h4>Quick Start</h4>
+          <ul>
+            <li>Use <b>Add Account</b> to open the combined login dialog, enter a profile name, then choose <b>Device Login</b> or <b>Normal Login</b>.</li>
+            <li>Use <b>Switch</b> on any row to activate a saved profile in Codex; the active account gets the green status dot and stays pinned first.</li>
+            <li>Use <b>Refresh</b> for a full immediate sync after switching, login, config changes, or recovering from stale data.</li>
+            <li>Current client support targets the <b>Codex CLI</b> and the <b>Codex VS Code extension</b>.</li>
+            <li>On some OS/client combinations, the CLI or VS Code extension may still need a manual reload or restart after switching before the new account is picked up.</li>
+            <li>The Python core remains the source of truth for profile state, switching, usage, and local `/api/*` behavior used by both web and Electron.</li>
+          </ul>
+        </section>
+        <section class="guide-block">
+          <h4>Header & Panel Controls</h4>
+          <ul>
+            <li>Header shows the current app version, and when a newer release exists it adds a green <b>Update available</b> badge plus an <b>Update</b> button.</li>
+            <li>Header controls cycle <b>Theme</b>, toggle <b>Debug mode</b>, and show or hide the settings panels.</li>
+            <li><b>Current Account Auto Refresh</b> polls only the active account in seconds and is meant for lightweight continuous monitoring.</li>
+            <li><b>Auto Refresh All</b> runs a slower background sweep in minutes and refreshes saved accounts one by one instead of doing one expensive batch on every tick.</li>
+            <li><b>Restart</b> restarts the local UI service, and <b>Kill All</b> force-stops managed background account processes.</li>
+          </ul>
+        </section>
+        <section class="guide-block">
+          <h4>Profiles Import / Export</h4>
+          <ul>
+            <li><b>Import</b> opens an archive picker, analyzes the migration file, and lets you review per-profile actions before anything is applied.</li>
+            <li><b>Export</b> opens a profile-selection dialog with bulk select actions and an optional custom archive filename.</li>
+            <li>Migration archives include sensitive auth data. Keep them private and only import files from sources you trust.</li>
+          </ul>
+        </section>
+        <section class="guide-block">
+          <h4>Native Notifications</h4>
+          <ul>
+            <li>Use the <b>Notification</b> card toggle to turn native usage notifications on or off.</li>
+            <li><b>Test Notification</b> sends a real OS notification using the current active profile usage.</li>
+            <li>Set warning thresholds with <b>5H notify %</b> and <b>Weekly notify %</b>.</li>
+            <li>When warning thresholds are breached, notifications use the same native OS path as the test button.</li>
+            <li>Before a delayed auto-switch executes, the app also sends a native heads-up about 30 seconds before the switch time.</li>
+            <li>Electron desktop shell can also emit Electron-native notifications and focus the desktop window on click.</li>
+          </ul>
+        </section>
+        <section class="guide-block">
+          <h4>Auto-Switch Rules</h4>
+          <ul>
+            <li><b>Execution</b>: toggle <b>Enabled</b>, set <b>Delay (sec)</b>, run <b>Run Switch</b>/<b>Rapid Test</b>/<b>Stop Tests</b>/<b>Test Auto Switch</b>.</li>
+            <li><b>Selection Policy</b>: choose ranking mode and set switch thresholds.</li>
+            <li><b>Switch Chain Preview</b> shows current order; <b>Edit</b> supports manual reorder.</li>
+            <li><b>Auto Arrange</b> recalculates chain ordering from current usage and keeps the active account locked at the front when editing the chain manually.</li>
+          </ul>
+        </section>
+        <section class="guide-block">
+          <h4>Accounts Area</h4>
+          <ul>
+            <li>Toolbar actions: <b>Add Account</b>, <b>Remove All</b>, and <b>Columns</b>.</li>
+            <li>Table supports sorting by headers and optional column visibility control.</li>
+            <li>Per-row actions: <b>Switch</b>, row menu (<b>Rename</b>/<b>Remove</b>), and <b>Auto</b> eligibility toggle.</li>
+            <li><b>Plan</b> and <b>Paid</b> fields are available as optional columns (hidden by default).</li>
+            <li>Mobile cards open full detail modal and include switch + row-actions shortcuts.</li>
+            <li>Tooltips are available across controls, headers, and row actions to explain what each setting or button does.</li>
+            <li>Current-account usage is read from the live active auth session, and healthy current sessions sync back only when identity matches to avoid stale-token drift without cross-profile overwrite risk.</li>
+            <li>If a row shows <b>auth expired</b>, the saved profile auth snapshot no longer works for usage API calls and that account needs a fresh healthy session.</li>
+          </ul>
+        </section>
+        <section class="guide-block">
+          <h4>Debug, Runtime, & Advanced</h4>
+          <ul>
+            <li>In debug mode, <b>System.Out</b> shows UI/API actions, warnings, events, and errors.</li>
+            <li><b>Export Debug Logs</b> downloads a JSON snapshot for troubleshooting.</li>
+            <li><b>Advanced Actions</b> exposes wrapped `codex-auth` operations for status/login/switch/import/config/daemon/clean/raw auth when deeper inspection is needed.</li>
+            <li>If you use the Electron shell, its runtime setup screen adds Python/core bootstrap diagnostics before desktop views load.</li>
+          </ul>
+        </section>
+        <section class="guide-block">
+          <h4>Layer Responsibilities</h4>
+          <ul>
+            <li><b>Python CLI Core:</b> owns profiles, switching, usage collection, notifications, auto-switch logic, and local API endpoints.</li>
+            <li><b>Web UI:</b> stable browser panel that exposes the complete local workflow without desktop runtime requirements.</li>
+            <li><b>Electron Shell:</b> optional desktop GUI with tray/menu integration, runtime bootstrap, and Windows taskbar/mini-meter extras.</li>
+            <li><b>App Version:</b> v__UI_VERSION__</li>
+            <li><b>Repository:</b> <a href="https://github.com/alisinaee/Codex-Account-Manager" target="_blank" rel="noopener noreferrer">Codex-Account-Manager</a></li>
+            <li>Local-first Codex profile manager with usage monitoring, safe switching workflows, and auto-switch automation.</li>
+            <li>When an update is available, the app can show the latest GitHub release notes first and then run the pipx upgrade flow from the UI.</li>
+          </ul>
+        </section>
+        <section class="guide-block guide-release-block">
+          <div class="guide-release-headline">
+            <h4>Release Notes</h4>
+      <button id="guideReleaseRefreshBtn" class="btn" type="button" title="Refresh release notes from GitHub and fall back to local notes if needed.">Refresh</button>
+          </div>
+          <div id="guideReleaseStatus" class="guide-release-status">Open this section to load release history.</div>
+          <div id="guideReleaseList" class="guide-release-list"></div>
+        </section>
+      </div>
+    </div>
+  </details>
+  <footer class="panel-footer" aria-label="Project footer">
+    <div><strong>MIT License</strong> | Copyright (c) 2026 Codex Account Manager contributors</div>
+    <div style="margin-top:6px;"><strong>About:</strong> Manage multiple local Codex profiles, track 5H/weekly usage, and run controlled account switching from one panel.</div>
+    <div class="panel-footer-row">
+      <span>Project:</span>
+      <a href="https://github.com/alisinaee/Codex-Account-Manager" target="_blank" rel="noopener noreferrer">github.com/alisinaee/Codex-Account-Manager</a>
+    </div>
+    <div style="margin-top:6px;">If you like this product, feel free to star the GitHub repository.</div>
+  </footer>
+</main>
+
+<div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <h3 id="modalTitle">Confirm</h3>
+    <div id="modalBody" class="body"></div>
+    <input id="modalInput" style="display:none" />
+    <div class="row">
+      <button id="modalCancelBtn" class="btn" title="Cancel and close this dialog.">Cancel</button>
+      <button id="modalOkBtn" class="btn-primary" title="Confirm and continue.">OK</button>
+    </div>
+  </div>
+</div>
+
+<div id="columnsModalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none;">
+  <div class="columns-modal">
+    <h3>Table Columns</h3>
+    <div id="columnsModalList" class="columns-list"></div>
+    <div class="row">
+      <button id="columnsResetBtn" class="btn" type="button" title="Restore the default visible columns.">Reset Defaults</button>
+      <button id="columnsDoneBtn" class="btn-primary" type="button" title="Apply column visibility changes and close this dialog.">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="exportProfilesBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none;">
+  <div class="export-modal">
+    <h3>Export Profiles</h3>
+    <p class="export-modal-intro">Choose the saved profiles you want to package into a migration archive. You can optionally provide a custom archive name.</p>
+    <div class="export-modal-field">
+      <label for="exportFilenameInput">Archive Name (Optional)</label>
+      <input id="exportFilenameInput" type="text" placeholder="codex-account-profiles" autocomplete="off" />
+    </div>
+    <div class="export-modal-actions">
+      <div class="export-modal-bulk-actions">
+        <button id="exportSelectAllBtn" class="btn" type="button" title="Select every saved profile in this export list.">Select All</button>
+        <button id="exportUnselectAllBtn" class="btn" type="button" title="Clear every selected profile in this export list.">Unselect All</button>
+      </div>
+    </div>
+    <div class="export-modal-table-wrap">
+      <table class="export-modal-table">
+        <thead>
+          <tr>
+            <th scope="col"><input id="exportHeaderCheckbox" type="checkbox" aria-label="Toggle all export rows" /></th>
+            <th scope="col">Profile</th>
+            <th scope="col">Account Hint</th>
+          </tr>
+        </thead>
+        <tbody id="exportProfilesTableBody"></tbody>
+      </table>
+    </div>
+    <div id="exportProfilesSummary" class="export-modal-summary">No saved profiles are available.</div>
+    <div class="export-modal-footer">
+      <button id="exportProfilesCancelBtn" class="btn" type="button" title="Close this export dialog without creating an archive.">Cancel</button>
+      <button id="exportProfilesConfirmBtn" class="btn-warning" type="button" title="Create and download a migration archive for the selected profiles.">Export Selected</button>
+    </div>
+  </div>
+</div>
+
+<div id="rowActionsBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none;">
+  <div class="actions-modal">
+    <div class="actions-head">
+      <h3>Row Actions</h3>
+      <button id="rowActionsCloseBtn" class="actions-close" type="button" aria-label="Close row actions" title="Close row actions.">×</button>
+    </div>
+    <p class="actions-sub" id="rowActionsTarget">-</p>
+    <div class="actions-list">
+      <button id="rowActionsRenameBtn" class="action-btn" type="button" title="Rename only the saved profile label in this app."><span>Rename</span><span class="hint">edit</span></button>
+      <button id="rowActionsRemoveBtn" class="action-btn danger" type="button" title="Remove this saved profile from the app."><span>Remove</span><span class="hint">danger</span></button>
+    </div>
+  </div>
+</div>
+
+<div id="addDeviceBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none;">
+  <div class="device-modal">
+    <h3>Add Account</h3>
+    <p class="device-intro">Create a profile and choose how to log in. Device Login is recommended to avoid browser auto-select issues.</p>
+    <label class="device-name-row" for="addDeviceNameInput">
+      <span>Profile Name</span>
+      <input id="addDeviceNameInput" class="device-name-input" placeholder="profile name" autocomplete="off" title="Enter the saved profile name you want to use in this app." />
+    </label>
+    <div class="device-note">
+      <p class="device-note-title">Login Methods</p>
+      <ul>
+        <li><strong>Device Login</strong>: generates a login URL and code. Better when browser cookies auto-select the wrong account.</li>
+        <li><strong>Normal Login</strong>: opens regular browser login directly. Faster when you already control account selection.</li>
+      </ul>
+    </div>
+    <p id="addDeviceStatus" class="device-status">Choose a login method to begin.</p>
+    <div class="device-box">
+      <div class="device-label">Login URL</div>
+      <div id="addDeviceUrl" class="device-value">-</div>
+      <div class="device-label">Code</div>
+      <div id="addDeviceCode" class="device-value">-</div>
+    </div>
+    <div class="device-actions">
+      <button id="addDeviceStartBtn" class="btn-primary" type="button" title="Generate a device-login code and URL for this profile.">Start Device Login</button>
+      <button id="addDeviceCopyBtn" class="btn" type="button" title="Copy the device-login URL and code.">Copy</button>
+      <button id="addDeviceOpenBtn" class="btn" type="button" title="Open the generated device-login URL in your browser.">Open In Browser</button>
+      <button id="addDeviceLegacyBtn" class="btn" type="button" title="Use the regular browser login flow instead of device login.">Use Normal Login</button>
+      <button id="addDeviceCancelBtn" class="btn" type="button" title="Close this add-account dialog without starting a login flow.">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="chainEditBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none;">
+  <div class="chain-edit-modal">
+    <div class="chain-edit-head">
+      <h3 style="margin:0;">Edit Switch Chain</h3>
+    </div>
+    <div id="chainEditHint" class="device-status">Drag rows to set switch order. Active account is locked at top; edit only the next chain.</div>
+    <div id="chainEditList" class="chain-edit-list"></div>
+    <div class="row">
+      <button id="chainEditCancelBtn" class="btn" type="button" title="Close the switch-chain editor without saving changes.">Cancel</button>
+      <button id="chainEditSaveBtn" class="btn-primary" type="button" title="Save the current manual switch-chain order.">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="importReviewBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none;">
+  <div class="review-modal">
+    <div class="review-head">
+      <div>
+        <h3>Import Review</h3>
+        <p id="importReviewIntro" class="review-intro">Review each profile before applying this import.</p>
+      </div>
+      <button id="importReviewCloseBtn" class="actions-close" type="button" aria-label="Close import review">×</button>
+    </div>
+    <div id="importReviewList" class="review-list"></div>
+    <div id="importReviewSummary" class="review-summary"></div>
+    <div class="row">
+      <button id="importReviewCancelBtn" class="btn" type="button" title="Close the import review without applying any profile changes.">Cancel</button>
+      <button id="importReviewApplyBtn" class="btn-primary" type="button" title="Apply the reviewed import actions to your saved profiles.">Apply Import</button>
+    </div>
+  </div>
+</div>
+
+<div id="appUpdateBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none;">
+  <div class="update-modal">
+    <h3>Update App</h3>
+    <p id="appUpdateIntro" class="update-modal-intro">Review the latest release notes before upgrading this app.</p>
+    <div id="appUpdateProgress" class="update-modal-progress" aria-live="polite">
+      <div class="update-modal-progress-head">
+        <span id="appUpdateProgressLabel" class="update-modal-progress-label">Preparing update...</span>
+        <span id="appUpdateProgressValue" class="update-modal-progress-value">0%</span>
+      </div>
+      <div class="update-modal-progress-track"><div id="appUpdateProgressBar" class="update-modal-progress-bar"></div></div>
+      <div id="appUpdateProgressNote" class="update-modal-progress-note">The update can continue in the background if you close this dialog.</div>
+    </div>
+    <div id="appUpdateRelease" class="update-modal-release"></div>
+    <pre id="appUpdateOutput" class="update-modal-output" style="display:none;"></pre>
+    <div class="update-modal-footer">
+      <button id="appUpdateCancelBtn" class="btn" type="button" title="Close this update review without running the pipx upgrade.">Cancel</button>
+      <button id="appUpdateConfirmBtn" class="btn-primary" type="button" title="Run the pipx upgrade now using the reviewed release notes.">Update Now</button>
+    </div>
+  </div>
+</div>
+  <script src="/app.js"></script>
+</body>
+</html>

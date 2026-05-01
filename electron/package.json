@@ -1,0 +1,69 @@
+{
+  "name": "codex-account-manager-electron",
+  "version": "0.0.15",
+  "private": true,
+  "productName": "Codex Account Manager",
+  "description": "Optional Electron desktop shell for Codex Account Manager",
+  "main": "src/main.js",
+  "build": {
+    "appId": "com.codexaccountmanager.desktop",
+    "productName": "Codex Account Manager",
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "src/**",
+      "dist/**",
+      "assets/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/codex-account-manager.icns"
+    },
+    "dmg": {
+      "icon": "assets/codex-account-manager.icns"
+    },
+    "win": {
+      "icon": "assets/codex-account-manager-win.ico",
+      "artifactName": "Codex-Account-Manager-Windows-Stable-v${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Codex Account Manager",
+      "runAfterFinish": true,
+      "installerIcon": "assets/codex-account-manager-win.ico",
+      "uninstallerIcon": "assets/codex-account-manager-win.ico",
+      "installerHeaderIcon": "assets/codex-account-manager-win.ico"
+    },
+    "linux": {
+      "icon": "assets/codex-account-manager.png",
+      "category": "Development"
+    }
+  },
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "build": "npm run build:renderer",
+    "build:renderer": "vite build",
+    "dist": "npm run build:renderer && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "dist:dir": "npm run build:renderer && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "dist:mac": "npm run build:renderer && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
+    "dist:win": "npm run build:renderer && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
+    "dist:linux": "npm run build:renderer && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux",
+    "smoke:prod": "npm run build:renderer && node scripts/smoke.js",
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "npm run build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^7.0.3",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.0.12",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "vite": "^6.0.11"
+  }
+}

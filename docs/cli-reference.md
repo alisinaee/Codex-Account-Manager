@@ -47,6 +47,15 @@ These call `codex-auth` directly if available, otherwise `npx -y @loongphy/codex
 ### `status [--json]`
 Advanced status summary.
 
+### `doctor [--json]`
+Report local desktop runtime diagnostics for the packaged Electron shell.
+
+JSON fields include:
+- `python`: availability, version, path, and support status
+- `core`: installed/version/command path details for `codex-account`
+- `ui_service`: current local service host/port/token/health state
+- `errors`: normalized actionable runtime failures
+
 ### `login [--device-auth]`
 Advanced login wrapper.
 
@@ -78,6 +87,9 @@ Raw passthrough to `codex-auth`.
 
 ### `ui [--host H] [--port P] [--no-open] [--interval S] [--idle-timeout SEC] [--foreground]`
 Start local web UI. Default detached background mode.
+
+### `electron [--no-install]`
+Run the optional Electron desktop shell from a source checkout.
 
 ### `ui-service <start|stop|restart|status> [--host H] [--port P] [--no-open] [--interval S] [--idle-timeout SEC]`
 Manage background UI process.

@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import unittest
@@ -16,25 +17,30 @@ class CliCoreTests(unittest.TestCase):
             "CAM_DIR": cli.CAM_DIR,
             "CAM_CONFIG_FILE": cli.CAM_CONFIG_FILE,
             "CAM_LOG_FILE": cli.CAM_LOG_FILE,
+            "AUTH_FILE": cli.AUTH_FILE,
             "PROFILES_DIR": cli.PROFILES_DIR,
             "BACKUPS_DIR": cli.BACKUPS_DIR,
             "PROFILE_HOMES_DIR": cli.PROFILE_HOMES_DIR,
             "EXPORT_SESSIONS": dict(cli.EXPORT_SESSIONS),
             "IMPORT_ANALYSES": dict(cli.IMPORT_ANALYSES),
+            "ADD_LOGIN_SESSIONS": dict(cli.ADD_LOGIN_SESSIONS),
         }
         cli.CAM_DIR = root / "cam"
         cli.CAM_CONFIG_FILE = cli.CAM_DIR / "config.json"
         cli.CAM_LOG_FILE = cli.CAM_DIR / "ui.log"
+        cli.AUTH_FILE = root / "auth.json"
         cli.PROFILES_DIR = root / "profiles"
         cli.BACKUPS_DIR = root / "backups"
         cli.PROFILE_HOMES_DIR = root / "homes"
         cli.EXPORT_SESSIONS.clear()
         cli.IMPORT_ANALYSES.clear()
+        cli.ADD_LOGIN_SESSIONS.clear()
 
     def tearDown(self):
         cli.CAM_DIR = self._orig["CAM_DIR"]
         cli.CAM_CONFIG_FILE = self._orig["CAM_CONFIG_FILE"]
         cli.CAM_LOG_FILE = self._orig["CAM_LOG_FILE"]
+        cli.AUTH_FILE = self._orig["AUTH_FILE"]
         cli.PROFILES_DIR = self._orig["PROFILES_DIR"]
         cli.BACKUPS_DIR = self._orig["BACKUPS_DIR"]
         cli.PROFILE_HOMES_DIR = self._orig["PROFILE_HOMES_DIR"]
@@ -42,6 +48,8 @@ class CliCoreTests(unittest.TestCase):
         cli.EXPORT_SESSIONS.update(self._orig["EXPORT_SESSIONS"])
         cli.IMPORT_ANALYSES.clear()
         cli.IMPORT_ANALYSES.update(self._orig["IMPORT_ANALYSES"])
+        cli.ADD_LOGIN_SESSIONS.clear()
+        cli.ADD_LOGIN_SESSIONS.update(self._orig["ADD_LOGIN_SESSIONS"])
         self.tmp.cleanup()
 
     def test_build_native_notification_payload_uses_current_profile_usage(self):
@@ -63,6 +71,247 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(payload["title"], "Codex Account Manager")
         self.assertEqual(payload["subtitle"], "Profile noob")
         self.assertEqual(payload["message"], "5H 49% left • Weekly 88% left")
+
+    def test_electron_app_dir_resolves_repo_electron_folder(self):
+        self.assertEqual(cli.electron_app_dir().name, "electron")
+        self.assertTrue((cli.electron_app_dir() / "package.json").exists())
+
+    def test_platform_process_candidates_on_macos_are_strict(self):
+        with mock.patch("sys.platform", "darwin"):
+            candidates = cli._platform_process_candidates()
+        self.assertEqual(
+            candidates["Codex"],
+            ["/Applications/Codex.app/Contents/MacOS/Codex"],
+        )
+        self.assertEqual(
+            candidates["CodexBar"],
+            ["/Applications/CodexBar.app/Contents/MacOS/CodexBar"],
+        )
+
+    def test_platform_process_candidates_on_linux_use_cli_names(self):
+        with mock.patch("sys.platform", "linux"):
+            candidates = cli._platform_process_candidates()
+        self.assertEqual(candidates["Codex"], ["codex"])
+        self.assertEqual(candidates["CodexBar"], ["codexbar"])
+
+    @mock.patch("codex_account_manager.cli._proc_running")
+    def test_detect_running_app_name_on_macos_uses_strict_process_paths(self, mock_proc_running):
+        mock_proc_running.side_effect = [False, True]
+
+        with mock.patch("sys.platform", "darwin"):
+            app_name = cli.detect_running_app_name()
+
+        self.assertEqual(app_name, "CodexBar")
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_start_codex_on_macos_uses_exact_app_bundle_path(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("sys.platform", "darwin"):
+            started = cli.start_codex(preferred_app_name="Codex")
+
+        self.assertTrue(started)
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["open", "/Applications/Codex.app"],
+        )
+
+    @mock.patch("codex_account_manager.cli.time.sleep")
+    @mock.patch("codex_account_manager.cli.codex_running", return_value=False)
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_stop_codex_on_macos_quits_exact_app_bundle_paths(self, mock_run, _mock_running, _mock_sleep):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("sys.platform", "darwin"):
+            stopped = cli.stop_codex()
+
+        self.assertTrue(stopped)
+        self.assertEqual(
+            mock_run.call_args_list[0].args[0],
+            ["osascript", "-e", 'tell application (POSIX file "/Applications/Codex.app" as alias) to quit'],
+        )
+        self.assertEqual(
+            mock_run.call_args_list[1].args[0],
+            ["osascript", "-e", 'tell application (POSIX file "/Applications/CodexBar.app" as alias) to quit'],
+        )
+
+    @mock.patch("codex_account_manager.cli._ui_service_command_base")
+    def test_build_ui_service_restart_command_reuses_runtime_base(self, mock_base):
+        mock_base.return_value = ["py", "-3", "C:\\repo\\codex_account_manager\\cli.py"]
+
+        command = cli._build_ui_service_restart_command("127.0.0.1", 4673, 5.0, 0.0)
+
+        self.assertEqual(
+            command,
+            [
+                "py",
+                "-3",
+                "C:\\repo\\codex_account_manager\\cli.py",
+                "ui-service",
+                "restart",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "4673",
+                "--interval",
+                "5.0",
+                "--idle-timeout",
+                "0.0",
+                "--no-open",
+            ],
+        )
+
+    @mock.patch("codex_account_manager.cli._ui_service_command_base")
+    def test_build_ui_restart_helper_command_keeps_interpreter_and_script(self, mock_base):
+        mock_base.return_value = ["py", "-3", "C:\\repo\\codex_account_manager\\cli.py"]
+
+        command = cli._build_ui_restart_helper_command("127.0.0.1", 4673, 5.0, 0.0)
+
+        self.assertEqual(command[:3], ["py", "-c", mock.ANY])
+        self.assertEqual(
+            command[3:],
+            [
+                "py",
+                "-3",
+                "C:\\repo\\codex_account_manager\\cli.py",
+                "ui-service",
+                "restart",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "4673",
+                "--interval",
+                "5.0",
+                "--idle-timeout",
+                "0.0",
+                "--no-open",
+            ],
+        )
+
+    @mock.patch("codex_account_manager.cli.is_ui_healthy", return_value=True)
+    @mock.patch("codex_account_manager.cli.read_ui_pid_info", return_value={"host": "127.0.0.1", "port": 4673, "pid": 4242, "token": "session-token"})
+    @mock.patch("codex_account_manager.cli.detect_core_runtime")
+    @mock.patch("codex_account_manager.cli.detect_python_runtime")
+    def test_build_doctor_report_includes_python_core_and_ui_service_contract(
+        self,
+        mock_python,
+        mock_core,
+        _mock_pid,
+        _mock_healthy,
+    ):
+        mock_python.return_value = {
+            "available": True,
+            "supported": True,
+            "version": "3.11.9",
+            "path": "/usr/bin/python3",
+            "command": "python3",
+        }
+        mock_core.return_value = {
+            "installed": True,
+            "version": "0.0.15",
+            "command_path": "/Users/test/.local/bin/codex-account",
+            "min_supported_version": "0.0.15",
+            "meets_minimum_version": True,
+        }
+
+        report = cli.build_doctor_report()
+
+        self.assertEqual(report["python"]["version"], "3.11.9")
+        self.assertEqual(report["core"]["command_path"], "/Users/test/.local/bin/codex-account")
+        self.assertTrue(report["ui_service"]["running"])
+        self.assertTrue(report["ui_service"]["healthy"])
+        self.assertEqual(report["ui_service"]["token"], "session-token")
+        self.assertEqual(report["errors"], [])
+
+    @mock.patch("codex_account_manager.cli.build_doctor_report")
+    def test_cmd_doctor_prints_json_payload(self, mock_report):
+        mock_report.return_value = {
+            "python": {"available": True, "supported": True, "version": "3.11.9", "path": "/usr/bin/python3"},
+            "core": {"installed": True, "version": "0.0.15", "command_path": "/Users/test/.local/bin/codex-account"},
+            "ui_service": {"running": False, "healthy": False, "host": "127.0.0.1", "port": 4673, "base_url": "http://127.0.0.1:4673/", "token": ""},
+            "errors": [],
+        }
+
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            rc = cli.cmd_doctor(as_json=True)
+
+        self.assertEqual(rc, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["python"]["version"], "3.11.9")
+        self.assertEqual(payload["core"]["version"], "0.0.15")
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_runs_npm_install_then_dev_when_deps_missing(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = self.tmp.name and Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+
+        rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "install", "--foreground-scripts", "--progress=true", "--loglevel=info"])
+        self.assertEqual(mock_run.call_args_list[0].kwargs["cwd"], str(electron_dir))
+        self.assertEqual(mock_run.call_args_list[1].args[0], ["npm", "run", "dev"])
+        self.assertEqual(mock_run.call_args_list[1].kwargs["cwd"], str(electron_dir))
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_no_install_reports_missing_runtime_deps(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+
+        rc = cli.cmd_electron(electron_dir=electron_dir, no_install=True)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(mock_run.call_args_list, [])
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_installs_when_renderer_deps_are_missing(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+        (electron_dir / "node_modules" / "electron").mkdir(parents=True)
+
+        rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "install", "--foreground-scripts", "--progress=true", "--loglevel=info"])
+        self.assertEqual(mock_run.call_args_list[1].args[0], ["npm", "run", "dev"])
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_skips_install_when_runtime_deps_exist(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+        for dep in ("electron", "vite", "react", "react-dom"):
+            (electron_dir / "node_modules" / dep).mkdir(parents=True)
+
+        rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "run", "dev"])
+        self.assertEqual(len(mock_run.call_args_list), 1)
+
+    @mock.patch("codex_account_manager.cli._subprocess_run")
+    def test_cmd_electron_offline_existing_runtime_still_starts(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0)
+        electron_dir = Path(self.tmp.name) / "electron"
+        electron_dir.mkdir()
+        (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+        for dep in ("electron", "vite", "react", "react-dom"):
+            (electron_dir / "node_modules" / dep).mkdir(parents=True)
+
+        with mock.patch("codex_account_manager.cli._internet_available_for_npm", return_value=False):
+            rc = cli.cmd_electron(electron_dir=electron_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ["npm", "run", "dev"])
+        self.assertEqual(len(mock_run.call_args_list), 1)
 
     def test_send_native_test_notification_returns_error_when_current_profile_missing(self):
         usage_payload = {"current_profile": None, "profiles": []}
@@ -307,13 +556,13 @@ class CliCoreTests(unittest.TestCase):
             "repo_url": cli.PROJECT_RELEASES_URL,
             "releases": [
                 {"tag": "v9.9.9-rc1", "version": "v9.9.9-rc1", "title": "v9.9.9-rc1", "published_at": "2026-04-23T10:00:00Z", "body": "rc", "highlights": [], "url": "", "is_prerelease": True, "is_draft": False, "is_current": False, "source": "github"},
-                {"tag": "v0.0.13", "version": "v0.0.13", "title": "v0.0.13", "published_at": "2026-04-22T10:00:00Z", "body": "stable", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": False, "source": "github"},
+                {"tag": "v0.0.16", "version": "v0.0.16", "title": "v0.0.16", "published_at": "2026-04-22T10:00:00Z", "body": "stable", "highlights": [], "url": "", "is_prerelease": False, "is_draft": False, "is_current": False, "source": "github"},
             ],
         }
         status = cli.build_update_status_payload(payload)
         self.assertTrue(status["update_available"])
-        self.assertEqual(status["latest_version"], "v0.0.13")
-        self.assertEqual((status["latest_release"] or {}).get("tag"), "v0.0.13")
+        self.assertEqual(status["latest_version"], "v0.0.16")
+        self.assertEqual((status["latest_release"] or {}).get("tag"), "v0.0.16")
 
     def test_update_status_returns_no_update_when_versions_match(self):
         payload = {
@@ -330,7 +579,7 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(status["latest_version"], f"v{cli.APP_VERSION}")
 
     def test_render_ui_html_contains_update_controls(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
         self.assertIn('id="appUpdateBadge"', html)
         self.assertIn('id="appUpdateBtn"', html)
         self.assertIn('id="appUpdateBackdrop"', html)
@@ -343,7 +592,7 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn("/api/system/update", html)
 
     def test_render_ui_html_contains_native_notification_test_controls(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
 
         self.assertIn(">Notification<", html)
         self.assertIn('id="testAlarmBtn"', html)
@@ -354,19 +603,19 @@ class CliCoreTests(unittest.TestCase):
         self.assertNotIn("Selected Alarm", html)
 
     def test_render_ui_html_uses_equal_width_settings_cards(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
 
         self.assertIn(".controls-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}", html)
         self.assertNotIn("grid-template-columns:1.2fr 1fr", html)
 
     def test_render_ui_html_offsets_alarm_two_seconds_before_notification(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
 
         self.assertIn("Math.max(0, delayMs - 2000)", html)
         self.assertIn('showInAppNotice("Codex Account Manager", ev.message || "Usage warning"', html)
 
     def test_render_ui_html_marks_run_switch_primary_and_auto_action_progress_hooks(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
         self.assertIn('id="asRunSwitchBtn" class="btn btn-block settings-footer-btn btn-primary"', html)
         self.assertIn("function renderAutoSwitchActionButtons(autoStateOverride=null)", html)
         self.assertIn("async function refreshAutoSwitchState()", html)
@@ -380,13 +629,17 @@ class CliCoreTests(unittest.TestCase):
         self.assertIn("animateSwitchRowToTop(nextCurrentProfile, switchFromRect).catch(() => {});", html)
 
     def test_render_ui_html_reserves_fixed_width_for_loading_table_columns(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
         self.assertIn('table{width:100%;min-width:100%;border-collapse:separate;border-spacing:0 8px;padding:0 0 10px}', html)
         self.assertIn('.usage-pct{display:inline-block;min-width:72px}', html)
         self.assertIn('.usage-cell-loading .usage-pct{min-width:72px}', html)
 
-    def test_render_ui_html_guide_mentions_supported_clients_and_manual_reload_caveat(self):
-        html = cli.render_ui_html(default_interval=5, token="test-token")
+    def test_render_ui_html_guide_mentions_cross_layer_contract_and_supported_clients(self):
+        html = cli.render_ui_html(default_interval=5, token="test-token") + cli.render_ui_js(token="test-token") + cli.render_ui_css()
+        self.assertIn("source of truth for profile state, switching, usage, and local `/api/*` behavior used by both web and Electron", html)
+        self.assertIn("<h4>Layer Responsibilities</h4>", html)
+        self.assertIn("<b>Python CLI Core:</b> owns profiles, switching, usage collection, notifications, auto-switch logic, and local API endpoints.", html)
+        self.assertIn("<b>Electron Shell:</b> optional desktop GUI with tray/menu integration, runtime bootstrap, and Windows taskbar/mini-meter extras.", html)
         self.assertIn("Current client support targets the <b>Codex CLI</b> and the <b>Codex VS Code extension</b>.", html)
         self.assertIn("manual reload or restart after switching", html)
 
@@ -466,6 +719,96 @@ class CliCoreTests(unittest.TestCase):
         self.assertIsNotNone(cand)
         self.assertEqual(cand.get("name"), "acc3")
 
+    def test_merge_cached_usage_payload_preserves_previous_row_when_refresh_returns_only_transient_errors(self):
+        base_payload = {
+            "refreshed_at": "2026-04-30T07:20:00",
+            "current_profile": "acc7",
+            "profiles": [
+                {
+                    "name": "acc7",
+                    "email": "acc7@example.test",
+                    "usage_5h": {"remaining_percent": 100, "resets_at": 1000, "text": "100%"},
+                    "usage_weekly": {"remaining_percent": 88, "resets_at": 2000, "text": "88%"},
+                    "plan_type": "team",
+                    "is_paid": True,
+                    "is_current": True,
+                    "error": None,
+                },
+                {
+                    "name": "acc8",
+                    "email": "acc8@example.test",
+                    "usage_5h": {"remaining_percent": 64, "resets_at": 3000, "text": "64%"},
+                    "usage_weekly": {"remaining_percent": 72, "resets_at": 4000, "text": "72%"},
+                    "plan_type": "free",
+                    "is_paid": False,
+                    "is_current": False,
+                    "error": None,
+                },
+            ],
+        }
+        updated_payload = {
+            "refreshed_at": "2026-04-30T07:24:03",
+            "current_profile": "acc7",
+            "profiles": [
+                {
+                    "name": "acc7",
+                    "email": "acc7@example.test",
+                    "usage_5h": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "usage_weekly": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "plan_type": None,
+                    "is_paid": None,
+                    "is_current": True,
+                    "error": "request failed: transient reset",
+                },
+                {
+                    "name": "acc8",
+                    "email": "acc8@example.test",
+                    "usage_5h": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "usage_weekly": {"remaining_percent": None, "resets_at": None, "text": "-"},
+                    "plan_type": None,
+                    "is_paid": None,
+                    "is_current": False,
+                    "error": "request failed: transient reset",
+                },
+            ],
+        }
+        list_rows = [{"name": "acc7"}, {"name": "acc8"}]
+
+        merged = cli._merge_cached_usage_payload(base_payload, updated_payload, list_rows)
+
+        self.assertEqual(merged["current_profile"], "acc7")
+        self.assertEqual(merged["profiles"][0]["usage_5h"]["remaining_percent"], 100)
+        self.assertEqual(merged["profiles"][0]["usage_weekly"]["remaining_percent"], 88)
+        self.assertEqual(merged["profiles"][0]["plan_type"], "team")
+        self.assertIsNone(merged["profiles"][0]["error"])
+        self.assertEqual(merged["profiles"][1]["usage_5h"]["remaining_percent"], 64)
+        self.assertEqual(merged["profiles"][1]["usage_weekly"]["remaining_percent"], 72)
+        self.assertEqual(merged["profiles"][1]["plan_type"], "free")
+        self.assertFalse(merged["profiles"][1]["is_paid"])
+        self.assertIsNone(merged["profiles"][1]["error"])
+
+    def test_merge_cached_usage_payload_filters_out_profiles_not_in_current_list(self):
+        base_payload = {
+            "refreshed_at": "2026-04-30T07:20:00",
+            "current_profile": "acc7",
+            "profiles": [
+                {"name": "acc7", "usage_5h": {"remaining_percent": 100}, "usage_weekly": {"remaining_percent": 88}, "error": None},
+                {"name": "old-removed", "usage_5h": {"remaining_percent": 55}, "usage_weekly": {"remaining_percent": 65}, "error": None},
+            ],
+        }
+        updated_payload = {
+            "refreshed_at": "2026-04-30T07:25:00",
+            "current_profile": "acc7",
+            "profiles": [
+                {"name": "acc7", "usage_5h": {"remaining_percent": 96}, "usage_weekly": {"remaining_percent": 84}, "error": None},
+            ],
+        }
+
+        merged = cli._merge_cached_usage_payload(base_payload, updated_payload, [{"name": "acc7"}])
+
+        self.assertEqual([row["name"] for row in merged["profiles"]], ["acc7"])
+        self.assertEqual(merged["profiles"][0]["usage_5h"]["remaining_percent"], 96)
+
     def test_ordered_chain_balanced_mode_ignores_manual_chain_override(self):
         cfg = {"auto_switch": {"ranking_mode": "balanced", "manual_chain": ["acc1", "acc2", "acc3"]}}
         payload = {
@@ -479,6 +822,43 @@ class CliCoreTests(unittest.TestCase):
         chain = cli._ordered_chain_names(payload, cfg)
         self.assertEqual(chain, ["acc1", "acc3", "acc2"])
 
+    def test_add_login_session_completes_when_temp_auth_is_written_before_process_exit(self):
+        temp_home = Path(self.tmp.name) / "login-temp"
+        temp_home.mkdir(parents=True)
+        temp_auth = temp_home / "auth.json"
+        temp_auth.write_text(json.dumps({
+            "tokens": {
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+                "account_id": "acc-fresh",
+                "id_token": f"header.{self._jwt_payload({'email': 'fresh@example.com'})}.sig",
+            }
+        }), encoding="utf-8")
+
+        class Proc:
+            terminated = False
+            def terminate(self):
+                self.terminated = True
+
+        proc = Proc()
+        cli.ADD_LOGIN_SESSIONS["sid"] = {
+            "id": "sid",
+            "name": "work",
+            "status": "running",
+            "temp_home": str(temp_home),
+            "temp_auth": str(temp_auth),
+            "overwrite": True,
+            "keep_temp_home": True,
+            "proc": proc,
+        }
+
+        self.assertTrue(cli._complete_add_login_session_from_auth("sid"))
+        payload = cli.get_add_login_session("sid")
+        self.assertEqual(payload["status"], "completed")
+        saved = json.loads((cli.PROFILES_DIR / "work" / "auth.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tokens"]["access_token"], "fresh-access")
+        self.assertTrue(proc.terminated)
+
     def _write_profile(self, name: str, *, email: str, account_id: str) -> None:
         profile_dir = cli.PROFILES_DIR / name
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -488,6 +868,15 @@ class CliCoreTests(unittest.TestCase):
         }
         (profile_dir / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
         (profile_dir / "meta.json").write_text(json.dumps({"name": name, "saved_at": "2026-04-23T00:00:00", "account_hint": email}), encoding="utf-8")
+
+    def _write_profile_auth(self, name: str, auth: dict, *, account_hint: str = "unknown") -> None:
+        profile_dir = cli.PROFILES_DIR / name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+        (profile_dir / "meta.json").write_text(
+            json.dumps({"name": name, "saved_at": "2026-04-23T00:00:00", "account_hint": account_hint}),
+            encoding="utf-8",
+        )
 
     def _jwt_payload(self, payload: dict) -> str:
         import base64
@@ -563,6 +952,26 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(by_name["work"]["status"], "name_conflict")
         self.assertEqual(by_name["moved"]["status"], "account_conflict")
 
+    def test_import_analysis_reports_duplicate_emails_inside_archive(self):
+        archive = Path(self.tmp.name) / "duplicate-email.camzip"
+        export_root = Path(self.tmp.name) / "export-duplicate-email"
+        export_profiles = export_root / "profiles"
+        export_profiles.mkdir(parents=True, exist_ok=True)
+        old_profiles = cli.PROFILES_DIR
+        try:
+            cli.PROFILES_DIR = export_profiles
+            self._write_profile("acc4", email="same@example.com", account_id="acc-4")
+            self._write_profile("acc5", email="same@example.com", account_id="acc-5")
+            cli.create_profiles_archive(archive)
+        finally:
+            cli.PROFILES_DIR = old_profiles
+        analysis = cli.analyze_profiles_archive(archive)
+        by_name = {row["name"]: row for row in analysis["profiles"]}
+        self.assertEqual(by_name["acc4"]["status"], "account_conflict")
+        self.assertEqual(by_name["acc5"]["status"], "account_conflict")
+        self.assertTrue(any("also appears in archive profile" in msg for msg in by_name["acc4"]["problems"]))
+        self.assertTrue(any("also appears in archive profile" in msg for msg in by_name["acc5"]["problems"]))
+
     def test_import_apply_skip_leaves_existing_profile_untouched(self):
         self._write_profile("work", email="work@example.com", account_id="acc-old")
         archive = Path(self.tmp.name) / "skip.camzip"
@@ -614,6 +1023,80 @@ class CliCoreTests(unittest.TestCase):
         self.assertEqual(result["summary"]["overwritten"], 1)
         auth = json.loads((cli.PROFILES_DIR / "work" / "auth.json").read_text(encoding="utf-8"))
         self.assertEqual(auth["account_id"], "acc-new")
+
+    def test_usage_row_does_not_sync_live_auth_when_current_profile_is_email_only_match(self):
+        self._write_profile_auth(
+            "acc4",
+            {
+                "tokens": {
+                    "access_token": "saved-access",
+                    "id_token": f"header.{self._jwt_payload({'email': 'same@example.com'})}.sig",
+                }
+            },
+            account_hint="same@example.com",
+        )
+        cli.AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cli.AUTH_FILE.write_text(
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": "live-access",
+                        "id_token": f"header.{self._jwt_payload({'email': 'same@example.com'})}.sig",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch(
+            "codex_account_manager.cli.fetch_usage_from_auth",
+            return_value=((90, None), (80, None), "plus", True, None),
+        ):
+            payload = cli.collect_usage_local_data(timeout_sec=1)
+
+        self.assertEqual(payload["current_profile"], "acc4")
+        saved = json.loads((cli.PROFILES_DIR / "acc4" / "auth.json").read_text(encoding="utf-8"))
+        meta = json.loads((cli.PROFILES_DIR / "acc4" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tokens"]["access_token"], "saved-access")
+        self.assertNotIn("last_synced_at", meta)
+
+    def test_usage_row_syncs_live_auth_when_current_profile_matches_same_principal(self):
+        self._write_profile_auth(
+            "acc4",
+            {
+                "tokens": {
+                    "access_token": "saved-access",
+                    "account_id": "acc-4",
+                    "id_token": f"header.{self._jwt_payload({'email': 'same@example.com', 'sub': 'sub-4'})}.sig",
+                }
+            },
+            account_hint="same@example.com",
+        )
+        cli.AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cli.AUTH_FILE.write_text(
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": "live-access",
+                        "account_id": "acc-4",
+                        "id_token": f"header.{self._jwt_payload({'email': 'same@example.com', 'sub': 'sub-4'})}.sig",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch(
+            "codex_account_manager.cli.fetch_usage_from_auth",
+            return_value=((90, None), (80, None), "plus", True, None),
+        ):
+            payload = cli.collect_usage_local_data(timeout_sec=1)
+
+        self.assertEqual(payload["current_profile"], "acc4")
+        saved = json.loads((cli.PROFILES_DIR / "acc4" / "auth.json").read_text(encoding="utf-8"))
+        meta = json.loads((cli.PROFILES_DIR / "acc4" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tokens"]["access_token"], "live-access")
+        self.assertIn("last_synced_at", meta)
 
     def test_import_analysis_rejects_unsupported_manifest_version(self):
         self._write_profile("work", email="work@example.com", account_id="acc-work")

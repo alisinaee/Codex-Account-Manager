@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-account-manager"
-version = "0.0.12"
+version = "0.0.15"
 description = "Cross-platform Codex account tooling with a Python CLI and local web UI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,4 +40,4 @@ where = ["."]
 include = ["codex_account_manager*"]
 
 [tool.setuptools.package-data]
-"codex_account_manager" = ["assets/*.svg"]
+"codex_account_manager" = ["assets/*.svg", "web/*"]
